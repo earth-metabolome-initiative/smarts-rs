@@ -24,7 +24,8 @@ pub use error::{SmartsParseError, SmartsParseErrorKind, UnsupportedFeature};
 pub use parse::parse_smarts;
 pub use query::{
     AtomExpr, AtomId, AtomPrimitive, BondExpr, BondExprTree, BondId, BondPrimitive, BracketExpr,
-    BracketExprTree, ComponentGroupId, ComponentId, HydrogenKind, QueryAtom, QueryBond, QueryMol,
+    BracketExprTree, ChiralClass, Chirality, ComponentGroupId, ComponentId, HydrogenKind,
+    QueryAtom, QueryBond, QueryMol,
 };
 pub use span::Span;
 
@@ -305,6 +306,95 @@ mod tests {
     }
 
     #[test]
+    fn parses_atom_stereo_queries() {
+        let clockwise = parse_smarts("[C@H]").unwrap();
+        let counter = parse_smarts("[C@@H]").unwrap();
+        let tetrahedral = parse_smarts("[C@TH1]").unwrap();
+        let aromatic = parse_smarts("[n@H]").unwrap();
+
+        match &clockwise.atoms()[0].expr {
+            AtomExpr::Bracket(expr) => {
+                assert_eq!(
+                    expr.tree,
+                    BracketExprTree::HighAnd(vec![
+                        BracketExprTree::Primitive(AtomPrimitive::Symbol {
+                            element: Element::C,
+                            aromatic: false,
+                        }),
+                        BracketExprTree::Primitive(AtomPrimitive::Chirality(Chirality::Clockwise,)),
+                        BracketExprTree::Primitive(AtomPrimitive::Hydrogen(
+                            HydrogenKind::Total,
+                            None,
+                        )),
+                    ])
+                );
+            }
+            other => panic!("expected bracket atom, got {other:?}"),
+        }
+
+        match &counter.atoms()[0].expr {
+            AtomExpr::Bracket(expr) => {
+                assert_eq!(
+                    expr.tree,
+                    BracketExprTree::HighAnd(vec![
+                        BracketExprTree::Primitive(AtomPrimitive::Symbol {
+                            element: Element::C,
+                            aromatic: false,
+                        }),
+                        BracketExprTree::Primitive(AtomPrimitive::Chirality(
+                            Chirality::CounterClockwise,
+                        )),
+                        BracketExprTree::Primitive(AtomPrimitive::Hydrogen(
+                            HydrogenKind::Total,
+                            None,
+                        )),
+                    ])
+                );
+            }
+            other => panic!("expected bracket atom, got {other:?}"),
+        }
+
+        match &tetrahedral.atoms()[0].expr {
+            AtomExpr::Bracket(expr) => {
+                assert_eq!(
+                    expr.tree,
+                    BracketExprTree::HighAnd(vec![
+                        BracketExprTree::Primitive(AtomPrimitive::Symbol {
+                            element: Element::C,
+                            aromatic: false,
+                        }),
+                        BracketExprTree::Primitive(AtomPrimitive::Chirality(Chirality::Class {
+                            class: ChiralClass::Tetrahedral,
+                            permutation: Some(1),
+                        })),
+                    ])
+                );
+            }
+            other => panic!("expected bracket atom, got {other:?}"),
+        }
+
+        match &aromatic.atoms()[0].expr {
+            AtomExpr::Bracket(expr) => {
+                assert_eq!(
+                    expr.tree,
+                    BracketExprTree::HighAnd(vec![
+                        BracketExprTree::Primitive(AtomPrimitive::Symbol {
+                            element: Element::N,
+                            aromatic: true,
+                        }),
+                        BracketExprTree::Primitive(AtomPrimitive::Chirality(Chirality::Clockwise,)),
+                        BracketExprTree::Primitive(AtomPrimitive::Hydrogen(
+                            HydrogenKind::Total,
+                            None,
+                        )),
+                    ])
+                );
+            }
+            other => panic!("expected bracket atom, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parses_bracketed_non_organic_elements() {
         let sodium = parse_smarts("[Na]").unwrap();
         let platinum = parse_smarts("[Pt]").unwrap();
@@ -497,6 +587,18 @@ mod tests {
         ] {
             let err = parse_smarts(smarts).unwrap_err();
             assert_eq!(err.kind(), expected, "unexpected parse result for {smarts}");
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_atom_stereo_queries() {
+        for input in ["[C@?]", "[C@TH0]", "[C@SP4]", "[C@TB21]", "[C@OH31]"] {
+            let err = parse_smarts(input).unwrap_err();
+            assert!(matches!(
+                err.kind(),
+                SmartsParseErrorKind::UnsupportedFeature(UnsupportedFeature::AtomPrimitive)
+                    | SmartsParseErrorKind::UnexpectedCharacter(_)
+            ));
         }
     }
 

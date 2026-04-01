@@ -1,46 +1,61 @@
 use crate::span::Span;
-use core::fmt;
+use thiserror::Error;
 
 /// High-level reasons why SMARTS parsing can fail.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum SmartsParseErrorKind {
     /// The input string was empty after trimming the accepted outer whitespace.
+    #[error("SMARTS input is empty")]
     EmptyInput,
     /// The parser reached the end of the input before completing the pattern.
+    #[error("unexpected end of SMARTS input")]
     UnexpectedEndOfInput,
     /// The parser encountered a character that is not valid in the current context.
+    #[error("unexpected character `{0}`")]
     UnexpectedCharacter(char),
     /// Two ends of the same ring closure specified incompatible bond operators.
+    #[error("conflicting bond specifications for ring closure")]
     ConflictingRingClosureBond,
     /// A ring closure label was opened but never closed.
+    #[error("ring closure was opened but not closed")]
     UnclosedRingClosure,
     /// A bracket atom started with `[` but was not terminated by `]`.
+    #[error("unterminated bracket atom")]
     UnterminatedBracketAtom,
     /// The pattern uses syntax that is deliberately out of scope for the current parser.
+    #[error("unsupported SMARTS feature: {0}")]
     UnsupportedFeature(UnsupportedFeature),
 }
 
 /// SMARTS syntax families that are intentionally deferred.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum UnsupportedFeature {
     /// Atom maps such as `:1`.
+    #[error("atom maps")]
     AtomMap,
     /// Unsupported bracket primitives beyond the current subset.
+    #[error("atom primitive")]
     AtomPrimitive,
     /// Branch syntax that is not yet handled by the current parser mode.
+    #[error("branches")]
     Branch,
     /// Explicit bond syntax that is outside the supported subset.
+    #[error("explicit bond operators")]
     ExplicitBond,
     /// Reaction SMARTS using `>`.
+    #[error("reaction SMARTS")]
     Reaction,
     /// Recursive SMARTS using `$()` when not supported in the current mode.
+    #[error("recursive SMARTS")]
     RecursiveSmarts,
     /// Ring closure syntax that is outside the supported subset.
+    #[error("ring closures")]
     RingClosure,
 }
 
 /// Structured parse error carrying a machine-readable kind and optional span.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("{kind}")]
 pub struct SmartsParseError {
     kind: SmartsParseErrorKind,
     span: Option<Span>,
@@ -110,48 +125,6 @@ impl SmartsParseError {
             SmartsParseErrorKind::UnsupportedFeature(UnsupportedFeature::RingClosure) => {
                 "unsupported_ring_closure"
             }
-        }
-    }
-}
-
-impl fmt::Display for SmartsParseError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.kind {
-            SmartsParseErrorKind::EmptyInput => f.write_str("SMARTS input is empty"),
-            SmartsParseErrorKind::UnexpectedEndOfInput => {
-                f.write_str("unexpected end of SMARTS input")
-            }
-            SmartsParseErrorKind::UnexpectedCharacter(ch) => {
-                write!(f, "unexpected character `{ch}`")
-            }
-            SmartsParseErrorKind::ConflictingRingClosureBond => {
-                f.write_str("conflicting bond specifications for ring closure")
-            }
-            SmartsParseErrorKind::UnclosedRingClosure => {
-                f.write_str("ring closure was opened but not closed")
-            }
-            SmartsParseErrorKind::UnterminatedBracketAtom => {
-                f.write_str("unterminated bracket atom")
-            }
-            SmartsParseErrorKind::UnsupportedFeature(feature) => {
-                write!(f, "unsupported SMARTS feature: {feature}")
-            }
-        }
-    }
-}
-
-impl core::error::Error for SmartsParseError {}
-
-impl fmt::Display for UnsupportedFeature {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::AtomMap => f.write_str("atom maps"),
-            Self::AtomPrimitive => f.write_str("atom primitive"),
-            Self::Branch => f.write_str("branches"),
-            Self::ExplicitBond => f.write_str("explicit bond operators"),
-            Self::Reaction => f.write_str("reaction SMARTS"),
-            Self::RecursiveSmarts => f.write_str("recursive SMARTS"),
-            Self::RingClosure => f.write_str("ring closures"),
         }
     }
 }

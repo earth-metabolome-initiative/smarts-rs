@@ -96,6 +96,8 @@ pub enum AtomPrimitive {
     RingSize(Option<u8>),
     /// Ring-connectivity predicate such as `x2`.
     RingConnectivity(Option<u8>),
+    /// Atom chirality predicate such as `@`, `@@`, or `@TH1`.
+    Chirality(Chirality),
     /// Formal charge predicate such as `+`, `-`, or `+2`.
     Charge(i8),
 }
@@ -107,6 +109,37 @@ pub enum HydrogenKind {
     Total,
     /// Implicit hydrogen count `h`.
     Implicit,
+}
+
+/// Atom chirality predicate used inside a bracket atom.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Chirality {
+    /// Clockwise shorthand `@`.
+    Clockwise,
+    /// Counter-clockwise shorthand `@@`.
+    CounterClockwise,
+    /// Explicit chiral class such as `@TH1` or `@SP`.
+    Class {
+        /// Chiral class family.
+        class: ChiralClass,
+        /// Optional class-specific permutation number.
+        permutation: Option<u8>,
+    },
+}
+
+/// Chiral class family used by explicit SMARTS atom stereo syntax.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ChiralClass {
+    /// Tetrahedral `TH`.
+    Tetrahedral,
+    /// Allene-like `AL`.
+    Allene,
+    /// Square-planar `SP`.
+    SquarePlanar,
+    /// Trigonal-bipyramidal `TB`.
+    TrigonalBipyramidal,
+    /// Octahedral `OH`.
+    Octahedral,
 }
 
 /// Parsed bond expression between two query atoms.
@@ -326,8 +359,37 @@ impl fmt::Display for AtomPrimitive {
             Self::RingSize(Some(value)) => write!(f, "r{value}"),
             Self::RingConnectivity(None) => f.write_str("x"),
             Self::RingConnectivity(Some(value)) => write!(f, "x{value}"),
+            Self::Chirality(chirality) => chirality.fmt(f),
             Self::Charge(charge) => write_charge(f, *charge),
         }
+    }
+}
+
+impl fmt::Display for Chirality {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Clockwise => f.write_str("@"),
+            Self::CounterClockwise => f.write_str("@@"),
+            Self::Class { class, permutation } => {
+                write!(f, "@{class}")?;
+                if let Some(value) = permutation {
+                    write!(f, "{value}")?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+impl fmt::Display for ChiralClass {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Tetrahedral => "TH",
+            Self::Allene => "AL",
+            Self::SquarePlanar => "SP",
+            Self::TrigonalBipyramidal => "TB",
+            Self::Octahedral => "OH",
+        })
     }
 }
 

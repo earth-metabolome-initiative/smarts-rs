@@ -132,6 +132,36 @@
     "expected_code": "unexpected_character"
   },
   {
+    "id": "local-bracket-atom-stereo-question-mark",
+    "smarts": "[C@?]",
+    "source": "rdkit:uv-run",
+    "expected_code": "unexpected_character"
+  },
+  {
+    "id": "local-bracket-atom-stereo-th-zero",
+    "smarts": "[C@TH0]",
+    "source": "rdkit:uv-run",
+    "expected_code": "unsupported_atom_primitive"
+  },
+  {
+    "id": "local-bracket-atom-stereo-sp-overflow",
+    "smarts": "[C@SP4]",
+    "source": "rdkit:uv-run",
+    "expected_code": "unsupported_atom_primitive"
+  },
+  {
+    "id": "local-bracket-atom-stereo-tb-overflow",
+    "smarts": "[C@TB21]",
+    "source": "rdkit:uv-run",
+    "expected_code": "unsupported_atom_primitive"
+  },
+  {
+    "id": "local-bracket-atom-stereo-oh-overflow",
+    "smarts": "[C@OH31]",
+    "source": "rdkit:uv-run",
+    "expected_code": "unsupported_atom_primitive"
+  },
+  {
     "id": "local-bond-double-negation-missing-primitive",
     "smarts": "C!!N",
     "source": "local:seed",

@@ -1,12 +1,13 @@
 use alloc::{boxed::Box, vec, vec::Vec};
-use core::fmt;
 use elements_rs::Isotope;
+use thiserror::Error;
 
 use crate::parse::parse_smarts;
 use crate::query::{
-    parse_supported_bracket_element, AtomPrimitive, BracketExpr, BracketExprTree, HydrogenKind,
+    parse_supported_bracket_element, AtomPrimitive, BracketExpr, BracketExprTree, ChiralClass,
+    Chirality, HydrogenKind,
 };
-use crate::{SmartsParseError, SmartsParseErrorKind, Span};
+use crate::{SmartsParseErrorKind, Span};
 
 /// Parses the inside of one bracket atom into its boolean expression tree.
 ///
@@ -21,24 +22,30 @@ pub fn parse_bracket_text(text: &str) -> Result<BracketExpr, BracketParseError> 
 }
 
 /// Structured parse error emitted while parsing bracket atom contents.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("{kind}")]
 pub struct BracketParseError {
     kind: BracketParseErrorKind,
     span: Span,
 }
 
 /// High-level reasons why bracket atom parsing can fail.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum BracketParseErrorKind {
     /// The bracket contents were empty.
+    #[error("empty bracket atom")]
     Empty,
     /// The parser encountered a character that is not valid in the current context.
+    #[error("unexpected character `{0}` in bracket atom")]
     UnexpectedCharacter(char),
     /// The bracket contents ended before the parser could finish a construct.
+    #[error("unexpected end of bracket atom")]
     UnexpectedEnd,
     /// A nested recursive SMARTS payload could not be parsed.
+    #[error("invalid recursive SMARTS: {0}")]
     RecursiveSmarts(SmartsParseErrorKind),
     /// The current parser intentionally does not support the encountered primitive.
+    #[error("unsupported bracket atom primitive")]
     UnsupportedPrimitive,
 }
 
@@ -59,30 +66,6 @@ impl BracketParseError {
         self.span
     }
 }
-
-impl fmt::Display for BracketParseError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.kind {
-            BracketParseErrorKind::Empty => f.write_str("empty bracket atom"),
-            BracketParseErrorKind::UnexpectedCharacter(ch) => {
-                write!(f, "unexpected character `{ch}` in bracket atom")
-            }
-            BracketParseErrorKind::UnexpectedEnd => f.write_str("unexpected end of bracket atom"),
-            BracketParseErrorKind::RecursiveSmarts(kind) => {
-                write!(
-                    f,
-                    "invalid recursive SMARTS: {}",
-                    SmartsParseError::new(kind)
-                )
-            }
-            BracketParseErrorKind::UnsupportedPrimitive => {
-                f.write_str("unsupported bracket atom primitive")
-            }
-        }
-    }
-}
-
-impl core::error::Error for BracketParseError {}
 
 struct BracketParser<'a> {
     text: &'a str,
@@ -250,6 +233,7 @@ impl<'a> BracketParser<'a> {
                 self.pos += 1;
                 AtomPrimitive::RingConnectivity(self.parse_optional_u8()?)
             }
+            '@' => AtomPrimitive::Chirality(self.parse_chirality()?),
             '+' | '-' => self.parse_charge()?,
             _ if self.peek().is_ascii_alphabetic() => {
                 if let Some((element, aromatic, width)) =
@@ -332,6 +316,44 @@ impl<'a> BracketParser<'a> {
         }
 
         Err(self.error(BracketParseErrorKind::UnexpectedEnd))
+    }
+
+    fn parse_chirality(&mut self) -> Result<Chirality, BracketParseError> {
+        debug_assert_eq!(self.peek(), '@');
+        self.pos += 1;
+
+        if !self.is_eof() && self.peek() == '@' {
+            self.pos += 1;
+            return Ok(Chirality::CounterClockwise);
+        }
+
+        let class = if self.remaining().starts_with("TH") {
+            self.pos += 2;
+            Some(ChiralClass::Tetrahedral)
+        } else if self.remaining().starts_with("AL") {
+            self.pos += 2;
+            Some(ChiralClass::Allene)
+        } else if self.remaining().starts_with("SP") {
+            self.pos += 2;
+            Some(ChiralClass::SquarePlanar)
+        } else if self.remaining().starts_with("TB") {
+            self.pos += 2;
+            Some(ChiralClass::TrigonalBipyramidal)
+        } else if self.remaining().starts_with("OH") {
+            self.pos += 2;
+            Some(ChiralClass::Octahedral)
+        } else {
+            None
+        };
+
+        let Some(class) = class else {
+            return Ok(Chirality::Clockwise);
+        };
+
+        let permutation = self.parse_optional_u8()?;
+        validate_chiral_permutation(class, permutation).map_err(|kind| self.error(kind))?;
+
+        Ok(Chirality::Class { class, permutation })
     }
 
     fn parse_charge(&mut self) -> Result<AtomPrimitive, BracketParseError> {
@@ -431,6 +453,7 @@ fn starts_implicit_and(ch: char) -> bool {
         '!' | '*'
             | '#'
             | '$'
+            | '@'
             | 'A'
             | 'D'
             | 'H'
@@ -459,6 +482,28 @@ fn starts_implicit_and(ch: char) -> bool {
             | '-'
             | '1'..='9'
     )
+}
+
+fn validate_chiral_permutation(
+    class: ChiralClass,
+    permutation: Option<u8>,
+) -> Result<(), BracketParseErrorKind> {
+    let Some(value) = permutation else {
+        return Ok(());
+    };
+
+    let valid = match class {
+        ChiralClass::Tetrahedral | ChiralClass::Allene => (1..=2).contains(&value),
+        ChiralClass::SquarePlanar => (1..=3).contains(&value),
+        ChiralClass::TrigonalBipyramidal => (1..=20).contains(&value),
+        ChiralClass::Octahedral => (1..=30).contains(&value),
+    };
+
+    if valid {
+        Ok(())
+    } else {
+        Err(BracketParseErrorKind::UnsupportedPrimitive)
+    }
 }
 
 #[cfg(test)]
@@ -560,7 +605,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_degree_connectivity_and_valence() {
+    fn parses_degree_connectivity_valence_and_ring_connectivity() {
         let degree = parse_bracket_text("D2").unwrap();
         let connectivity = parse_bracket_text("X4").unwrap();
         let valence = parse_bracket_text("v3").unwrap();
@@ -585,6 +630,91 @@ mod tests {
     }
 
     #[test]
+    fn parses_atom_stereo_primitives() {
+        let clockwise = parse_bracket_text("C@H").unwrap();
+        let counter = parse_bracket_text("C@@H").unwrap();
+        let tetrahedral = parse_bracket_text("C@TH1").unwrap();
+        let square_planar = parse_bracket_text("C@SP").unwrap();
+        let trigonal_bipyramidal = parse_bracket_text("C@TB10").unwrap();
+        let octahedral = parse_bracket_text("C@OH30").unwrap();
+
+        assert_eq!(
+            clockwise.tree,
+            BracketExprTree::HighAnd(vec![
+                BracketExprTree::Primitive(AtomPrimitive::Symbol {
+                    element: Element::C,
+                    aromatic: false,
+                }),
+                BracketExprTree::Primitive(AtomPrimitive::Chirality(Chirality::Clockwise)),
+                BracketExprTree::Primitive(AtomPrimitive::Hydrogen(HydrogenKind::Total, None)),
+            ])
+        );
+        assert_eq!(
+            counter.tree,
+            BracketExprTree::HighAnd(vec![
+                BracketExprTree::Primitive(AtomPrimitive::Symbol {
+                    element: Element::C,
+                    aromatic: false,
+                }),
+                BracketExprTree::Primitive(AtomPrimitive::Chirality(Chirality::CounterClockwise,)),
+                BracketExprTree::Primitive(AtomPrimitive::Hydrogen(HydrogenKind::Total, None)),
+            ])
+        );
+        assert_eq!(
+            tetrahedral.tree,
+            BracketExprTree::HighAnd(vec![
+                BracketExprTree::Primitive(AtomPrimitive::Symbol {
+                    element: Element::C,
+                    aromatic: false,
+                }),
+                BracketExprTree::Primitive(AtomPrimitive::Chirality(Chirality::Class {
+                    class: ChiralClass::Tetrahedral,
+                    permutation: Some(1),
+                })),
+            ])
+        );
+        assert_eq!(
+            square_planar.tree,
+            BracketExprTree::HighAnd(vec![
+                BracketExprTree::Primitive(AtomPrimitive::Symbol {
+                    element: Element::C,
+                    aromatic: false,
+                }),
+                BracketExprTree::Primitive(AtomPrimitive::Chirality(Chirality::Class {
+                    class: ChiralClass::SquarePlanar,
+                    permutation: None,
+                })),
+            ])
+        );
+        assert_eq!(
+            trigonal_bipyramidal.tree,
+            BracketExprTree::HighAnd(vec![
+                BracketExprTree::Primitive(AtomPrimitive::Symbol {
+                    element: Element::C,
+                    aromatic: false,
+                }),
+                BracketExprTree::Primitive(AtomPrimitive::Chirality(Chirality::Class {
+                    class: ChiralClass::TrigonalBipyramidal,
+                    permutation: Some(10),
+                })),
+            ])
+        );
+        assert_eq!(
+            octahedral.tree,
+            BracketExprTree::HighAnd(vec![
+                BracketExprTree::Primitive(AtomPrimitive::Symbol {
+                    element: Element::C,
+                    aromatic: false,
+                }),
+                BracketExprTree::Primitive(AtomPrimitive::Chirality(Chirality::Class {
+                    class: ChiralClass::Octahedral,
+                    permutation: Some(30),
+                })),
+            ])
+        );
+    }
+
+    #[test]
     fn parses_precedence() {
         let expr = parse_bracket_text("c,n&H1").unwrap();
         assert_eq!(
@@ -601,7 +731,7 @@ mod tests {
                     }),
                     BracketExprTree::Primitive(AtomPrimitive::Hydrogen(
                         HydrogenKind::Total,
-                        Some(1)
+                        Some(1),
                     )),
                 ]),
             ])
@@ -645,6 +775,24 @@ mod tests {
         assert_eq!(nested.to_string(), "C(=O)O");
         assert_eq!(nested.atom_count(), 3);
         assert_eq!(nested.bond_count(), 2);
+    }
+
+    #[test]
+    fn rejects_invalid_atom_stereo_primitives() {
+        let err = parse_bracket_text("C@?").unwrap_err();
+        assert_eq!(err.kind(), &BracketParseErrorKind::UnexpectedCharacter('?'));
+
+        let err = parse_bracket_text("C@TH0").unwrap_err();
+        assert_eq!(err.kind(), &BracketParseErrorKind::UnsupportedPrimitive);
+
+        let err = parse_bracket_text("C@SP4").unwrap_err();
+        assert_eq!(err.kind(), &BracketParseErrorKind::UnsupportedPrimitive);
+
+        let err = parse_bracket_text("C@TB21").unwrap_err();
+        assert_eq!(err.kind(), &BracketParseErrorKind::UnsupportedPrimitive);
+
+        let err = parse_bracket_text("C@OH31").unwrap_err();
+        assert_eq!(err.kind(), &BracketParseErrorKind::UnsupportedPrimitive);
     }
 
     #[test]
