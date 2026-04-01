@@ -10,6 +10,9 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
+use alloc::string::ToString;
+use core::str::FromStr;
+
 mod bracket;
 mod error;
 mod parse;
@@ -26,6 +29,36 @@ pub use query::{
     BracketExprTree, ChiralClass, Chirality, ComponentGroupId, ComponentId, HydrogenKind,
     QueryAtom, QueryBond, QueryMol,
 };
+
+impl FromStr for QueryMol {
+    type Err = SmartsParseError;
+
+    #[inline]
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        parse_smarts(s)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl serde::Serialize for QueryMol {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for QueryMol {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let smarts = <alloc::string::String as serde::Deserialize>::deserialize(deserializer)?;
+        smarts.parse().map_err(serde::de::Error::custom)
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -91,6 +124,14 @@ mod tests {
     fn rejects_empty_input() {
         let err = parse_smarts("").unwrap_err();
         assert_eq!(err.kind(), SmartsParseErrorKind::EmptyInput);
+    }
+
+    #[test]
+    fn query_mol_implements_from_str() {
+        let parsed = "C=C".parse::<QueryMol>().unwrap();
+        let direct = parse_smarts("C=C").unwrap();
+        assert_same_query_structure(&parsed, &direct);
+        assert_eq!(parsed.to_string(), "C=C");
     }
 
     #[test]
@@ -783,5 +824,18 @@ mod tests {
     fn display_renders_recursive_nested_ir() {
         let query = parse_smarts("[$([OH])]C").unwrap();
         assert_eq!(query.to_string(), "[$([O&H])]C");
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn query_mol_serializes_and_deserializes_as_smarts_text() {
+        let query = parse_smarts("[Na+].[Cl-]").unwrap();
+        let rendered = query.to_string();
+        let encoded = serde_json::to_string(&query).unwrap();
+        assert_eq!(encoded, serde_json::to_string(&rendered).unwrap());
+
+        let decoded: QueryMol = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.to_string(), rendered);
+        assert_same_query_structure(&query, &decoded);
     }
 }
