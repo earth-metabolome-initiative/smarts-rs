@@ -1,0 +1,218 @@
+[
+  {
+    "id": "empty-input",
+    "smarts": "",
+    "source": "local:seed",
+    "expected_code": "empty_input"
+  },
+  {
+    "id": "openbabel-unterminated-bracket",
+    "smarts": "[*",
+    "source": "openbabel:test/files/invalid-smarts.txt",
+    "expected_code": "unterminated_bracket_atom"
+  },
+  {
+    "id": "openbabel-malformed-bracket-boolean",
+    "smarts": "[C;;C]",
+    "source": "openbabel:test/files/invalid-smarts.txt",
+    "expected_code": "unexpected_character"
+  },
+  {
+    "id": "openbabel-explicit-bond",
+    "smarts": "C=1CCCCC#1",
+    "source": "openbabel:test/files/invalid-smarts.txt",
+    "expected_code": "conflicting_ring_closure_bond"
+  },
+  {
+    "id": "openbabel-conflicting-aromatic-ring-bond",
+    "smarts": "C-1CCCCC:1",
+    "source": "openbabel:test/files/invalid-smarts.txt",
+    "expected_code": "conflicting_ring_closure_bond"
+  },
+  {
+    "id": "rdkit-atom-map",
+    "smarts": "[C:1]",
+    "source": "rdkit:Code/GraphMol/SmilesParse/smatest.cpp",
+    "expected_code": "unsupported_atom_map"
+  },
+  {
+    "id": "cdk-reaction",
+    "smarts": "C>>C",
+    "source": "cdk:ParserTest.java",
+    "expected_code": "unsupported_reaction"
+  },
+  {
+    "id": "rdkit-unclosed-ring",
+    "smarts": "C1CC",
+    "source": "rdkit:Code/GraphMol/SmilesParse/smatest.cpp",
+    "expected_code": "unclosed_ring_closure"
+  },
+  {
+    "id": "local-unterminated-parenthesized-percent-ring-label",
+    "smarts": "B%(1",
+    "source": "local:fuzz-regression",
+    "expected_code": "unexpected_end_of_input"
+  },
+  {
+    "id": "rdkit-bracket-low-and-whitespace",
+    "smarts": "[C ; H1]",
+    "source": "rdkit:uv-run",
+    "expected_code": "unexpected_character"
+  },
+  {
+    "id": "rdkit-bracket-implicit-and-whitespace",
+    "smarts": "[C H1]",
+    "source": "rdkit:uv-run",
+    "expected_code": "unexpected_character"
+  },
+  {
+    "id": "rdkit-recursive-trailing-whitespace",
+    "smarts": "[$(CO) ]",
+    "source": "rdkit:uv-run",
+    "expected_code": "unexpected_character"
+  },
+  {
+    "id": "rdkit-recursive-internal-space",
+    "smarts": "[$(C O)]",
+    "source": "rdkit:uv-run",
+    "expected_code": "unexpected_character"
+  },
+  {
+    "id": "rdkit-recursive-internal-tab",
+    "smarts": "[$(C\tO)]",
+    "source": "rdkit:uv-run",
+    "expected_code": "unexpected_character"
+  },
+  {
+    "id": "rdkit-recursive-internal-newline",
+    "smarts": "[$(C\nO)]",
+    "source": "rdkit:uv-run",
+    "expected_code": "unexpected_character"
+  },
+  {
+    "id": "rdkit-recursive-leading-whitespace",
+    "smarts": "[ $(CO)]",
+    "source": "rdkit:uv-run",
+    "expected_code": "unexpected_character"
+  },
+  {
+    "id": "rdkit-bracket-tab-whitespace",
+    "smarts": "[C\t;H1]",
+    "source": "rdkit:uv-run",
+    "expected_code": "unexpected_character"
+  },
+  {
+    "id": "rdkit-bare-percent-one-digit",
+    "smarts": "C%1CC%1",
+    "source": "rdkit:uv-run",
+    "expected_code": "unexpected_character"
+  },
+  {
+    "id": "rdkit-bare-percent-leading-zero",
+    "smarts": "C%00CC%00",
+    "source": "rdkit:uv-run",
+    "expected_code": "unexpected_character"
+  },
+  {
+    "id": "rdkit-bare-percent-three-digits",
+    "smarts": "C%123CC%123",
+    "source": "rdkit:uv-run",
+    "expected_code": "unexpected_character"
+  },
+  {
+    "id": "rdkit-parenthesized-percent-too-wide",
+    "smarts": "C%(100000)CC%(100000)",
+    "source": "rdkit:uv-run",
+    "expected_code": "unexpected_character"
+  },
+  {
+    "id": "local-bond-negation-missing-primitive",
+    "smarts": "C!N",
+    "source": "local:seed",
+    "expected_code": "unexpected_character"
+  },
+  {
+    "id": "local-bond-double-negation-missing-primitive",
+    "smarts": "C!!N",
+    "source": "local:seed",
+    "expected_code": "unexpected_character"
+  },
+  {
+    "id": "local-bond-or-missing-right-hand-side",
+    "smarts": "C-,N",
+    "source": "local:seed",
+    "expected_code": "unexpected_character"
+  },
+  {
+    "id": "local-bond-low-and-missing-right-hand-side",
+    "smarts": "C-;N",
+    "source": "local:seed",
+    "expected_code": "unexpected_character"
+  },
+  {
+    "id": "local-bond-or-repeated-separator",
+    "smarts": "C-,,=N",
+    "source": "local:seed",
+    "expected_code": "unexpected_character"
+  },
+  {
+    "id": "local-bond-negation-followed-by-low-and",
+    "smarts": "C!;@N",
+    "source": "local:seed",
+    "expected_code": "unexpected_character"
+  },
+  {
+    "id": "rdkit-bond-up-unspecified-not-supported",
+    "smarts": "C/?C",
+    "source": "rdkit:uv-run",
+    "expected_code": "unexpected_character"
+  },
+  {
+    "id": "rdkit-bond-down-unspecified-not-supported",
+    "smarts": "C\\?C",
+    "source": "rdkit:uv-run",
+    "expected_code": "unexpected_character"
+  },
+  {
+    "id": "local-zero-level-group-missing-separator",
+    "smarts": "(C)C",
+    "source": "local:seed",
+    "expected_code": "unexpected_character"
+  },
+  {
+    "id": "local-zero-level-group-trailing-dot",
+    "smarts": "(C.)",
+    "source": "local:fuzz-regression",
+    "expected_code": "unexpected_character"
+  },
+  {
+    "id": "local-bare-sodium-not-allowed",
+    "smarts": "Na",
+    "source": "local:seed",
+    "expected_code": "unexpected_character"
+  },
+  {
+    "id": "local-bare-platinum-not-allowed",
+    "smarts": "Pt",
+    "source": "local:seed",
+    "expected_code": "unexpected_character"
+  },
+  {
+    "id": "local-bare-oganesson-not-allowed",
+    "smarts": "Og",
+    "source": "local:seed",
+    "expected_code": "unexpected_character"
+  },
+  {
+    "id": "local-bare-arsenic-not-allowed",
+    "smarts": "As",
+    "source": "local:seed",
+    "expected_code": "unexpected_character"
+  },
+  {
+    "id": "local-bare-selenium-not-allowed",
+    "smarts": "Se",
+    "source": "local:seed",
+    "expected_code": "unexpected_character"
+  }
+]

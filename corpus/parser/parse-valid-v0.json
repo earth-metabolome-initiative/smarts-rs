@@ -1,0 +1,322 @@
+[
+  {
+    "id": "openbabel-c",
+    "smarts": "C",
+    "source": "openbabel:test/files/validsmarts.txt",
+    "expected_atoms": 1,
+    "expected_bonds": 0,
+    "expected_components": 1
+  },
+  {
+    "id": "openbabel-cc",
+    "smarts": "CC",
+    "source": "openbabel:test/files/validsmarts.txt",
+    "expected_atoms": 2,
+    "expected_bonds": 1,
+    "expected_components": 1
+  },
+  {
+    "id": "openbabel-cl",
+    "smarts": "Cl",
+    "source": "openbabel:test/files/validsmarts.txt",
+    "expected_atoms": 1,
+    "expected_bonds": 0,
+    "expected_components": 1
+  },
+  {
+    "id": "openbabel-c-single-c",
+    "smarts": "C-C",
+    "source": "openbabel:test/files/validsmarts.txt",
+    "expected_atoms": 2,
+    "expected_bonds": 1,
+    "expected_components": 1
+  },
+  {
+    "id": "openbabel-c-double-c",
+    "smarts": "C=C",
+    "source": "openbabel:test/files/validsmarts.txt",
+    "expected_atoms": 2,
+    "expected_bonds": 1,
+    "expected_components": 1
+  },
+  {
+    "id": "local-bond-or-expression",
+    "smarts": "C-,=N",
+    "source": "local:seed",
+    "expected_atoms": 2,
+    "expected_bonds": 1,
+    "expected_components": 1
+  },
+  {
+    "id": "local-bond-negated-ring",
+    "smarts": "C!@N",
+    "source": "local:seed",
+    "expected_atoms": 2,
+    "expected_bonds": 1,
+    "expected_components": 1
+  },
+  {
+    "id": "local-bond-low-and",
+    "smarts": "C-;!@N",
+    "source": "local:seed",
+    "expected_atoms": 2,
+    "expected_bonds": 1,
+    "expected_components": 1
+  },
+  {
+    "id": "local-bond-negated-single",
+    "smarts": "C!-N",
+    "source": "local:seed",
+    "expected_atoms": 2,
+    "expected_bonds": 1,
+    "expected_components": 1
+  },
+  {
+    "id": "local-bond-mixed-or",
+    "smarts": "C-@,=N",
+    "source": "local:seed",
+    "expected_atoms": 2,
+    "expected_bonds": 1,
+    "expected_components": 1
+  },
+  {
+    "id": "openbabel-c-any-c",
+    "smarts": "C~C",
+    "source": "openbabel:test/files/validsmarts.txt",
+    "expected_atoms": 2,
+    "expected_bonds": 1,
+    "expected_components": 1
+  },
+  {
+    "id": "openbabel-bracket-h",
+    "smarts": "[H]",
+    "source": "openbabel:test/files/validsmarts.txt",
+    "expected_atoms": 1,
+    "expected_bonds": 0,
+    "expected_components": 1
+  },
+  {
+    "id": "openbabel-bracket-aromatic-h",
+    "smarts": "[nH1]",
+    "source": "openbabel:test/files/validsmarts.txt",
+    "expected_atoms": 1,
+    "expected_bonds": 0,
+    "expected_components": 1
+  },
+  {
+    "id": "rdkit-bracket-low-and",
+    "smarts": "[C;H1]",
+    "source": "rdkit:Code/GraphMol/SmilesParse/smatest.cpp",
+    "expected_atoms": 1,
+    "expected_bonds": 0,
+    "expected_components": 1
+  },
+  {
+    "id": "openbabel-bracket-atomic-number-negation",
+    "smarts": "[!#1]",
+    "source": "openbabel:test/files/validsmarts.txt",
+    "expected_atoms": 1,
+    "expected_bonds": 0,
+    "expected_components": 1
+  },
+  {
+    "id": "openbabel-bracket-precedence",
+    "smarts": "[c,n&H1]",
+    "source": "openbabel:test/files/validsmarts.txt",
+    "expected_atoms": 1,
+    "expected_bonds": 0,
+    "expected_components": 1
+  },
+  {
+    "id": "openbabel-bracket-ring-membership",
+    "smarts": "[R0]",
+    "source": "openbabel:test/files/smartstest.txt",
+    "expected_atoms": 1,
+    "expected_bonds": 0,
+    "expected_components": 1
+  },
+  {
+    "id": "openbabel-bracket-ring-size",
+    "smarts": "[r5]",
+    "source": "openbabel:test/files/smartstest.txt",
+    "expected_atoms": 1,
+    "expected_bonds": 0,
+    "expected_components": 1
+  },
+  {
+    "id": "local-bracket-ring-connectivity",
+    "smarts": "[x2]",
+    "source": "local:seed",
+    "expected_atoms": 1,
+    "expected_bonds": 0,
+    "expected_components": 1
+  },
+  {
+    "id": "openbabel-bracket-charge",
+    "smarts": "[+H]",
+    "source": "openbabel:test/files/validsmarts.txt",
+    "expected_atoms": 1,
+    "expected_bonds": 0,
+    "expected_components": 1
+  },
+  {
+    "id": "local-cyclopropane",
+    "smarts": "C1CC1",
+    "source": "local:seed",
+    "expected_atoms": 3,
+    "expected_bonds": 3,
+    "expected_components": 1
+  },
+  {
+    "id": "rdkit-branching-substructure",
+    "smarts": "C(C)C",
+    "source": "rdkit:Code/GraphMol/SmilesParse/smatest.cpp",
+    "expected_atoms": 3,
+    "expected_bonds": 2,
+    "expected_components": 1
+  },
+  {
+    "id": "rdkit-percent-ring-closure",
+    "smarts": "C%12CC%12",
+    "source": "rdkit:Code/GraphMol/SmilesParse/smatest.cpp",
+    "expected_atoms": 3,
+    "expected_bonds": 3,
+    "expected_components": 1
+  },
+  {
+    "id": "local-zero-level-grouped-components",
+    "smarts": "(C.C)",
+    "source": "daylight:theory.smarts",
+    "expected_atoms": 2,
+    "expected_bonds": 0,
+    "expected_components": 2
+  },
+  {
+    "id": "local-zero-level-separated-groups",
+    "smarts": "(C).(C).C",
+    "source": "daylight:theory.smarts",
+    "expected_atoms": 3,
+    "expected_bonds": 0,
+    "expected_components": 3
+  },
+  {
+    "id": "rdkit-high-ring-closure",
+    "smarts": "C%(1000)CC%(1000)",
+    "source": "rdkit:Code/GraphMol/SmilesParse/smatest.cpp",
+    "expected_atoms": 3,
+    "expected_bonds": 3,
+    "expected_components": 1
+  },
+  {
+    "id": "rdkit-bracket-isotope",
+    "smarts": "[12C]",
+    "source": "rdkit:Code/GraphMol/SmilesParse/smatest.cpp",
+    "expected_atoms": 1,
+    "expected_bonds": 0,
+    "expected_components": 1
+  },
+  {
+    "id": "local-bracket-sodium",
+    "smarts": "[Na]",
+    "source": "local:seed",
+    "expected_atoms": 1,
+    "expected_bonds": 0,
+    "expected_components": 1
+  },
+  {
+    "id": "local-bracket-platinum-isotope",
+    "smarts": "[195Pt]",
+    "source": "local:seed",
+    "expected_atoms": 1,
+    "expected_bonds": 0,
+    "expected_components": 1
+  },
+  {
+    "id": "local-bracket-hydrogen-isotope",
+    "smarts": "[2H]",
+    "source": "local:seed",
+    "expected_atoms": 1,
+    "expected_bonds": 0,
+    "expected_components": 1
+  },
+  {
+    "id": "rdkit-bracket-degree",
+    "smarts": "[D3]",
+    "source": "rdkit:Code/GraphMol/SmilesParse/smatest.cpp",
+    "expected_atoms": 1,
+    "expected_bonds": 0,
+    "expected_components": 1
+  },
+  {
+    "id": "rdkit-bracket-connectivity",
+    "smarts": "[X4]",
+    "source": "rdkit:Code/GraphMol/SmilesParse/smatest.cpp",
+    "expected_atoms": 1,
+    "expected_bonds": 0,
+    "expected_components": 1
+  },
+  {
+    "id": "rdkit-bracket-valence",
+    "smarts": "[v3]",
+    "source": "rdkit:Code/GraphMol/SmilesParse/smatest.cpp",
+    "expected_atoms": 1,
+    "expected_bonds": 0,
+    "expected_components": 1
+  },
+  {
+    "id": "rdkit-recursive",
+    "smarts": "[$(CO)]CO",
+    "source": "rdkit:Code/GraphMol/SmilesParse/smatest.cpp",
+    "expected_atoms": 3,
+    "expected_bonds": 2,
+    "expected_components": 1
+  },
+  {
+    "id": "local-recursive-nested-bracket",
+    "smarts": "[$([OH])]",
+    "source": "local:seed",
+    "expected_atoms": 1,
+    "expected_bonds": 0,
+    "expected_components": 1
+  },
+  {
+    "id": "rdkit-directional-up-bond",
+    "smarts": "C/C",
+    "source": "rdkit:Code/GraphMol/SmilesParse/smatest.cpp",
+    "expected_atoms": 2,
+    "expected_bonds": 1,
+    "expected_components": 1
+  },
+  {
+    "id": "rdkit-directional-down-bond",
+    "smarts": "C\\C",
+    "source": "rdkit:Code/GraphMol/SmilesParse/smatest.cpp",
+    "expected_atoms": 2,
+    "expected_bonds": 1,
+    "expected_components": 1
+  },
+  {
+    "id": "rdkit-ring-bond-operator",
+    "smarts": "C@C",
+    "source": "rdkit:Code/GraphMol/SmilesParse/smatest.cpp",
+    "expected_atoms": 2,
+    "expected_bonds": 1,
+    "expected_components": 1
+  },
+  {
+    "id": "local-benzene-shape",
+    "smarts": "c1ccccc1",
+    "source": "local:seed",
+    "expected_atoms": 6,
+    "expected_bonds": 6,
+    "expected_components": 1
+  },
+  {
+    "id": "local-two-components",
+    "smarts": "C.C",
+    "source": "local:seed",
+    "expected_atoms": 2,
+    "expected_bonds": 0,
+    "expected_components": 2
+  }
+]

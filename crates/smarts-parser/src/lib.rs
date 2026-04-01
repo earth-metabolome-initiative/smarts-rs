@@ -1,0 +1,687 @@
+#![no_std]
+
+//! Parser-first SMARTS crate.
+//!
+//! This crate is intentionally small at first:
+//! it defines a stable query model, structured parse errors,
+//! and a parser entrypoint that can grow into a full SMARTS frontend.
+
+extern crate alloc;
+#[cfg(test)]
+extern crate std;
+
+mod bracket;
+mod error;
+mod parse;
+mod query;
+mod span;
+
+pub use bracket::{
+    parse_bracket_text as fuzz_parse_bracket_text, BracketParseError as FuzzBracketParseError,
+    BracketParseErrorKind as FuzzBracketParseErrorKind,
+};
+pub use error::{SmartsParseError, SmartsParseErrorKind, UnsupportedFeature};
+pub use parse::parse_smarts;
+pub use query::{
+    AtomExpr, AtomId, AtomPrimitive, BondExpr, BondExprTree, BondId, BondPrimitive, BracketExpr,
+    BracketExprTree, ComponentGroupId, ComponentId, HydrogenKind, QueryAtom, QueryBond, QueryMol,
+};
+pub use span::Span;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::{boxed::Box, collections::BTreeMap, string::ToString, vec, vec::Vec};
+    use elements_rs::{Element, Isotope};
+
+    fn assert_same_query_structure(left: &QueryMol, right: &QueryMol) {
+        assert_eq!(left.atom_count(), right.atom_count());
+        assert_eq!(left.bond_count(), right.bond_count());
+        assert_eq!(left.component_count(), right.component_count());
+        assert_eq!(left.component_groups(), right.component_groups());
+
+        let left_atoms = left
+            .atoms()
+            .iter()
+            .map(|atom| (atom.component, atom.expr.to_string()))
+            .collect::<Vec<_>>();
+        let right_atoms = right
+            .atoms()
+            .iter()
+            .map(|atom| (atom.component, atom.expr.to_string()))
+            .collect::<Vec<_>>();
+        assert_eq!(left_atoms, right_atoms);
+
+        let left_bonds = left
+            .bonds()
+            .iter()
+            .map(|bond| {
+                (
+                    bond.src.min(bond.dst),
+                    bond.src.max(bond.dst),
+                    bond.expr.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let right_bonds = right
+            .bonds()
+            .iter()
+            .map(|bond| {
+                (
+                    bond.src.min(bond.dst),
+                    bond.src.max(bond.dst),
+                    bond.expr.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(multiset_counts(&left_bonds), multiset_counts(&right_bonds));
+    }
+
+    fn multiset_counts<T>(items: &[T]) -> BTreeMap<T, usize>
+    where
+        T: Ord + Clone,
+    {
+        let mut counts = BTreeMap::new();
+        for item in items {
+            *counts.entry(item.clone()).or_insert(0) += 1;
+        }
+        counts
+    }
+
+    #[test]
+    fn rejects_empty_input() {
+        let err = parse_smarts("").unwrap_err();
+        assert_eq!(err.kind(), SmartsParseErrorKind::EmptyInput);
+    }
+
+    #[test]
+    fn parses_single_atom() {
+        let query = parse_smarts("C").unwrap();
+        assert_eq!(query.to_string(), "C");
+        assert_eq!(query.atom_count(), 1);
+        assert_eq!(query.bond_count(), 0);
+        assert_eq!(query.component_count(), 1);
+    }
+
+    #[test]
+    fn parses_linear_chain_into_bonds() {
+        let query = parse_smarts("CC").unwrap();
+        assert_eq!(query.atom_count(), 2);
+        assert_eq!(query.bond_count(), 1);
+        assert_eq!(query.component_count(), 1);
+        assert_eq!(query.bonds()[0].expr, BondExpr::Elided);
+    }
+
+    #[test]
+    fn parses_explicit_double_bond() {
+        let query = parse_smarts("C=C").unwrap();
+        assert_eq!(query.atom_count(), 2);
+        assert_eq!(query.bond_count(), 1);
+        assert_eq!(
+            query.bonds()[0].expr,
+            BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Double))
+        );
+    }
+
+    #[test]
+    fn parses_multiple_components() {
+        let query = parse_smarts("C.C").unwrap();
+        assert_eq!(query.atom_count(), 2);
+        assert_eq!(query.bond_count(), 0);
+        assert_eq!(query.component_count(), 2);
+    }
+
+    #[test]
+    fn preserves_recursive_smarts_in_brackets() {
+        let query = parse_smarts("[$(CO)]CO").unwrap();
+        let atom = &query.atoms()[0];
+
+        match &atom.expr {
+            AtomExpr::Bracket(expr) => {
+                let BracketExprTree::Primitive(AtomPrimitive::RecursiveQuery(query)) = &expr.tree
+                else {
+                    panic!("expected lowered recursive SMARTS, got {:?}", expr.tree);
+                };
+                assert_eq!(query.to_string(), "CO");
+                assert_eq!(query.atom_count(), 2);
+                assert_eq!(query.bond_count(), 1);
+            }
+            other => panic!("expected bracket atom, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn preserves_recursive_smarts_with_nested_brackets() {
+        let query = parse_smarts("[$([OH])]").unwrap();
+        let atom = &query.atoms()[0];
+
+        match &atom.expr {
+            AtomExpr::Bracket(expr) => {
+                let BracketExprTree::Primitive(AtomPrimitive::RecursiveQuery(query)) = &expr.tree
+                else {
+                    panic!("expected lowered recursive SMARTS, got {:?}", expr.tree);
+                };
+                assert_eq!(query.to_string(), "[O&H]");
+                assert_eq!(query.atom_count(), 1);
+                assert_eq!(query.bond_count(), 0);
+            }
+            other => panic!("expected bracket atom, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_bracket_low_and() {
+        let query = parse_smarts("[C;H1]").unwrap();
+        let atom = &query.atoms()[0];
+        match &atom.expr {
+            AtomExpr::Bracket(expr) => {
+                assert_eq!(
+                    expr.tree,
+                    BracketExprTree::LowAnd(vec![
+                        BracketExprTree::Primitive(AtomPrimitive::Symbol {
+                            element: Element::C,
+                            aromatic: false,
+                        }),
+                        BracketExprTree::Primitive(AtomPrimitive::Hydrogen(
+                            HydrogenKind::Total,
+                            Some(1),
+                        )),
+                    ])
+                );
+            }
+            other => panic!("expected bracket atom, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_bracket_precedence() {
+        let query = parse_smarts("[c,n&H1]").unwrap();
+        let atom = &query.atoms()[0];
+        match &atom.expr {
+            AtomExpr::Bracket(expr) => {
+                assert_eq!(
+                    expr.tree,
+                    BracketExprTree::Or(vec![
+                        BracketExprTree::Primitive(AtomPrimitive::Symbol {
+                            element: Element::C,
+                            aromatic: true,
+                        }),
+                        BracketExprTree::HighAnd(vec![
+                            BracketExprTree::Primitive(AtomPrimitive::Symbol {
+                                element: Element::N,
+                                aromatic: true,
+                            }),
+                            BracketExprTree::Primitive(AtomPrimitive::Hydrogen(
+                                HydrogenKind::Total,
+                                Some(1),
+                            )),
+                        ]),
+                    ])
+                );
+            }
+            other => panic!("expected bracket atom, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_negated_atomic_number() {
+        let query = parse_smarts("[!#1]").unwrap();
+        let atom = &query.atoms()[0];
+        match &atom.expr {
+            AtomExpr::Bracket(expr) => {
+                assert_eq!(
+                    expr.tree,
+                    BracketExprTree::Not(Box::new(BracketExprTree::Primitive(
+                        AtomPrimitive::AtomicNumber(1),
+                    )))
+                );
+            }
+            other => panic!("expected bracket atom, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_simple_ring_closure() {
+        let query = parse_smarts("C1CC1").unwrap();
+        assert_eq!(query.atom_count(), 3);
+        assert_eq!(query.bond_count(), 3);
+        assert_eq!(query.component_count(), 1);
+    }
+
+    #[test]
+    fn parses_branching_substructure() {
+        let query = parse_smarts("C(C)C").unwrap();
+        assert_eq!(query.atom_count(), 3);
+        assert_eq!(query.bond_count(), 2);
+        assert_eq!(query.component_count(), 1);
+    }
+
+    #[test]
+    fn parses_percent_ring_closure() {
+        let query = parse_smarts("C%12CC%12").unwrap();
+        assert_eq!(query.atom_count(), 3);
+        assert_eq!(query.bond_count(), 3);
+        assert_eq!(query.component_count(), 1);
+    }
+
+    #[test]
+    fn parses_isotope_and_degree_primitives() {
+        let isotope = parse_smarts("[12C]").unwrap();
+        let degree = parse_smarts("[D3]").unwrap();
+        let ring_connectivity = parse_smarts("[x2]").unwrap();
+
+        match &isotope.atoms()[0].expr {
+            AtomExpr::Bracket(expr) => {
+                assert_eq!(
+                    expr.tree,
+                    BracketExprTree::Primitive(AtomPrimitive::Isotope {
+                        isotope: Isotope::try_from((Element::C, 12_u16)).unwrap(),
+                        aromatic: false,
+                    })
+                );
+            }
+            other => panic!("expected bracket atom, got {other:?}"),
+        }
+
+        match &degree.atoms()[0].expr {
+            AtomExpr::Bracket(expr) => {
+                assert_eq!(
+                    expr.tree,
+                    BracketExprTree::Primitive(AtomPrimitive::Degree(Some(3)))
+                );
+            }
+            other => panic!("expected bracket atom, got {other:?}"),
+        }
+
+        match &ring_connectivity.atoms()[0].expr {
+            AtomExpr::Bracket(expr) => {
+                assert_eq!(
+                    expr.tree,
+                    BracketExprTree::Primitive(AtomPrimitive::RingConnectivity(Some(2)))
+                );
+            }
+            other => panic!("expected bracket atom, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_bracketed_non_organic_elements() {
+        let sodium = parse_smarts("[Na]").unwrap();
+        let platinum = parse_smarts("[Pt]").unwrap();
+        let oganesson = parse_smarts("[Og]").unwrap();
+
+        for (query, element) in [
+            (&sodium, Element::Na),
+            (&platinum, Element::Pt),
+            (&oganesson, Element::Og),
+        ] {
+            match &query.atoms()[0].expr {
+                AtomExpr::Bracket(expr) => {
+                    assert_eq!(
+                        expr.tree,
+                        BracketExprTree::Primitive(AtomPrimitive::Symbol {
+                            element,
+                            aromatic: false,
+                        })
+                    );
+                }
+                other => panic!("expected bracket atom, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn parses_isotopes_for_non_organic_and_hydrogen_elements() {
+        let platinum = parse_smarts("[195Pt]").unwrap();
+        let deuterium = parse_smarts("[2H]").unwrap();
+
+        match &platinum.atoms()[0].expr {
+            AtomExpr::Bracket(expr) => {
+                assert_eq!(
+                    expr.tree,
+                    BracketExprTree::Primitive(AtomPrimitive::Isotope {
+                        isotope: Isotope::try_from((Element::Pt, 195_u16)).unwrap(),
+                        aromatic: false,
+                    })
+                );
+            }
+            other => panic!("expected bracket atom, got {other:?}"),
+        }
+
+        match &deuterium.atoms()[0].expr {
+            AtomExpr::Bracket(expr) => {
+                assert_eq!(
+                    expr.tree,
+                    BracketExprTree::Primitive(AtomPrimitive::Isotope {
+                        isotope: Isotope::try_from((Element::H, 2_u16)).unwrap(),
+                        aromatic: false,
+                    })
+                );
+            }
+            other => panic!("expected bracket atom, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_atomic_hydrogen_as_element_symbol() {
+        let hydrogen = parse_smarts("[H]").unwrap();
+        let charged = parse_smarts("[H+]").unwrap();
+
+        match &hydrogen.atoms()[0].expr {
+            AtomExpr::Bracket(expr) => {
+                assert_eq!(
+                    expr.tree,
+                    BracketExprTree::Primitive(AtomPrimitive::Symbol {
+                        element: Element::H,
+                        aromatic: false,
+                    })
+                );
+            }
+            other => panic!("expected bracket atom, got {other:?}"),
+        }
+
+        match &charged.atoms()[0].expr {
+            AtomExpr::Bracket(expr) => {
+                assert_eq!(
+                    expr.tree,
+                    BracketExprTree::HighAnd(vec![
+                        BracketExprTree::Primitive(AtomPrimitive::Symbol {
+                            element: Element::H,
+                            aromatic: false,
+                        }),
+                        BracketExprTree::Primitive(AtomPrimitive::Charge(1)),
+                    ])
+                );
+            }
+            other => panic!("expected bracket atom, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_bond_expression_or() {
+        let query = parse_smarts("C-,=N").unwrap();
+
+        assert_eq!(query.atom_count(), 2);
+        assert_eq!(query.bond_count(), 1);
+        assert_eq!(
+            query.bonds()[0].expr,
+            BondExpr::Query(BondExprTree::Or(vec![
+                BondExprTree::Primitive(BondPrimitive::Single),
+                BondExprTree::Primitive(BondPrimitive::Double),
+            ]))
+        );
+    }
+
+    #[test]
+    fn parses_bond_expression_not_and_implicit_and() {
+        let negated_ring = parse_smarts("C!@N").unwrap();
+        let single_ring = parse_smarts("C-@N").unwrap();
+
+        assert_eq!(
+            negated_ring.bonds()[0].expr,
+            BondExpr::Query(BondExprTree::Not(Box::new(BondExprTree::Primitive(
+                BondPrimitive::Ring,
+            ))))
+        );
+        assert_eq!(
+            single_ring.bonds()[0].expr,
+            BondExpr::Query(BondExprTree::HighAnd(vec![
+                BondExprTree::Primitive(BondPrimitive::Single),
+                BondExprTree::Primitive(BondPrimitive::Ring),
+            ]))
+        );
+    }
+
+    #[test]
+    fn parses_valid_corner_case_bond_expressions() {
+        let constrained = parse_smarts("C-;!@N").unwrap();
+        let negated_single = parse_smarts("C!-N").unwrap();
+        let mixed = parse_smarts("C-@,=N").unwrap();
+
+        assert_eq!(
+            constrained.bonds()[0].expr,
+            BondExpr::Query(BondExprTree::LowAnd(vec![
+                BondExprTree::Primitive(BondPrimitive::Single),
+                BondExprTree::Not(Box::new(BondExprTree::Primitive(BondPrimitive::Ring))),
+            ]))
+        );
+        assert_eq!(
+            negated_single.bonds()[0].expr,
+            BondExpr::Query(BondExprTree::Not(Box::new(BondExprTree::Primitive(
+                BondPrimitive::Single,
+            ))))
+        );
+        assert_eq!(
+            mixed.bonds()[0].expr,
+            BondExpr::Query(BondExprTree::Or(vec![
+                BondExprTree::HighAnd(vec![
+                    BondExprTree::Primitive(BondPrimitive::Single),
+                    BondExprTree::Primitive(BondPrimitive::Ring),
+                ]),
+                BondExprTree::Primitive(BondPrimitive::Double),
+            ]))
+        );
+    }
+
+    #[test]
+    fn parses_zero_level_component_grouping() {
+        let grouped = parse_smarts("(C.C)").unwrap();
+        let separated = parse_smarts("(C).(C).C").unwrap();
+
+        assert_eq!(grouped.component_count(), 2);
+        assert_eq!(grouped.component_groups(), &[Some(0), Some(0)]);
+        assert_eq!(grouped.to_string(), "(C.C)");
+
+        assert_eq!(separated.component_count(), 3);
+        assert_eq!(separated.component_groups(), &[Some(0), Some(1), None]);
+        assert_eq!(separated.to_string(), "(C).(C).C");
+    }
+
+    #[test]
+    fn canonicalizes_nested_zero_level_groups() {
+        let query = parse_smarts("((C.C))").unwrap();
+
+        assert_eq!(query.component_groups(), &[Some(0), Some(0)]);
+        assert_eq!(query.to_string(), "(C.C)");
+    }
+
+    #[test]
+    fn rejects_invalid_bond_expression_corner_cases() {
+        for (smarts, expected) in [
+            ("C!!N", SmartsParseErrorKind::UnexpectedCharacter('N')),
+            ("C-;N", SmartsParseErrorKind::UnexpectedCharacter('N')),
+            ("C-,,=N", SmartsParseErrorKind::UnexpectedCharacter(',')),
+            ("C!;@N", SmartsParseErrorKind::UnexpectedCharacter(';')),
+            ("C/?C", SmartsParseErrorKind::UnexpectedCharacter('?')),
+            ("C\\?C", SmartsParseErrorKind::UnexpectedCharacter('?')),
+        ] {
+            let err = parse_smarts(smarts).unwrap_err();
+            assert_eq!(err.kind(), expected, "unexpected parse result for {smarts}");
+        }
+    }
+
+    #[test]
+    fn rejects_missing_separator_after_zero_level_group() {
+        let err = parse_smarts("(C)C").unwrap_err();
+        assert_eq!(err.kind(), SmartsParseErrorKind::UnexpectedCharacter('C'));
+    }
+
+    #[test]
+    fn rejects_trailing_dot_inside_zero_level_group() {
+        let err = parse_smarts("(C.)").unwrap_err();
+        assert_eq!(err.kind(), SmartsParseErrorKind::UnexpectedCharacter(')'));
+    }
+
+    #[test]
+    fn rejects_non_organic_elements_as_bare_atoms() {
+        let err = parse_smarts("Na").unwrap_err();
+        assert_eq!(err.kind(), SmartsParseErrorKind::UnexpectedCharacter('a'));
+
+        let err = parse_smarts("Pt").unwrap_err();
+        assert_eq!(err.kind(), SmartsParseErrorKind::UnexpectedCharacter('t'));
+
+        let err = parse_smarts("Og").unwrap_err();
+        assert_eq!(err.kind(), SmartsParseErrorKind::UnexpectedCharacter('g'));
+
+        let err = parse_smarts("As").unwrap_err();
+        assert_eq!(err.kind(), SmartsParseErrorKind::UnexpectedCharacter('A'));
+
+        let err = parse_smarts("Se").unwrap_err();
+        assert_eq!(err.kind(), SmartsParseErrorKind::UnexpectedCharacter('e'));
+    }
+
+    #[test]
+    fn parses_recursive_smarts_primitive() {
+        let query = parse_smarts("[$(CO)]CO").unwrap();
+        assert_eq!(query.atom_count(), 3);
+        assert_eq!(query.bond_count(), 2);
+
+        match &query.atoms()[0].expr {
+            AtomExpr::Bracket(expr) => {
+                let BracketExprTree::Primitive(AtomPrimitive::RecursiveQuery(nested)) = &expr.tree
+                else {
+                    panic!("expected lowered recursive SMARTS, got {:?}", expr.tree);
+                };
+                assert_eq!(nested.to_string(), "CO");
+                assert_eq!(nested.atom_count(), 2);
+                assert_eq!(nested.bond_count(), 1);
+            }
+            other => panic!("expected bracket atom, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_recursive_smarts_payload() {
+        let err = parse_smarts("[$(1)]").unwrap_err();
+        assert_eq!(err.kind(), SmartsParseErrorKind::UnexpectedCharacter('1'));
+    }
+
+    #[test]
+    fn rejects_whitespace_inside_bracket_atoms() {
+        let err = parse_smarts("[C ; H1]").unwrap_err();
+        assert_eq!(err.kind(), SmartsParseErrorKind::UnexpectedCharacter(' '));
+
+        let err = parse_smarts("[C H1]").unwrap_err();
+        assert_eq!(err.kind(), SmartsParseErrorKind::UnexpectedCharacter(' '));
+
+        let err = parse_smarts("[$(CO) ]").unwrap_err();
+        assert_eq!(err.kind(), SmartsParseErrorKind::UnexpectedCharacter(' '));
+
+        let err = parse_smarts("[$(C O)]").unwrap_err();
+        assert_eq!(err.kind(), SmartsParseErrorKind::UnexpectedCharacter(' '));
+
+        let err = parse_smarts("[$(C\tO)]").unwrap_err();
+        assert_eq!(err.kind(), SmartsParseErrorKind::UnexpectedCharacter('\t'));
+
+        let err = parse_smarts("[$(C\nO)]").unwrap_err();
+        assert_eq!(err.kind(), SmartsParseErrorKind::UnexpectedCharacter('\n'));
+    }
+
+    #[test]
+    fn rejects_rdkit_incompatible_percent_ring_labels() {
+        let err = parse_smarts("C%1CC%1").unwrap_err();
+        assert_eq!(err.kind(), SmartsParseErrorKind::UnexpectedCharacter('C'));
+
+        let err = parse_smarts("C%00CC%00").unwrap_err();
+        assert_eq!(err.kind(), SmartsParseErrorKind::UnexpectedCharacter('0'));
+
+        let err = parse_smarts("C%123CC%123").unwrap_err();
+        assert_eq!(err.kind(), SmartsParseErrorKind::UnexpectedCharacter('3'));
+
+        let err = parse_smarts("C%(100000)CC%(100000)").unwrap_err();
+        assert_eq!(err.kind(), SmartsParseErrorKind::UnexpectedCharacter('0'));
+    }
+
+    #[test]
+    fn allows_colons_inside_recursive_smarts_payloads() {
+        let query = parse_smarts("[$(c:c)]").unwrap();
+
+        match &query.atoms()[0].expr {
+            AtomExpr::Bracket(expr) => {
+                let BracketExprTree::Primitive(AtomPrimitive::RecursiveQuery(nested)) = &expr.tree
+                else {
+                    panic!("expected lowered recursive SMARTS, got {:?}", expr.tree);
+                };
+                assert_eq!(nested.to_string(), "c:c");
+                assert_eq!(nested.atom_count(), 2);
+                assert_eq!(nested.bond_count(), 1);
+                assert_eq!(
+                    nested.bonds()[0].expr,
+                    BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Aromatic))
+                );
+            }
+            other => panic!("expected bracket atom, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_mixed_directional_bond_sequence() {
+        let directional = parse_smarts("C/C=C\\C").unwrap();
+        let ring_bond = parse_smarts("C@C").unwrap();
+
+        assert_eq!(directional.bond_count(), 3);
+        assert_eq!(
+            directional.bonds()[0].expr,
+            BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Up))
+        );
+        assert_eq!(
+            directional.bonds()[1].expr,
+            BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Double))
+        );
+        assert_eq!(
+            directional.bonds()[2].expr,
+            BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Down))
+        );
+
+        assert_eq!(ring_bond.bond_count(), 1);
+        assert_eq!(
+            ring_bond.bonds()[0].expr,
+            BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Ring))
+        );
+    }
+
+    #[test]
+    fn display_preserves_original_source() {
+        let query = parse_smarts("[$(CO)]C/C=C\\C").unwrap();
+        assert_eq!(query.to_string(), "[$(CO)]C/C=C\\C");
+    }
+
+    #[test]
+    fn display_roundtrips_supported_subset() {
+        let query = parse_smarts("CC(C)").unwrap();
+        let rendered = query.to_string();
+        let reparsed = parse_smarts(&rendered).unwrap();
+
+        assert_eq!(rendered, reparsed.to_string());
+        assert_same_query_structure(&query, &reparsed);
+    }
+
+    #[test]
+    fn rejects_conflicting_ring_bonds() {
+        let err = parse_smarts("C=1CCCCC#1").unwrap_err();
+        assert_eq!(err.code(), "conflicting_ring_closure_bond");
+    }
+
+    #[test]
+    fn rejects_unterminated_parenthesized_percent_ring_label() {
+        let err = parse_smarts("B%(1").unwrap_err();
+        assert_eq!(err.code(), "unexpected_end_of_input");
+    }
+
+    #[test]
+    fn display_preserves_supported_smarts_roundtrip() {
+        let source = "[$([OH])]/C=C\\C.C%12CC%12";
+        let query = parse_smarts(source).unwrap();
+        let rendered = query.to_string();
+        let reparsed = parse_smarts(&rendered).unwrap();
+
+        assert_eq!(reparsed.to_string(), rendered);
+        assert_same_query_structure(&query, &reparsed);
+    }
+
+    #[test]
+    fn display_renders_recursive_nested_ir() {
+        let query = parse_smarts("[$([OH])]C").unwrap();
+        assert_eq!(query.to_string(), "[$([O&H])]C");
+    }
+}

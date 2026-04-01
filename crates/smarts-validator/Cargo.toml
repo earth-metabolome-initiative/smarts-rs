@@ -1,0 +1,18 @@
+[package]
+name = "smarts-validator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Validation and matching scaffold for SMARTS queries"
+
+[lints]
+workspace = true
+
+[dependencies]
+smarts-parser = { path = "../smarts-parser" }
+elements_rs = { version = "0.2.0", default-features = false }
+geometric-traits = { path = "../../../geometric-traits", default-features = false, features = ["alloc"] }
+
+[dev-dependencies]
+elements_rs = "0.2.0"
+geometric-traits = { path = "../../../geometric-traits" }

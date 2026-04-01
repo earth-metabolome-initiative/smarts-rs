@@ -1,0 +1,36 @@
+[package]
+name = "smarts-rs-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+smarts-parser = { path = "../crates/smarts-parser" }
+
+[[bin]]
+name = "parse_display_loop"
+path = "fuzz_targets/parse_display_loop.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "bracket_parse_loop"
+path = "fuzz_targets/bracket_parse_loop.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "parse_bracket_atom"
+path = "fuzz_targets/parse_bracket_atom.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "recursive_smarts_lowering"
+path = "fuzz_targets/recursive_smarts_lowering.rs"
+test = false
+doc = false
