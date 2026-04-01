@@ -7,7 +7,7 @@ use crate::query::{
     parse_supported_bracket_element, AtomPrimitive, BracketExpr, BracketExprTree, ChiralClass,
     Chirality, HydrogenKind,
 };
-use crate::{SmartsParseErrorKind, Span};
+use crate::SmartsParseErrorKind;
 
 /// Parses the inside of one bracket atom into its boolean expression tree.
 ///
@@ -26,7 +26,6 @@ pub fn parse_bracket_text(text: &str) -> Result<BracketExpr, BracketParseError> 
 #[error("{kind}")]
 pub struct BracketParseError {
     kind: BracketParseErrorKind,
-    span: Span,
 }
 
 /// High-level reasons why bracket atom parsing can fail.
@@ -50,20 +49,14 @@ pub enum BracketParseErrorKind {
 }
 
 impl BracketParseError {
-    fn new(kind: BracketParseErrorKind, span: Span) -> Self {
-        Self { kind, span }
+    fn new(kind: BracketParseErrorKind) -> Self {
+        Self { kind }
     }
 
     /// Returns the structured error kind.
     #[must_use]
     pub fn kind(&self) -> &BracketParseErrorKind {
         &self.kind
-    }
-
-    /// Returns the span relative to the bracket atom contents.
-    #[must_use]
-    pub fn span(&self) -> Span {
-        self.span
     }
 }
 
@@ -95,10 +88,7 @@ impl<'a> BracketParser<'a> {
         allow_hydrogen_symbol: bool,
     ) -> Result<BracketExprTree, BracketParseError> {
         let mut terms = vec![self.parse_or(allow_hydrogen_symbol)?];
-        loop {
-            if self.is_eof() || self.peek() != ';' {
-                break;
-            }
+        while !self.is_eof() && self.peek() == ';' {
             self.pos += 1;
             terms.push(self.parse_or(false)?);
         }
@@ -110,10 +100,7 @@ impl<'a> BracketParser<'a> {
         allow_hydrogen_symbol: bool,
     ) -> Result<BracketExprTree, BracketParseError> {
         let mut terms = vec![self.parse_high_and(allow_hydrogen_symbol)?];
-        loop {
-            if self.is_eof() || self.peek() != ',' {
-                break;
-            }
+        while !self.is_eof() && self.peek() == ',' {
             self.pos += 1;
             terms.push(self.parse_high_and(true)?);
         }
@@ -125,10 +112,7 @@ impl<'a> BracketParser<'a> {
         allow_hydrogen_symbol: bool,
     ) -> Result<BracketExprTree, BracketParseError> {
         let mut terms = vec![self.parse_unary(allow_hydrogen_symbol)?];
-        loop {
-            if self.is_eof() {
-                break;
-            }
+        while !self.is_eof() {
             if self.peek() == '&' {
                 self.pos += 1;
                 terms.push(self.parse_unary(false)?);
@@ -298,15 +282,9 @@ impl<'a> BracketParser<'a> {
                             return Err(self.error(BracketParseErrorKind::UnexpectedEnd));
                         }
                         let nested = parse_smarts(content).map_err(|err| {
-                            let relative_span = err.span().unwrap_or(Span::new(0, content.len()));
-                            let span = Span::new(
-                                content_start + relative_span.start,
-                                content_start + relative_span.end,
-                            );
-                            BracketParseError::new(
-                                BracketParseErrorKind::RecursiveSmarts(err.kind()),
-                                span,
-                            )
+                            BracketParseError::new(BracketParseErrorKind::RecursiveSmarts(
+                                err.kind(),
+                            ))
                         })?;
                         return Ok(AtomPrimitive::RecursiveQuery(Box::new(nested)));
                     }
@@ -423,16 +401,11 @@ impl<'a> BracketParser<'a> {
     }
 
     fn error(&self, kind: BracketParseErrorKind) -> BracketParseError {
-        BracketParseError::new(kind, Span::new(self.pos, self.pos))
+        BracketParseError::new(kind)
     }
 
     fn error_here(&self, kind: BracketParseErrorKind) -> BracketParseError {
-        let width = if self.is_eof() {
-            0
-        } else {
-            self.peek().len_utf8()
-        };
-        BracketParseError::new(kind, Span::new(self.pos, self.pos + width))
+        BracketParseError::new(kind)
     }
 }
 
@@ -845,5 +818,140 @@ mod tests {
         let input = format!("S{}", "-".repeat(200));
         let err = parse_bracket_text(&input).unwrap_err();
         assert_eq!(err.kind(), &BracketParseErrorKind::UnsupportedPrimitive);
+    }
+
+    #[test]
+    fn covers_remaining_bracket_helper_paths() {
+        assert_eq!(parse_bracket_text("*").unwrap().to_string(), "*");
+        assert_eq!(parse_bracket_text("#6").unwrap().to_string(), "#6");
+        assert_eq!(parse_bracket_text("D").unwrap().to_string(), "D");
+        assert_eq!(parse_bracket_text("X7").unwrap().to_string(), "X7");
+        assert_eq!(parse_bracket_text("v").unwrap().to_string(), "v");
+        assert_eq!(parse_bracket_text("A").unwrap().to_string(), "A");
+        assert_eq!(parse_bracket_text("a").unwrap().to_string(), "a");
+        assert_eq!(parse_bracket_text("H2").unwrap().to_string(), "H2");
+        assert_eq!(parse_bracket_text("h3").unwrap().to_string(), "h3");
+        assert_eq!(parse_bracket_text("R").unwrap().to_string(), "R");
+        assert_eq!(parse_bracket_text("r4").unwrap().to_string(), "r4");
+        assert_eq!(parse_bracket_text("x").unwrap().to_string(), "x");
+        assert_eq!(parse_bracket_text("Na").unwrap().to_string(), "Na");
+        assert_eq!(parse_bracket_text("80se").unwrap().to_string(), "80se");
+        assert_eq!(parse_bracket_text("@AL1").unwrap().to_string(), "@AL1");
+        assert_eq!(parse_bracket_text("+15").unwrap().to_string(), "+15");
+        assert_eq!(parse_bracket_text("---").unwrap().to_string(), "-3");
+        assert_eq!(parse_bracket_text("C;N").unwrap().to_string(), "C;N");
+        assert_eq!(parse_bracket_text("C,N").unwrap().to_string(), "C,N");
+        assert_eq!(parse_bracket_text("C&H1").unwrap().to_string(), "C&H1");
+        assert_eq!(
+            parse_bracket_text("$(C(=O)O)").unwrap().to_string(),
+            "$(C(=O)O)"
+        );
+        assert_eq!(parse_bracket_text("$((C))").unwrap().to_string(), "$((C))");
+
+        assert_eq!(
+            parse_bracket_text("!").unwrap_err().kind(),
+            &BracketParseErrorKind::UnexpectedEnd
+        );
+        assert_eq!(
+            parse_bracket_text("#").unwrap_err().kind(),
+            &BracketParseErrorKind::UnexpectedEnd
+        );
+        assert_eq!(
+            parse_bracket_text("12").unwrap_err().kind(),
+            &BracketParseErrorKind::UnexpectedEnd
+        );
+        assert_eq!(
+            parse_bracket_text("12?").unwrap_err().kind(),
+            &BracketParseErrorKind::UnexpectedCharacter('?')
+        );
+        assert_eq!(
+            parse_bracket_text("999C").unwrap_err().kind(),
+            &BracketParseErrorKind::UnsupportedPrimitive
+        );
+        assert_eq!(
+            parse_bracket_text("$(C").unwrap_err().kind(),
+            &BracketParseErrorKind::UnexpectedEnd
+        );
+        assert_eq!(
+            parse_bracket_text("D256").unwrap_err().kind(),
+            &BracketParseErrorKind::UnsupportedPrimitive
+        );
+        assert_eq!(
+            parse_bracket_text("65536C").unwrap_err().kind(),
+            &BracketParseErrorKind::UnsupportedPrimitive
+        );
+
+        let parser = BracketParser::new("C");
+        assert_eq!(parser.remaining(), "C");
+        assert!(!parser.next_char_is_ascii_digit());
+        assert!(!parser.is_eof());
+
+        let eof = BracketParser { text: "", pos: 0 };
+        assert!(eof.is_eof());
+        let err = eof.error_here(BracketParseErrorKind::UnexpectedEnd);
+        assert_eq!(err.kind(), &BracketParseErrorKind::UnexpectedEnd);
+    }
+
+    #[test]
+    fn direct_bracket_parser_methods_cover_internal_branches() {
+        let mut parser = BracketParser::new("C;N");
+        assert_eq!(parser.parse_low_and(true).unwrap().to_string(), "C;N");
+
+        let mut parser = BracketParser::new("C,N");
+        assert_eq!(parser.parse_or(true).unwrap().to_string(), "C,N");
+
+        let mut parser = BracketParser::new("C&H1");
+        assert_eq!(parser.parse_high_and(true).unwrap().to_string(), "C&H1");
+
+        let mut parser = BracketParser::new("");
+        assert_eq!(
+            parser.parse_unary(true).unwrap_err().kind(),
+            &BracketParseErrorKind::UnexpectedEnd
+        );
+
+        for (text, expected) in [
+            ("*", "*"),
+            ("#6", "#6"),
+            ("D2", "D2"),
+            ("X", "X"),
+            ("v3", "v3"),
+            ("A", "A"),
+            ("a", "a"),
+            ("H", "H"),
+            ("h", "h"),
+            ("R2", "R2"),
+            ("r", "r"),
+            ("x2", "x2"),
+        ] {
+            let mut parser = BracketParser::new(text);
+            assert_eq!(parser.parse_primitive(true).unwrap().to_string(), expected);
+        }
+
+        let mut parser = BracketParser::new("?");
+        assert_eq!(
+            parser.parse_symbol_after_isotope(12).unwrap_err().kind(),
+            &BracketParseErrorKind::UnexpectedCharacter('?')
+        );
+
+        let mut parser = BracketParser::new("$(C)");
+        assert_eq!(parser.parse_recursive_smarts().unwrap().to_string(), "$(C)");
+
+        let mut parser = BracketParser::new("@AL1");
+        assert_eq!(parser.parse_chirality().unwrap().to_string(), "@AL1");
+
+        let mut parser = BracketParser::new("+15");
+        assert_eq!(parser.parse_charge().unwrap().to_string(), "+15");
+
+        let mut parser = BracketParser::new("256");
+        assert_eq!(
+            parser.parse_optional_u8().unwrap_err().kind(),
+            &BracketParseErrorKind::UnsupportedPrimitive
+        );
+
+        let mut parser = BracketParser::new("x");
+        assert_eq!(
+            parser.parse_required_u16().unwrap_err().kind(),
+            &BracketParseErrorKind::UnexpectedEnd
+        );
     }
 }

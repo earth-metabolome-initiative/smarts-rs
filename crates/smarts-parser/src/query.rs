@@ -1,4 +1,3 @@
-use crate::Span;
 use alloc::{
     boxed::Box,
     string::{String, ToString},
@@ -194,8 +193,6 @@ pub struct QueryAtom {
     pub id: AtomId,
     /// Connected-component identifier.
     pub component: ComponentId,
-    /// Source span covering the atom token.
-    pub span: Span,
     /// Parsed atom expression.
     pub expr: AtomExpr,
 }
@@ -209,8 +206,6 @@ pub struct QueryBond {
     pub src: AtomId,
     /// Destination atom identifier.
     pub dst: AtomId,
-    /// Source span covering the bond token or inferred adjacency span.
-    pub span: Span,
     /// Parsed bond expression.
     pub expr: BondExpr,
 }
@@ -482,12 +477,6 @@ fn write_charge(f: &mut fmt::Formatter<'_>, charge: i8) -> fmt::Result {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct IncidentBond {
-    bond_id: BondId,
-    other: AtomId,
-}
-
 #[derive(Debug, Clone)]
 struct RingToken {
     label: u32,
@@ -510,40 +499,17 @@ struct QueryMolWriter<'a> {
 
 impl<'a> QueryMolWriter<'a> {
     fn new(mol: &'a QueryMol) -> Self {
-        let mut adjacency = vec![Vec::new(); mol.atom_count()];
+        let mut parent_bond_by_atom = vec![None; mol.atom_count()];
         for bond in &mol.bonds {
-            adjacency[bond.src].push(IncidentBond {
-                bond_id: bond.id,
-                other: bond.dst,
-            });
-            adjacency[bond.dst].push(IncidentBond {
-                bond_id: bond.id,
-                other: bond.src,
-            });
+            if bond.dst < parent_bond_by_atom.len() && parent_bond_by_atom[bond.dst].is_none() {
+                parent_bond_by_atom[bond.dst] = Some(bond.id);
+            }
         }
 
-        let mut parent_bond_by_atom = vec![None; mol.atom_count()];
         let mut component_roots = vec![None; mol.component_count()];
-
         for atom in &mol.atoms {
-            let atom_id = atom.id;
-            let mut parent = None;
-            let mut parent_end = 0usize;
-
-            for incident in &adjacency[atom_id] {
-                if incident.other >= atom_id {
-                    continue;
-                }
-                let bond = &mol.bonds[incident.bond_id];
-                if bond.span.end <= atom.span.start && bond.span.end >= parent_end {
-                    parent = Some(incident.bond_id);
-                    parent_end = bond.span.end;
-                }
-            }
-
-            parent_bond_by_atom[atom_id] = parent;
-            if parent.is_none() {
-                component_roots[atom.component] = Some(atom_id);
+            if parent_bond_by_atom[atom.id].is_none() && component_roots[atom.component].is_none() {
+                component_roots[atom.component] = Some(atom.id);
             }
         }
 
@@ -556,26 +522,23 @@ impl<'a> QueryMolWriter<'a> {
         for (atom_id, parent_bond) in parent_bond_by_atom.iter().copied().enumerate() {
             if let Some(parent_bond) = parent_bond {
                 let bond = &mol.bonds[parent_bond];
-                let parent = if bond.src == atom_id {
-                    bond.dst
-                } else {
-                    bond.src
-                };
-                children_by_atom[parent].push(atom_id);
+                children_by_atom[bond.src].push(atom_id);
             }
         }
         for children in &mut children_by_atom {
             children.sort_unstable();
         }
 
+        let mut is_parent_bond = vec![false; mol.bond_count()];
+        for parent_bond in parent_bond_by_atom.iter().flatten().copied() {
+            is_parent_bond[parent_bond] = true;
+        }
+
         let mut ring_tokens_by_atom = vec![Vec::new(); mol.atom_count()];
         let mut ring_bond_ids = mol
             .bonds
             .iter()
-            .filter(|bond| {
-                !(parent_bond_by_atom[bond.src] == Some(bond.id)
-                    || parent_bond_by_atom[bond.dst] == Some(bond.id))
-            })
+            .filter(|bond| !is_parent_bond[bond.id])
             .map(|bond| bond.id)
             .collect::<Vec<_>>();
         ring_bond_ids.sort_by_key(|&bond_id| {
@@ -789,4 +752,516 @@ fn parse_element_symbol(input: &str) -> Option<(Element, usize)> {
 
     let symbol = &input[..1];
     Element::try_from(symbol).ok().map(|element| (element, 1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::string::ToString;
+
+    fn atom(
+        id: AtomId,
+        component: ComponentId,
+        _start: usize,
+        _end: usize,
+        expr: AtomExpr,
+    ) -> QueryAtom {
+        QueryAtom {
+            id,
+            component,
+            expr,
+        }
+    }
+
+    fn bond(
+        id: BondId,
+        src: AtomId,
+        dst: AtomId,
+        _start: usize,
+        _end: usize,
+        expr: BondExpr,
+    ) -> QueryBond {
+        QueryBond { id, src, dst, expr }
+    }
+
+    #[test]
+    fn query_accessors_handle_empty_and_out_of_range_component_groups() {
+        let query = QueryMol::from_parts(Vec::new(), Vec::new(), 0, Vec::new());
+        assert!(query.is_empty());
+        assert_eq!(query.atom_count(), 0);
+        assert_eq!(query.bond_count(), 0);
+        assert_eq!(query.component_count(), 0);
+        assert_eq!(query.component_group(0), None);
+        assert_eq!(query.component_groups(), &[]);
+        assert_eq!(query.to_string(), "");
+    }
+
+    #[test]
+    fn displays_all_atom_and_bond_primitive_variants() {
+        let aromatic_isotope = Isotope::try_from((Element::Se, 80_u16)).unwrap();
+        let recursive = QueryMol::from_parts(
+            vec![atom(
+                0,
+                0,
+                0,
+                1,
+                AtomExpr::Bare {
+                    element: Element::C,
+                    aromatic: false,
+                },
+            )],
+            Vec::new(),
+            1,
+            vec![None],
+        );
+
+        let atom_cases = [
+            (AtomExpr::Wildcard.to_string(), "*"),
+            (
+                AtomExpr::Bare {
+                    element: Element::Cl,
+                    aromatic: false,
+                }
+                .to_string(),
+                "Cl",
+            ),
+            (
+                AtomExpr::Bracket(BracketExpr {
+                    tree: BracketExprTree::Primitive(AtomPrimitive::Wildcard),
+                })
+                .to_string(),
+                "[*]",
+            ),
+            (AtomPrimitive::AliphaticAny.to_string(), "A"),
+            (AtomPrimitive::AromaticAny.to_string(), "a"),
+            (
+                AtomPrimitive::Symbol {
+                    element: Element::As,
+                    aromatic: true,
+                }
+                .to_string(),
+                "as",
+            ),
+            (
+                AtomPrimitive::Isotope {
+                    isotope: aromatic_isotope,
+                    aromatic: true,
+                }
+                .to_string(),
+                "80se",
+            ),
+            (AtomPrimitive::AtomicNumber(6).to_string(), "#6"),
+            (AtomPrimitive::Degree(None).to_string(), "D"),
+            (AtomPrimitive::Connectivity(None).to_string(), "X"),
+            (AtomPrimitive::Valence(None).to_string(), "v"),
+            (
+                AtomPrimitive::RecursiveQuery(Box::new(recursive)).to_string(),
+                "$(C)",
+            ),
+            (
+                AtomPrimitive::Hydrogen(HydrogenKind::Implicit, None).to_string(),
+                "h",
+            ),
+            (AtomPrimitive::RingMembership(None).to_string(), "R"),
+            (AtomPrimitive::RingSize(None).to_string(), "r"),
+            (AtomPrimitive::RingConnectivity(None).to_string(), "x"),
+            (AtomPrimitive::Charge(0).to_string(), "+0"),
+            (AtomPrimitive::Charge(-1).to_string(), "-"),
+            (
+                AtomPrimitive::Chirality(Chirality::Class {
+                    class: ChiralClass::Allene,
+                    permutation: None,
+                })
+                .to_string(),
+                "@AL",
+            ),
+            (Chirality::Clockwise.to_string(), "@"),
+            (Chirality::CounterClockwise.to_string(), "@@"),
+            (ChiralClass::SquarePlanar.to_string(), "SP"),
+            (ChiralClass::TrigonalBipyramidal.to_string(), "TB"),
+            (ChiralClass::Octahedral.to_string(), "OH"),
+            (
+                BracketExprTree::Not(Box::new(BracketExprTree::Primitive(
+                    AtomPrimitive::AtomicNumber(1),
+                )))
+                .to_string(),
+                "!#1",
+            ),
+            (
+                BracketExprTree::HighAnd(vec![
+                    BracketExprTree::Primitive(AtomPrimitive::AliphaticAny),
+                    BracketExprTree::Primitive(AtomPrimitive::Degree(Some(4))),
+                ])
+                .to_string(),
+                "A&D4",
+            ),
+            (
+                BracketExprTree::Or(vec![
+                    BracketExprTree::Primitive(AtomPrimitive::AromaticAny),
+                    BracketExprTree::Primitive(AtomPrimitive::RingMembership(Some(2))),
+                ])
+                .to_string(),
+                "a,R2",
+            ),
+            (
+                BracketExprTree::LowAnd(vec![
+                    BracketExprTree::Primitive(AtomPrimitive::Valence(Some(3))),
+                    BracketExprTree::Primitive(AtomPrimitive::Charge(-2)),
+                ])
+                .to_string(),
+                "v3;-2",
+            ),
+            (BondExpr::Elided.to_string(), ""),
+            (
+                BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Any)).to_string(),
+                "~",
+            ),
+            (
+                BondExprTree::Not(Box::new(BondExprTree::Primitive(BondPrimitive::Ring)))
+                    .to_string(),
+                "!@",
+            ),
+            (
+                BondExprTree::HighAnd(vec![
+                    BondExprTree::Primitive(BondPrimitive::Single),
+                    BondExprTree::Primitive(BondPrimitive::Ring),
+                ])
+                .to_string(),
+                "-&@",
+            ),
+            (
+                BondExprTree::Or(vec![
+                    BondExprTree::Primitive(BondPrimitive::Up),
+                    BondExprTree::Primitive(BondPrimitive::Down),
+                ])
+                .to_string(),
+                "/,\\",
+            ),
+            (
+                BondExprTree::LowAnd(vec![
+                    BondExprTree::Primitive(BondPrimitive::Double),
+                    BondExprTree::Primitive(BondPrimitive::Aromatic),
+                ])
+                .to_string(),
+                "=;:",
+            ),
+        ];
+
+        for (actual, expected) in atom_cases {
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn helper_functions_cover_element_and_label_formatting() {
+        assert_eq!(
+            parse_supported_bare_element("Cl"),
+            Some((Element::Cl, false, 2))
+        );
+        assert_eq!(
+            parse_supported_bare_element("Br"),
+            Some((Element::Br, false, 2))
+        );
+        assert_eq!(
+            parse_supported_bare_element("c"),
+            Some((Element::C, true, 1))
+        );
+        assert_eq!(parse_supported_bare_element("Z"), None);
+
+        assert_eq!(
+            parse_supported_bracket_element("as"),
+            Some((Element::As, true, 2))
+        );
+        assert_eq!(
+            parse_supported_bracket_element("se"),
+            Some((Element::Se, true, 2))
+        );
+        assert_eq!(
+            parse_supported_bracket_element("Na"),
+            Some((Element::Na, false, 2))
+        );
+        assert_eq!(
+            parse_supported_bracket_element("Pt"),
+            Some((Element::Pt, false, 2))
+        );
+        assert_eq!(parse_supported_bracket_element("?"), None);
+
+        assert_eq!(
+            parse_aromatic_bare_element("n"),
+            Some((Element::N, true, 1))
+        );
+        assert_eq!(parse_aromatic_bare_element("Na"), None);
+        assert_eq!(
+            parse_aromatic_bracket_element("b"),
+            Some((Element::B, true, 1))
+        );
+        assert_eq!(parse_aromatic_bracket_element("te"), None);
+        assert_eq!(parse_element_symbol("Xe"), Some((Element::Xe, 2)));
+        assert_eq!(parse_element_symbol("C"), Some((Element::C, 1)));
+        assert_eq!(parse_element_symbol("cl"), None);
+
+        assert_eq!(bond_expr_rank(&BondExpr::Elided), (0, String::new()));
+        assert_eq!(
+            bond_expr_rank(&BondExpr::Query(BondExprTree::Primitive(
+                BondPrimitive::Single
+            )))
+            .0,
+            1,
+        );
+        assert_eq!(
+            bond_expr_rank(&BondExpr::Query(BondExprTree::Not(Box::new(
+                BondExprTree::Primitive(BondPrimitive::Ring),
+            ))))
+            .0,
+            2,
+        );
+        assert_eq!(
+            bond_expr_rank(&BondExpr::Query(BondExprTree::HighAnd(vec![
+                BondExprTree::Primitive(BondPrimitive::Single),
+                BondExprTree::Primitive(BondPrimitive::Ring),
+            ])))
+            .0,
+            3,
+        );
+        assert_eq!(
+            bond_expr_rank(&BondExpr::Query(BondExprTree::Or(vec![
+                BondExprTree::Primitive(BondPrimitive::Single),
+                BondExprTree::Primitive(BondPrimitive::Double),
+            ])))
+            .0,
+            4,
+        );
+        assert_eq!(
+            bond_expr_rank(&BondExpr::Query(BondExprTree::LowAnd(vec![
+                BondExprTree::Primitive(BondPrimitive::Single),
+                BondExprTree::Primitive(BondPrimitive::Double),
+            ])))
+            .0,
+            5,
+        );
+    }
+
+    #[test]
+    fn ring_label_writer_formats_all_ranges() {
+        struct RingLabel(u32);
+        impl fmt::Display for RingLabel {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write_ring_label(f, self.0)
+            }
+        }
+
+        assert_eq!(RingLabel(9).to_string(), "9");
+        assert_eq!(RingLabel(10).to_string(), "%10");
+        assert_eq!(RingLabel(100).to_string(), "%(100)");
+    }
+
+    #[test]
+    fn writer_handles_custom_orientation_groups_and_ring_labels() {
+        let atoms = vec![
+            atom(
+                0,
+                0,
+                0,
+                1,
+                AtomExpr::Bare {
+                    element: Element::C,
+                    aromatic: false,
+                },
+            ),
+            atom(
+                1,
+                0,
+                2,
+                3,
+                AtomExpr::Bare {
+                    element: Element::C,
+                    aromatic: false,
+                },
+            ),
+            atom(
+                2,
+                0,
+                4,
+                5,
+                AtomExpr::Bare {
+                    element: Element::C,
+                    aromatic: false,
+                },
+            ),
+            atom(
+                3,
+                1,
+                6,
+                7,
+                AtomExpr::Bare {
+                    element: Element::C,
+                    aromatic: false,
+                },
+            ),
+            atom(
+                4,
+                2,
+                8,
+                9,
+                AtomExpr::Bare {
+                    element: Element::C,
+                    aromatic: false,
+                },
+            ),
+        ];
+        let bonds = vec![
+            bond(0, 1, 0, 1, 2, BondExpr::Elided),
+            bond(
+                1,
+                2,
+                1,
+                3,
+                4,
+                BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Double)),
+            ),
+            bond(
+                2,
+                2,
+                0,
+                5,
+                6,
+                BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Ring)),
+            ),
+        ];
+        let query = QueryMol::from_parts(atoms, bonds, 3, vec![Some(0), Some(0), None]);
+        assert_eq!(query.component_group(0), Some(0));
+        assert_eq!(query.component_group(2), None);
+        assert_eq!(query.to_string(), "(C@1=CC@1.C).C");
+    }
+
+    #[test]
+    fn covers_remaining_display_and_helper_variants() {
+        assert_eq!(AtomPrimitive::Connectivity(Some(7)).to_string(), "X7");
+        assert_eq!(
+            AtomPrimitive::Hydrogen(HydrogenKind::Total, Some(2)).to_string(),
+            "H2"
+        );
+        assert_eq!(
+            AtomPrimitive::Hydrogen(HydrogenKind::Implicit, Some(3)).to_string(),
+            "h3"
+        );
+        assert_eq!(AtomPrimitive::RingSize(Some(4)).to_string(), "r4");
+        assert_eq!(AtomPrimitive::RingConnectivity(Some(2)).to_string(), "x2");
+        assert_eq!(
+            AtomPrimitive::Chirality(Chirality::Class {
+                class: ChiralClass::Tetrahedral,
+                permutation: Some(1),
+            })
+            .to_string(),
+            "@TH1",
+        );
+        assert_eq!(ChiralClass::Tetrahedral.to_string(), "TH");
+        assert_eq!(BondPrimitive::Triple.to_string(), "#");
+
+        assert_eq!(
+            parse_supported_bare_element("F"),
+            Some((Element::F, false, 1))
+        );
+        assert_eq!(
+            parse_supported_bare_element("I"),
+            Some((Element::I, false, 1))
+        );
+        assert_eq!(
+            parse_aromatic_bracket_element("o"),
+            Some((Element::O, true, 1))
+        );
+        assert_eq!(
+            parse_aromatic_bracket_element("p"),
+            Some((Element::P, true, 1))
+        );
+        assert_eq!(
+            parse_aromatic_bracket_element("s"),
+            Some((Element::S, true, 1))
+        );
+        assert_eq!(
+            parse_aromatic_bare_element("b"),
+            Some((Element::B, true, 1))
+        );
+        assert_eq!(
+            parse_aromatic_bare_element("o"),
+            Some((Element::O, true, 1))
+        );
+        assert_eq!(
+            parse_aromatic_bare_element("p"),
+            Some((Element::P, true, 1))
+        );
+        assert_eq!(
+            parse_aromatic_bare_element("s"),
+            Some((Element::S, true, 1))
+        );
+    }
+
+    #[test]
+    fn writer_sorts_multiple_ring_bonds_by_rank_and_label() {
+        let atoms = vec![
+            atom(
+                0,
+                0,
+                0,
+                1,
+                AtomExpr::Bare {
+                    element: Element::C,
+                    aromatic: false,
+                },
+            ),
+            atom(
+                1,
+                0,
+                2,
+                3,
+                AtomExpr::Bare {
+                    element: Element::C,
+                    aromatic: false,
+                },
+            ),
+            atom(
+                2,
+                0,
+                4,
+                5,
+                AtomExpr::Bare {
+                    element: Element::C,
+                    aromatic: false,
+                },
+            ),
+            atom(
+                3,
+                0,
+                6,
+                7,
+                AtomExpr::Bare {
+                    element: Element::C,
+                    aromatic: false,
+                },
+            ),
+        ];
+        let bonds = vec![
+            bond(0, 0, 1, 0, 1, BondExpr::Elided),
+            bond(1, 1, 2, 2, 3, BondExpr::Elided),
+            bond(2, 2, 3, 4, 5, BondExpr::Elided),
+            bond(
+                3,
+                0,
+                2,
+                6,
+                7,
+                BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Single)),
+            ),
+            bond(
+                4,
+                1,
+                3,
+                8,
+                9,
+                BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Double)),
+            ),
+        ];
+        let query = QueryMol::from_parts(atoms, bonds, 1, vec![None]);
+        assert_eq!(query.to_string(), "C-1C=2C-1C=2");
+    }
 }

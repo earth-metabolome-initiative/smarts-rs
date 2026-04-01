@@ -1,4 +1,3 @@
-use crate::span::Span;
 use thiserror::Error;
 
 /// High-level reasons why SMARTS parsing can fail.
@@ -53,30 +52,36 @@ pub enum UnsupportedFeature {
     RingClosure,
 }
 
-/// Structured parse error carrying a machine-readable kind and optional span.
+/// Structured parse error carrying a machine-readable kind.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[error("{kind}")]
 pub struct SmartsParseError {
     kind: SmartsParseErrorKind,
-    span: Option<Span>,
+}
+
+impl UnsupportedFeature {
+    /// Returns a stable machine-readable error code for one unsupported feature.
+    #[inline]
+    #[must_use]
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::AtomMap => "unsupported_atom_map",
+            Self::AtomPrimitive => "unsupported_atom_primitive",
+            Self::Branch => "unsupported_branch",
+            Self::ExplicitBond => "unsupported_explicit_bond",
+            Self::Reaction => "unsupported_reaction",
+            Self::RecursiveSmarts => "unsupported_recursive_smarts",
+            Self::RingClosure => "unsupported_ring_closure",
+        }
+    }
 }
 
 impl SmartsParseError {
-    /// Creates an error without span information.
+    /// Creates an error.
     #[inline]
     #[must_use]
     pub fn new(kind: SmartsParseErrorKind) -> Self {
-        Self { kind, span: None }
-    }
-
-    /// Creates an error tied to a source span.
-    #[inline]
-    #[must_use]
-    pub fn with_span(kind: SmartsParseErrorKind, span: Span) -> Self {
-        Self {
-            kind,
-            span: Some(span),
-        }
+        Self { kind }
     }
 
     /// Returns the structured error kind.
@@ -84,13 +89,6 @@ impl SmartsParseError {
     #[must_use]
     pub fn kind(&self) -> SmartsParseErrorKind {
         self.kind
-    }
-
-    /// Returns the source span associated with the error, when available.
-    #[inline]
-    #[must_use]
-    pub fn span(&self) -> Option<Span> {
-        self.span
     }
 
     /// Returns a stable machine-readable error code.
@@ -104,27 +102,152 @@ impl SmartsParseError {
             SmartsParseErrorKind::ConflictingRingClosureBond => "conflicting_ring_closure_bond",
             SmartsParseErrorKind::UnclosedRingClosure => "unclosed_ring_closure",
             SmartsParseErrorKind::UnterminatedBracketAtom => "unterminated_bracket_atom",
-            SmartsParseErrorKind::UnsupportedFeature(UnsupportedFeature::AtomMap) => {
-                "unsupported_atom_map"
-            }
-            SmartsParseErrorKind::UnsupportedFeature(UnsupportedFeature::AtomPrimitive) => {
-                "unsupported_atom_primitive"
-            }
-            SmartsParseErrorKind::UnsupportedFeature(UnsupportedFeature::Branch) => {
-                "unsupported_branch"
-            }
-            SmartsParseErrorKind::UnsupportedFeature(UnsupportedFeature::ExplicitBond) => {
-                "unsupported_explicit_bond"
-            }
-            SmartsParseErrorKind::UnsupportedFeature(UnsupportedFeature::Reaction) => {
-                "unsupported_reaction"
-            }
-            SmartsParseErrorKind::UnsupportedFeature(UnsupportedFeature::RecursiveSmarts) => {
-                "unsupported_recursive_smarts"
-            }
-            SmartsParseErrorKind::UnsupportedFeature(UnsupportedFeature::RingClosure) => {
-                "unsupported_ring_closure"
-            }
+            SmartsParseErrorKind::UnsupportedFeature(feature) => feature.code(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::string::ToString;
+
+    #[test]
+    fn displays_error_kinds_and_codes() {
+        let cases = [
+            (
+                SmartsParseErrorKind::EmptyInput,
+                "SMARTS input is empty",
+                "empty_input",
+            ),
+            (
+                SmartsParseErrorKind::UnexpectedEndOfInput,
+                "unexpected end of SMARTS input",
+                "unexpected_end_of_input",
+            ),
+            (
+                SmartsParseErrorKind::UnexpectedCharacter('x'),
+                "unexpected character `x`",
+                "unexpected_character",
+            ),
+            (
+                SmartsParseErrorKind::ConflictingRingClosureBond,
+                "conflicting bond specifications for ring closure",
+                "conflicting_ring_closure_bond",
+            ),
+            (
+                SmartsParseErrorKind::UnclosedRingClosure,
+                "ring closure was opened but not closed",
+                "unclosed_ring_closure",
+            ),
+            (
+                SmartsParseErrorKind::UnterminatedBracketAtom,
+                "unterminated bracket atom",
+                "unterminated_bracket_atom",
+            ),
+            (
+                SmartsParseErrorKind::UnsupportedFeature(UnsupportedFeature::AtomMap),
+                "unsupported SMARTS feature: atom maps",
+                "unsupported_atom_map",
+            ),
+            (
+                SmartsParseErrorKind::UnsupportedFeature(UnsupportedFeature::AtomPrimitive),
+                "unsupported SMARTS feature: atom primitive",
+                "unsupported_atom_primitive",
+            ),
+            (
+                SmartsParseErrorKind::UnsupportedFeature(UnsupportedFeature::Branch),
+                "unsupported SMARTS feature: branches",
+                "unsupported_branch",
+            ),
+            (
+                SmartsParseErrorKind::UnsupportedFeature(UnsupportedFeature::ExplicitBond),
+                "unsupported SMARTS feature: explicit bond operators",
+                "unsupported_explicit_bond",
+            ),
+            (
+                SmartsParseErrorKind::UnsupportedFeature(UnsupportedFeature::Reaction),
+                "unsupported SMARTS feature: reaction SMARTS",
+                "unsupported_reaction",
+            ),
+            (
+                SmartsParseErrorKind::UnsupportedFeature(UnsupportedFeature::RecursiveSmarts),
+                "unsupported SMARTS feature: recursive SMARTS",
+                "unsupported_recursive_smarts",
+            ),
+            (
+                SmartsParseErrorKind::UnsupportedFeature(UnsupportedFeature::RingClosure),
+                "unsupported SMARTS feature: ring closures",
+                "unsupported_ring_closure",
+            ),
+        ];
+
+        for (kind, display, code) in cases {
+            let error = SmartsParseError::new(kind);
+            assert_eq!(kind.to_string(), display);
+            assert_eq!(error.to_string(), display);
+            assert_eq!(error.code(), code);
+            assert_eq!(error.kind(), kind);
+        }
+    }
+
+    #[test]
+    fn constructs_error_without_span_metadata() {
+        let error = SmartsParseError::new(SmartsParseErrorKind::UnexpectedCharacter(']'));
+        assert_eq!(error.kind(), SmartsParseErrorKind::UnexpectedCharacter(']'));
+        assert_eq!(error.code(), "unexpected_character");
+    }
+
+    #[test]
+    fn unsupported_feature_codes_are_individually_covered() {
+        assert_eq!(
+            SmartsParseError::new(SmartsParseErrorKind::UnsupportedFeature(
+                UnsupportedFeature::AtomMap,
+            ))
+            .code(),
+            "unsupported_atom_map"
+        );
+        assert_eq!(
+            SmartsParseError::new(SmartsParseErrorKind::UnsupportedFeature(
+                UnsupportedFeature::AtomPrimitive,
+            ))
+            .code(),
+            "unsupported_atom_primitive"
+        );
+        assert_eq!(
+            SmartsParseError::new(SmartsParseErrorKind::UnsupportedFeature(
+                UnsupportedFeature::Branch,
+            ))
+            .code(),
+            "unsupported_branch"
+        );
+        assert_eq!(
+            SmartsParseError::new(SmartsParseErrorKind::UnsupportedFeature(
+                UnsupportedFeature::ExplicitBond,
+            ))
+            .code(),
+            "unsupported_explicit_bond"
+        );
+        assert_eq!(
+            SmartsParseError::new(SmartsParseErrorKind::UnsupportedFeature(
+                UnsupportedFeature::Reaction,
+            ))
+            .code(),
+            "unsupported_reaction"
+        );
+        assert_eq!(
+            SmartsParseError::new(SmartsParseErrorKind::UnsupportedFeature(
+                UnsupportedFeature::RecursiveSmarts,
+            ))
+            .code(),
+            "unsupported_recursive_smarts"
+        );
+        assert_eq!(
+            SmartsParseError::new(SmartsParseErrorKind::UnsupportedFeature(
+                UnsupportedFeature::RingClosure,
+            ))
+            .code(),
+            "unsupported_ring_closure"
+        );
     }
 }

@@ -14,7 +14,6 @@ mod bracket;
 mod error;
 mod parse;
 mod query;
-mod span;
 
 pub use bracket::{
     parse_bracket_text as fuzz_parse_bracket_text, BracketParseError as FuzzBracketParseError,
@@ -27,7 +26,6 @@ pub use query::{
     BracketExprTree, ChiralClass, Chirality, ComponentGroupId, ComponentId, HydrogenKind,
     QueryAtom, QueryBond, QueryMol,
 };
-pub use span::Span;
 
 #[cfg(test)]
 mod tests {

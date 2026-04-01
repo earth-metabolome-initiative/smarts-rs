@@ -9,7 +9,7 @@ use crate::query::{
     parse_supported_bare_element, AtomExpr, BondExpr, BondExprTree, BondPrimitive, QueryAtom,
     QueryBond, QueryMol,
 };
-use crate::{SmartsParseError, SmartsParseErrorKind, Span};
+use crate::{SmartsParseError, SmartsParseErrorKind};
 
 /// Parses a SMARTS pattern into a query graph.
 ///
@@ -38,7 +38,6 @@ struct Parser<'a> {
 struct PendingRingClosure {
     atom_id: usize,
     explicit_bond: Option<BondExpr>,
-    span: Span,
 }
 
 impl<'a> Parser<'a> {
@@ -60,12 +59,12 @@ impl<'a> Parser<'a> {
     fn parse(mut self) -> Result<QueryMol, SmartsParseError> {
         self.skip_whitespace();
         if self.is_eof() {
-            return Err(self.error(SmartsParseErrorKind::EmptyInput, Span::new(0, 0)));
+            return Err(self.error(SmartsParseErrorKind::EmptyInput));
         }
         self.parse_scope(false)?;
 
-        if let Some(pending) = self.open_ring_closures.values().next() {
-            return Err(self.error(SmartsParseErrorKind::UnclosedRingClosure, pending.span));
+        if self.open_ring_closures.values().next().is_some() {
+            return Err(self.error(SmartsParseErrorKind::UnclosedRingClosure));
         }
 
         Ok(QueryMol::from_parts(
@@ -85,10 +84,7 @@ impl<'a> Parser<'a> {
 
             if self.is_eof() {
                 if stop_at_group_end {
-                    return Err(self.error(
-                        SmartsParseErrorKind::UnexpectedEndOfInput,
-                        Span::new(self.input.len(), self.input.len()),
-                    ));
+                    return Err(self.error(SmartsParseErrorKind::UnexpectedEndOfInput));
                 }
                 break;
             }
@@ -130,10 +126,7 @@ impl<'a> Parser<'a> {
         }
 
         if self.current_atom.is_none() && parsed_any && !just_closed_group {
-            return Err(self.error(
-                SmartsParseErrorKind::UnexpectedEndOfInput,
-                Span::new(self.input.len(), self.input.len()),
-            ));
+            return Err(self.error(SmartsParseErrorKind::UnexpectedEndOfInput));
         }
 
         Ok(())
@@ -204,22 +197,16 @@ impl<'a> Parser<'a> {
 
         self.skip_whitespace();
         if self.is_eof() {
-            return Err(self.error(
-                SmartsParseErrorKind::UnexpectedEndOfInput,
-                Span::new(self.input.len(), self.input.len()),
-            ));
+            return Err(self.error(SmartsParseErrorKind::UnexpectedEndOfInput));
         }
 
         self.current_atom = Some(branch_root);
         let mut saw_content = false;
 
-        loop {
+        while !self.is_eof() {
             self.skip_whitespace();
             if self.is_eof() {
-                return Err(self.error(
-                    SmartsParseErrorKind::UnexpectedEndOfInput,
-                    Span::new(self.input.len(), self.input.len()),
-                ));
+                return Err(self.error(SmartsParseErrorKind::UnexpectedEndOfInput));
             }
 
             match self.peek() {
@@ -231,9 +218,7 @@ impl<'a> Parser<'a> {
                     self.current_atom = outer_current;
                     return Ok(());
                 }
-                '.' => {
-                    return Err(self.error_here(SmartsParseErrorKind::UnexpectedCharacter('.')));
-                }
+                '.' => return Err(self.error_here(SmartsParseErrorKind::UnexpectedCharacter('.'))),
                 '(' if !saw_content => {
                     return Err(self.error_here(SmartsParseErrorKind::UnexpectedCharacter('(')));
                 }
@@ -247,6 +232,8 @@ impl<'a> Parser<'a> {
                 }
             }
         }
+
+        Err(self.error(SmartsParseErrorKind::UnexpectedEndOfInput))
     }
 
     fn parse_component_separator(&mut self) {
@@ -256,21 +243,16 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_bonded_item(&mut self) -> Result<(), SmartsParseError> {
-        let bond_start = self.pos;
         let bond = self.parse_bond_expr()?;
-        let bond_span = Span::new(bond_start, self.pos);
 
         self.skip_whitespace();
         if self.is_eof() {
-            return Err(self.error(
-                SmartsParseErrorKind::UnexpectedEndOfInput,
-                Span::new(self.input.len(), self.input.len()),
-            ));
+            return Err(self.error(SmartsParseErrorKind::UnexpectedEndOfInput));
         }
 
         match self.peek() {
-            '%' => self.parse_ring_closure(Some((bond, bond_span))),
-            ch if ch.is_ascii_digit() => self.parse_ring_closure(Some((bond, bond_span))),
+            '%' => self.parse_ring_closure(Some(bond)),
+            ch if ch.is_ascii_digit() => self.parse_ring_closure(Some(bond)),
             _ => self.parse_atom(Some(bond)),
         }
     }
@@ -281,10 +263,7 @@ impl<'a> Parser<'a> {
 
     fn parse_bond_low_and(&mut self) -> Result<BondExprTree, SmartsParseError> {
         let mut terms = vec![self.parse_bond_or()?];
-        loop {
-            if self.is_eof() || self.peek() != ';' {
-                break;
-            }
+        while !self.is_eof() && self.peek() == ';' {
             self.pos += 1;
             terms.push(self.parse_bond_or()?);
         }
@@ -293,10 +272,7 @@ impl<'a> Parser<'a> {
 
     fn parse_bond_or(&mut self) -> Result<BondExprTree, SmartsParseError> {
         let mut terms = vec![self.parse_bond_high_and()?];
-        loop {
-            if self.is_eof() || self.peek() != ',' {
-                break;
-            }
+        while !self.is_eof() && self.peek() == ',' {
             self.pos += 1;
             terms.push(self.parse_bond_high_and()?);
         }
@@ -305,10 +281,7 @@ impl<'a> Parser<'a> {
 
     fn parse_bond_high_and(&mut self) -> Result<BondExprTree, SmartsParseError> {
         let mut terms = vec![self.parse_bond_unary()?];
-        loop {
-            if self.is_eof() {
-                break;
-            }
+        while !self.is_eof() {
             if self.peek() == '&' {
                 self.pos += 1;
                 terms.push(self.parse_bond_unary()?);
@@ -325,10 +298,7 @@ impl<'a> Parser<'a> {
 
     fn parse_bond_unary(&mut self) -> Result<BondExprTree, SmartsParseError> {
         if self.is_eof() {
-            return Err(self.error(
-                SmartsParseErrorKind::UnexpectedEndOfInput,
-                Span::new(self.input.len(), self.input.len()),
-            ));
+            return Err(self.error(SmartsParseErrorKind::UnexpectedEndOfInput));
         }
 
         if self.peek() == '!' {
@@ -359,32 +329,23 @@ impl<'a> Parser<'a> {
 
     fn parse_ring_closure(
         &mut self,
-        explicit_bond: Option<(BondExpr, Span)>,
+        explicit_bond: Option<BondExpr>,
     ) -> Result<(), SmartsParseError> {
         let current_atom = self
             .current_atom
             .expect("ring closure without current atom");
-        let (label, label_span) = self.parse_ring_label()?;
+        let label = self.parse_ring_label()?;
 
-        let explicit_bond_expr = explicit_bond.as_ref().map(|(bond, _)| bond.clone());
-        let pending_span = explicit_bond.as_ref().map_or(label_span, |(_, span)| {
-            Span::new(span.start, label_span.end)
-        });
+        let explicit_bond_expr = explicit_bond;
 
         if let Some(open) = self.open_ring_closures.remove(&label) {
-            let bond_expr =
-                resolve_ring_bond(open.explicit_bond, explicit_bond_expr).ok_or_else(|| {
-                    self.error(
-                        SmartsParseErrorKind::ConflictingRingClosureBond,
-                        pending_span,
-                    )
-                })?;
+            let bond_expr = resolve_ring_bond(open.explicit_bond, explicit_bond_expr)
+                .ok_or_else(|| self.error(SmartsParseErrorKind::ConflictingRingClosureBond))?;
 
             self.bonds.push(QueryBond {
                 id: self.bonds.len(),
                 src: open.atom_id,
                 dst: current_atom,
-                span: Span::new(open.span.start, label_span.end),
                 expr: bond_expr,
             });
         } else {
@@ -393,7 +354,6 @@ impl<'a> Parser<'a> {
                 PendingRingClosure {
                     atom_id: current_atom,
                     explicit_bond: explicit_bond_expr,
-                    span: pending_span,
                 },
             );
         }
@@ -401,20 +361,15 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    fn parse_ring_label(&mut self) -> Result<(u32, Span), SmartsParseError> {
-        let start = self.pos;
+    fn parse_ring_label(&mut self) -> Result<u32, SmartsParseError> {
         match self.peek() {
             '%' => {
                 self.pos += 1;
                 if self.is_eof() {
-                    return Err(self.error(
-                        SmartsParseErrorKind::UnexpectedEndOfInput,
-                        Span::new(self.input.len(), self.input.len()),
-                    ));
+                    return Err(self.error(SmartsParseErrorKind::UnexpectedEndOfInput));
                 }
 
                 if self.peek() == '(' {
-                    let percent_start = start;
                     self.pos += 1;
                     let digits_start = self.pos;
                     let mut digit_count = 0usize;
@@ -430,10 +385,7 @@ impl<'a> Parser<'a> {
 
                     if digits_start == self.pos {
                         if self.is_eof() {
-                            return Err(self.error(
-                                SmartsParseErrorKind::UnexpectedEndOfInput,
-                                Span::new(self.input.len(), self.input.len()),
-                            ));
+                            return Err(self.error(SmartsParseErrorKind::UnexpectedEndOfInput));
                         }
                         return Err(
                             self.error_here(SmartsParseErrorKind::UnexpectedCharacter(self.peek()))
@@ -441,10 +393,7 @@ impl<'a> Parser<'a> {
                     }
 
                     if self.is_eof() {
-                        return Err(self.error(
-                            SmartsParseErrorKind::UnexpectedEndOfInput,
-                            Span::new(self.input.len(), self.input.len()),
-                        ));
+                        return Err(self.error(SmartsParseErrorKind::UnexpectedEndOfInput));
                     }
 
                     if self.peek() != ')' {
@@ -453,17 +402,11 @@ impl<'a> Parser<'a> {
                         );
                     }
 
-                    let label =
-                        self.input[digits_start..self.pos]
-                            .parse::<u32>()
-                            .map_err(|_| {
-                                self.error(
-                                    SmartsParseErrorKind::UnexpectedCharacter('%'),
-                                    Span::new(percent_start, self.pos),
-                                )
-                            })?;
+                    let label = self.input[digits_start..self.pos]
+                        .parse::<u32>()
+                        .map_err(|_| self.error(SmartsParseErrorKind::UnexpectedCharacter('%')))?;
                     self.pos += 1;
-                    Ok((label, Span::new(percent_start, self.pos)))
+                    Ok(label)
                 } else {
                     if !self.peek().is_ascii_digit() || self.peek() == '0' {
                         return Err(
@@ -474,10 +417,7 @@ impl<'a> Parser<'a> {
                     self.pos += 1;
 
                     if self.is_eof() {
-                        return Err(self.error(
-                            SmartsParseErrorKind::UnexpectedEndOfInput,
-                            Span::new(self.input.len(), self.input.len()),
-                        ));
+                        return Err(self.error(SmartsParseErrorKind::UnexpectedEndOfInput));
                     }
 
                     if !self.peek().is_ascii_digit() {
@@ -494,23 +434,19 @@ impl<'a> Parser<'a> {
                         );
                     }
 
-                    Ok((tens * 10 + ones, Span::new(start, self.pos)))
+                    Ok(tens * 10 + ones)
                 }
             }
             ch if ch.is_ascii_digit() => {
                 self.pos += 1;
-                Ok((
-                    ch.to_digit(10).expect("ascii digit"),
-                    Span::new(start, self.pos),
-                ))
+                Ok(ch.to_digit(10).expect("ascii digit"))
             }
             other => Err(self.error_here(SmartsParseErrorKind::UnexpectedCharacter(other))),
         }
     }
 
     fn parse_atom(&mut self, incoming_bond: Option<BondExpr>) -> Result<(), SmartsParseError> {
-        let bond_start = self.pos;
-        let (expr, span) = match self.peek() {
+        let expr = match self.peek() {
             '[' => self.parse_bracket_atom()?,
             _ => self.parse_bare_atom()?,
         };
@@ -519,25 +455,15 @@ impl<'a> Parser<'a> {
         let atom = QueryAtom {
             id: atom_id,
             component: self.current_component,
-            span,
             expr,
         };
 
         if let Some(prev_id) = self.current_atom {
             let bond_expr = incoming_bond.unwrap_or(BondExpr::Elided);
-            let bond_span = match bond_expr {
-                BondExpr::Elided => {
-                    let prev_span = self.atoms[prev_id].span;
-                    Span::new(prev_span.end, span.start)
-                }
-                _ => Span::new(bond_start.saturating_sub(1), bond_start),
-            };
-
             self.bonds.push(QueryBond {
                 id: self.bonds.len(),
                 src: prev_id,
                 dst: atom_id,
-                span: bond_span,
                 expr: bond_expr,
             });
         }
@@ -554,7 +480,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_bracket_atom(&mut self) -> Result<(AtomExpr, Span), SmartsParseError> {
+    fn parse_bracket_atom(&mut self) -> Result<AtomExpr, SmartsParseError> {
         let start = self.pos;
         self.pos += 1;
         let mut recursive_depth = 0usize;
@@ -584,35 +510,28 @@ impl<'a> Parser<'a> {
         }
 
         if self.is_eof() {
-            return Err(self.error(
-                SmartsParseErrorKind::UnterminatedBracketAtom,
-                Span::new(start, self.input.len()),
-            ));
+            return Err(self.error(SmartsParseErrorKind::UnterminatedBracketAtom));
         }
 
         let end = self.pos;
         let text = &self.input[start + 1..end];
-        if let Some(index) = find_atom_map(text) {
-            let span = Span::new(start + 1 + index, start + 1 + index + 1);
-            return Err(self.error(
-                SmartsParseErrorKind::UnsupportedFeature(UnsupportedFeature::AtomMap),
-                span,
-            ));
+        if find_atom_map(text).is_some() {
+            return Err(self.error(SmartsParseErrorKind::UnsupportedFeature(
+                UnsupportedFeature::AtomMap,
+            )));
         }
-        let bracket =
-            parse_bracket_text(text).map_err(|err| self.map_bracket_error(&err, start + 1))?;
+        let bracket = parse_bracket_text(text).map_err(|err| self.map_bracket_error(&err))?;
         self.pos += 1;
 
-        Ok((AtomExpr::Bracket(bracket), Span::new(start, self.pos)))
+        Ok(AtomExpr::Bracket(bracket))
     }
 
-    fn parse_bare_atom(&mut self) -> Result<(AtomExpr, Span), SmartsParseError> {
-        let start = self.pos;
+    fn parse_bare_atom(&mut self) -> Result<AtomExpr, SmartsParseError> {
         let remaining = &self.input[self.pos..];
 
         if remaining.starts_with('*') {
             self.pos += 1;
-            return Ok((AtomExpr::Wildcard, Span::new(start, self.pos)));
+            return Ok(AtomExpr::Wildcard);
         }
 
         let Some((element, aromatic, width)) = parse_supported_bare_element(remaining) else {
@@ -620,10 +539,7 @@ impl<'a> Parser<'a> {
         };
 
         self.pos += width;
-        Ok((
-            AtomExpr::Bare { element, aromatic },
-            Span::new(start, self.pos),
-        ))
+        Ok(AtomExpr::Bare { element, aromatic })
     }
 
     fn skip_whitespace(&mut self) {
@@ -644,21 +560,14 @@ impl<'a> Parser<'a> {
     }
 
     fn error_here(&self, kind: SmartsParseErrorKind) -> SmartsParseError {
-        if self.is_eof() {
-            return self.error(kind, Span::new(self.pos, self.pos));
-        }
-
-        let width = self.peek().len_utf8();
-        self.error(kind, Span::new(self.pos, self.pos + width))
+        self.error(kind)
     }
 
-    fn error(&self, kind: SmartsParseErrorKind, span: Span) -> SmartsParseError {
-        SmartsParseError::with_span(kind, span)
+    fn error(&self, kind: SmartsParseErrorKind) -> SmartsParseError {
+        SmartsParseError::new(kind)
     }
-    fn map_bracket_error(&self, err: &BracketParseError, offset: usize) -> SmartsParseError {
-        let span = err.span();
-        let absolute_span = Span::new(offset + span.start, offset + span.end);
 
+    fn map_bracket_error(&self, err: &BracketParseError) -> SmartsParseError {
         let kind = match err.kind() {
             BracketParseErrorKind::Empty | BracketParseErrorKind::UnexpectedEnd => {
                 SmartsParseErrorKind::UnexpectedEndOfInput
@@ -672,7 +581,7 @@ impl<'a> Parser<'a> {
             }
         };
 
-        SmartsParseError::with_span(kind, absolute_span)
+        SmartsParseError::new(kind)
     }
 }
 
@@ -731,4 +640,341 @@ fn is_supported_explicit_bond_char(ch: char) -> bool {
 
 fn starts_implicit_bond_and(ch: char) -> bool {
     matches!(ch, '!' | '-' | '=' | '#' | ':' | '~' | '/' | '\\' | '@')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bracket::parse_bracket_text;
+    use alloc::string::ToString;
+
+    #[test]
+    fn helper_functions_cover_internal_bond_and_atom_map_logic() {
+        let single = BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Single));
+        let double = BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Double));
+
+        assert_eq!(resolve_ring_bond(None, None), Some(BondExpr::Elided));
+        assert_eq!(
+            resolve_ring_bond(Some(single.clone()), None),
+            Some(single.clone())
+        );
+        assert_eq!(
+            resolve_ring_bond(None, Some(double.clone())),
+            Some(double.clone())
+        );
+        assert_eq!(
+            resolve_ring_bond(Some(single.clone()), Some(single.clone())),
+            Some(single.clone())
+        );
+        assert_eq!(resolve_ring_bond(Some(single), Some(double)), None);
+
+        assert_eq!(
+            collapse_bond_logic(
+                vec![BondExprTree::Primitive(BondPrimitive::Ring)],
+                BondExprTree::Or,
+            ),
+            BondExprTree::Primitive(BondPrimitive::Ring)
+        );
+        assert_eq!(
+            collapse_bond_logic(
+                vec![
+                    BondExprTree::Primitive(BondPrimitive::Single),
+                    BondExprTree::Primitive(BondPrimitive::Double),
+                ],
+                BondExprTree::Or,
+            ),
+            BondExprTree::Or(vec![
+                BondExprTree::Primitive(BondPrimitive::Single),
+                BondExprTree::Primitive(BondPrimitive::Double),
+            ])
+        );
+
+        assert_eq!(find_atom_map("C:1"), Some(1));
+        assert_eq!(find_atom_map("$(C:1)"), None);
+        assert_eq!(find_atom_map("$(C(C):1):2"), Some(9));
+
+        for ch in ['!', '-', '=', '#', ':', '~', '/', '\\', '@'] {
+            assert!(is_supported_explicit_bond_char(ch));
+            assert!(starts_implicit_bond_and(ch));
+        }
+        assert!(!is_supported_explicit_bond_char('C'));
+        assert!(!starts_implicit_bond_and('C'));
+    }
+
+    #[test]
+    fn parser_reports_component_and_branch_error_edges() {
+        assert_eq!(
+            parse_smarts("(").unwrap_err().kind(),
+            SmartsParseErrorKind::UnexpectedEndOfInput
+        );
+        assert_eq!(
+            parse_smarts("()").unwrap_err().kind(),
+            SmartsParseErrorKind::UnexpectedCharacter(')')
+        );
+        assert_eq!(
+            parse_smarts("(C)X").unwrap_err().kind(),
+            SmartsParseErrorKind::UnexpectedCharacter('X')
+        );
+        assert_eq!(
+            parse_smarts(")").unwrap_err().kind(),
+            SmartsParseErrorKind::UnsupportedFeature(UnsupportedFeature::Branch)
+        );
+        assert_eq!(
+            parse_smarts(">").unwrap_err().kind(),
+            SmartsParseErrorKind::UnsupportedFeature(UnsupportedFeature::Reaction)
+        );
+        assert_eq!(
+            parse_smarts("%").unwrap_err().kind(),
+            SmartsParseErrorKind::UnexpectedCharacter('%')
+        );
+        assert_eq!(
+            parse_smarts("-C").unwrap_err().kind(),
+            SmartsParseErrorKind::UnexpectedCharacter('-')
+        );
+        assert_eq!(
+            parse_smarts("1").unwrap_err().kind(),
+            SmartsParseErrorKind::UnexpectedCharacter('1')
+        );
+        assert_eq!(
+            parse_smarts(".").unwrap_err().kind(),
+            SmartsParseErrorKind::UnexpectedCharacter('.')
+        );
+        assert_eq!(
+            parse_smarts("C)").unwrap_err().kind(),
+            SmartsParseErrorKind::UnsupportedFeature(UnsupportedFeature::Branch)
+        );
+        assert_eq!(
+            parse_smarts("C>").unwrap_err().kind(),
+            SmartsParseErrorKind::UnsupportedFeature(UnsupportedFeature::Reaction)
+        );
+        assert_eq!(
+            parse_smarts("C(").unwrap_err().kind(),
+            SmartsParseErrorKind::UnexpectedEndOfInput
+        );
+        assert_eq!(
+            parse_smarts("C(C").unwrap_err().kind(),
+            SmartsParseErrorKind::UnexpectedEndOfInput
+        );
+        assert_eq!(
+            parse_smarts("C()").unwrap_err().kind(),
+            SmartsParseErrorKind::UnexpectedCharacter(')')
+        );
+        assert_eq!(
+            parse_smarts("C(.)").unwrap_err().kind(),
+            SmartsParseErrorKind::UnexpectedCharacter('.')
+        );
+        assert_eq!(
+            parse_smarts("C((").unwrap_err().kind(),
+            SmartsParseErrorKind::UnexpectedCharacter('(')
+        );
+        assert_eq!(
+            parse_smarts("C-").unwrap_err().kind(),
+            SmartsParseErrorKind::UnexpectedEndOfInput
+        );
+        assert_eq!(
+            parse_smarts("C!").unwrap_err().kind(),
+            SmartsParseErrorKind::UnexpectedEndOfInput
+        );
+        assert_eq!(
+            parse_smarts("C[").unwrap_err().kind(),
+            SmartsParseErrorKind::UnterminatedBracketAtom
+        );
+        assert_eq!(
+            parse_smarts("[[C]]").unwrap_err().kind(),
+            SmartsParseErrorKind::UnexpectedCharacter('[')
+        );
+        assert_eq!(parse_smarts(" * ").unwrap().to_string(), "*");
+    }
+
+    #[test]
+    fn parser_reports_ring_label_error_edges() {
+        assert_eq!(
+            parse_smarts("C%").unwrap_err().kind(),
+            SmartsParseErrorKind::UnexpectedEndOfInput
+        );
+        assert_eq!(
+            parse_smarts("C%(").unwrap_err().kind(),
+            SmartsParseErrorKind::UnexpectedEndOfInput
+        );
+        assert_eq!(
+            parse_smarts("C%(1").unwrap_err().kind(),
+            SmartsParseErrorKind::UnexpectedEndOfInput
+        );
+        assert_eq!(
+            parse_smarts("C%(1x").unwrap_err().kind(),
+            SmartsParseErrorKind::UnexpectedCharacter('x')
+        );
+        assert_eq!(
+            parse_smarts("C%1").unwrap_err().kind(),
+            SmartsParseErrorKind::UnexpectedEndOfInput
+        );
+        assert_eq!(
+            parse_smarts("C%1x").unwrap_err().kind(),
+            SmartsParseErrorKind::UnexpectedCharacter('x')
+        );
+        assert_eq!(
+            parse_smarts("C%123").unwrap_err().kind(),
+            SmartsParseErrorKind::UnexpectedCharacter('3')
+        );
+    }
+
+    #[test]
+    fn parser_helper_methods_cover_eof_and_bracket_error_mapping() {
+        let parser = Parser::new("");
+        let eof_error = parser.error_here(SmartsParseErrorKind::UnexpectedEndOfInput);
+        assert_eq!(eof_error.kind(), SmartsParseErrorKind::UnexpectedEndOfInput);
+
+        let mapped_empty = parser.map_bracket_error(&parse_bracket_text("").unwrap_err());
+        assert_eq!(
+            mapped_empty.kind(),
+            SmartsParseErrorKind::UnexpectedEndOfInput
+        );
+
+        let mapped_unexpected_end =
+            parser.map_bracket_error(&parse_bracket_text("$()").unwrap_err());
+        assert_eq!(
+            mapped_unexpected_end.kind(),
+            SmartsParseErrorKind::UnexpectedEndOfInput
+        );
+
+        let mapped_recursive = parser.map_bracket_error(&parse_bracket_text("$(1)").unwrap_err());
+        assert_eq!(
+            mapped_recursive.kind(),
+            SmartsParseErrorKind::UnexpectedCharacter('1')
+        );
+
+        let mapped_unsupported = parser.map_bracket_error(&parse_bracket_text("z").unwrap_err());
+        assert_eq!(
+            mapped_unsupported.kind(),
+            SmartsParseErrorKind::UnsupportedFeature(UnsupportedFeature::AtomPrimitive)
+        );
+    }
+
+    #[test]
+    fn parser_covers_additional_success_and_error_paths() {
+        let grouped = parse_smarts("(C.C)").unwrap();
+        assert_eq!(grouped.to_string(), "(C.C)");
+
+        let disjoint = parse_smarts("C.C").unwrap();
+        assert_eq!(disjoint.component_count(), 2);
+
+        let adjacent = parse_smarts("CC").unwrap();
+        assert_eq!(adjacent.bonds()[0].expr, BondExpr::Elided);
+
+        let nested_branch = parse_smarts("C(C(C))").unwrap();
+        assert_eq!(nested_branch.atom_count(), 3);
+        assert_eq!(nested_branch.bond_count(), 2);
+
+        let explicit_ring = parse_smarts("C-1CC1").unwrap();
+        assert_eq!(explicit_ring.to_string(), "C-1CC-1");
+
+        let bonded_low_and = parse_smarts("C-;:N").unwrap();
+        assert_eq!(bonded_low_and.to_string(), "C-;:N");
+
+        let bonded_or = parse_smarts("C-,=N").unwrap();
+        assert_eq!(bonded_or.to_string(), "C-,=N");
+
+        let bonded_high_and = parse_smarts("C-&@N").unwrap();
+        assert_eq!(bonded_high_and.to_string(), "C-&@N");
+
+        let recursive_nested = parse_smarts("[$((C))]").unwrap();
+        assert_eq!(recursive_nested.to_string(), "[$((C))]");
+
+        assert_eq!(
+            parse_smarts("C.").unwrap_err().kind(),
+            SmartsParseErrorKind::UnexpectedEndOfInput
+        );
+        assert_eq!(
+            parse_smarts("C%(x)").unwrap_err().kind(),
+            SmartsParseErrorKind::UnexpectedCharacter('x')
+        );
+        assert_eq!(
+            parse_smarts("C?").unwrap_err().kind(),
+            SmartsParseErrorKind::UnexpectedCharacter('?')
+        );
+        assert_eq!(
+            parse_smarts("C-?").unwrap_err().kind(),
+            SmartsParseErrorKind::UnexpectedCharacter('?')
+        );
+    }
+
+    #[test]
+    fn direct_parser_methods_cover_internal_branches() {
+        let mut parser = Parser::new("C");
+        parser.parse_scope(false).unwrap();
+        assert_eq!(parser.atoms.len(), 1);
+
+        let mut parser = Parser::new(".");
+        parser.current_atom = Some(0);
+        parser.parse_component_continuation().unwrap();
+        assert_eq!(parser.current_component, 1);
+        assert_eq!(parser.current_atom, None);
+
+        let mut parser = Parser::new("(C)");
+        parser.atoms.push(QueryAtom {
+            id: 0,
+            component: 0,
+            expr: AtomExpr::Bare {
+                element: elements_rs::Element::C,
+                aromatic: false,
+            },
+        });
+        parser.current_atom = Some(0);
+        parser.parse_branch().unwrap();
+        assert_eq!(parser.atoms.len(), 2);
+
+        let mut parser = Parser::new("(C(C))");
+        parser.atoms.push(QueryAtom {
+            id: 0,
+            component: 0,
+            expr: AtomExpr::Bare {
+                element: elements_rs::Element::C,
+                aromatic: false,
+            },
+        });
+        parser.current_atom = Some(0);
+        parser.parse_branch().unwrap();
+        assert_eq!(parser.atoms.len(), 3);
+
+        let mut parser = Parser::new("-1");
+        parser.atoms.push(QueryAtom {
+            id: 0,
+            component: 0,
+            expr: AtomExpr::Bare {
+                element: elements_rs::Element::C,
+                aromatic: false,
+            },
+        });
+        parser.current_atom = Some(0);
+        parser.parse_bonded_item().unwrap();
+        assert_eq!(parser.open_ring_closures.len(), 1);
+
+        let mut parser = Parser::new("-;:");
+        assert_eq!(parser.parse_bond_low_and().unwrap().to_string(), "-;:");
+
+        let mut parser = Parser::new("-,=");
+        assert_eq!(parser.parse_bond_or().unwrap().to_string(), "-,=");
+
+        let mut parser = Parser::new("-&@");
+        assert_eq!(parser.parse_bond_high_and().unwrap().to_string(), "-&@");
+
+        let mut parser = Parser::new("x");
+        assert_eq!(
+            parser.parse_ring_label().unwrap_err().kind(),
+            SmartsParseErrorKind::UnexpectedCharacter('x')
+        );
+
+        let mapped_empty = Parser::new("").map_bracket_error(&parse_bracket_text("").unwrap_err());
+        assert_eq!(
+            mapped_empty.kind(),
+            SmartsParseErrorKind::UnexpectedEndOfInput
+        );
+
+        let mapped_unsupported =
+            Parser::new("").map_bracket_error(&parse_bracket_text("z").unwrap_err());
+        assert_eq!(
+            mapped_unsupported.kind(),
+            SmartsParseErrorKind::UnsupportedFeature(UnsupportedFeature::AtomPrimitive)
+        );
+    }
 }
