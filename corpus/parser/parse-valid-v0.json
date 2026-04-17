@@ -24,6 +24,30 @@
     "expected_components": 1
   },
   {
+    "id": "local-bare-sodium",
+    "smarts": "Na",
+    "source": "rdkit:uv-run",
+    "expected_atoms": 1,
+    "expected_bonds": 0,
+    "expected_components": 1
+  },
+  {
+    "id": "local-bare-arsenic",
+    "smarts": "As",
+    "source": "rdkit:uv-run",
+    "expected_atoms": 1,
+    "expected_bonds": 0,
+    "expected_components": 1
+  },
+  {
+    "id": "local-bare-copernicium",
+    "smarts": "Cn",
+    "source": "rdkit:uv-run",
+    "expected_atoms": 1,
+    "expected_bonds": 0,
+    "expected_components": 1
+  },
+  {
     "id": "openbabel-c-single-c",
     "smarts": "C-C",
     "source": "openbabel:test/files/validsmarts.txt",
@@ -107,6 +131,30 @@
     "id": "rdkit-bracket-low-and",
     "smarts": "[C;H1]",
     "source": "rdkit:Code/GraphMol/SmilesParse/smatest.cpp",
+    "expected_atoms": 1,
+    "expected_bonds": 0,
+    "expected_components": 1
+  },
+  {
+    "id": "rdkit-atom-map",
+    "smarts": "[C:1]",
+    "source": "rdkit:Code/GraphMol/SmilesParse/smatest.cpp",
+    "expected_atoms": 1,
+    "expected_bonds": 0,
+    "expected_components": 1
+  },
+  {
+    "id": "rdkit-range-query",
+    "smarts": "[h{1-}]",
+    "source": "rdkit:tests.tsv",
+    "expected_atoms": 1,
+    "expected_bonds": 0,
+    "expected_components": 1
+  },
+  {
+    "id": "rdkit-isotope-wildcard",
+    "smarts": "[89*]",
+    "source": "rdkit:tests.tsv",
     "expected_atoms": 1,
     "expected_bonds": 0,
     "expected_components": 1

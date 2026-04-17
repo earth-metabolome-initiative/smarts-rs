@@ -1,0 +1,387 @@
+[
+  {
+    "name": "carbon oxygen path matches ethanol",
+    "smarts": "CO",
+    "smiles": "CCO",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "carbon nitrogen path rejects ethanol",
+    "smarts": "CN",
+    "smiles": "CCO",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "carbon carbon path matches ethanol",
+    "smarts": "CC",
+    "smiles": "CCO",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "three carbon chain rejects ethane",
+    "smarts": "CCC",
+    "smiles": "CC",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "oxygen carbon path matches ethanol",
+    "smarts": "OC",
+    "smiles": "CCO",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "branched ethanol pattern matches ethanol",
+    "smarts": "C(O)C",
+    "smiles": "CCO",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "ethanol full path matches ethanol",
+    "smarts": "CCO",
+    "smiles": "CCO",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "ethanol path rejects ethylamine",
+    "smarts": "CCO",
+    "smiles": "CCN",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "explicit single bond matches ethanol",
+    "smarts": "C-O",
+    "smiles": "CCO",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "double bond rejects ethanol",
+    "smarts": "C=O",
+    "smiles": "CCO",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "double bond matches acetaldehyde",
+    "smarts": "C=O",
+    "smiles": "CC=O",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "triple bond matches nitrile",
+    "smarts": "C#N",
+    "smiles": "CC#N",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "single or double bond query matches aldehyde",
+    "smarts": "C-,=O",
+    "smiles": "CC=O",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "single or double bond query matches alcohol",
+    "smarts": "C-,=O",
+    "smiles": "CO",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "single or double bond query rejects nitrile",
+    "smarts": "C-,=N",
+    "smiles": "CC#N",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "bond negation rejects triple bond",
+    "smarts": "C!#N",
+    "smiles": "CC#N",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "bond negation accepts single bond",
+    "smarts": "C!#N",
+    "smiles": "CN",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "bond any matches carbonyl",
+    "smarts": "C~O",
+    "smiles": "CC=O",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "bond any matches nitrile",
+    "smarts": "C~N",
+    "smiles": "CC#N",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "aromatic adjacency matches benzene",
+    "smarts": "cc",
+    "smiles": "c1ccccc1",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "explicit aromatic bond matches benzene",
+    "smarts": "c:c",
+    "smiles": "c1ccccc1",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "explicit single bond rejects benzene aromatic bond",
+    "smarts": "c-c",
+    "smiles": "c1ccccc1",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "benzene ring query matches benzene",
+    "smarts": "c1ccccc1",
+    "smiles": "c1ccccc1",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "benzene ring query rejects cyclohexane",
+    "smarts": "c1ccccc1",
+    "smiles": "C1CCCCC1",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "cyclopropane ring query matches cyclopropane",
+    "smarts": "C1CC1",
+    "smiles": "C1CC1",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "cyclopropane ring query rejects propane",
+    "smarts": "C1CC1",
+    "smiles": "CCC",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "four member ring rejects cyclopropane",
+    "smarts": "C1CCC1",
+    "smiles": "C1CC1",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "tert butyl pattern matches isobutane",
+    "smarts": "C(C)(C)C",
+    "smiles": "CC(C)C",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "tert butyl pattern rejects propane",
+    "smarts": "C(C)(C)C",
+    "smiles": "CCC",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "atom disjunction path matches ethanol",
+    "smarts": "[N,O]C",
+    "smiles": "CCO",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "atom disjunction path rejects ethane",
+    "smarts": "[N,O]C",
+    "smiles": "CC",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "negated atom path matches methanol",
+    "smarts": "[!O]O",
+    "smiles": "CO",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "negated atom path rejects peroxide",
+    "smarts": "[!O]O",
+    "smiles": "OO",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "hydrogen constrained oxygen path matches ethanol",
+    "smarts": "[O;H1]C",
+    "smiles": "CCO",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "hydrogen constrained oxygen path rejects acetate anion",
+    "smarts": "[O;H1]C",
+    "smiles": "CC(=O)[O-]",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "atomic number path matches ethanol",
+    "smarts": "[#6]-[#8]",
+    "smiles": "CCO",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "atomic number path rejects ethanol nitrogen",
+    "smarts": "[#6]-[#7]",
+    "smiles": "CCO",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "isotope path matches labeled methanol",
+    "smarts": "[13C]O",
+    "smiles": "[13CH3]O",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "isotope path rejects unlabeled methanol",
+    "smarts": "[13C]O",
+    "smiles": "CO",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "degree constrained carbon path matches ethanol",
+    "smarts": "[D2]C",
+    "smiles": "CCO",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "degree constrained carbon path rejects tert carbon in ethanol",
+    "smarts": "[D3]C",
+    "smiles": "CCO",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "carbonyl acid pattern matches acetic acid",
+    "smarts": "C(=O)O",
+    "smiles": "CC(=O)O",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "carbonyl amide pattern rejects acetic acid",
+    "smarts": "C(=O)N",
+    "smiles": "CC(=O)O",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "carbonyl amide pattern matches acetamide",
+    "smarts": "C(=O)N",
+    "smiles": "CC(=O)N",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "double bond chain matches propene",
+    "smarts": "CC=C",
+    "smiles": "CC=C",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "double bond chain rejects propane",
+    "smarts": "CC=C",
+    "smiles": "CCC",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "aliphatic any path rejects benzene",
+    "smarts": "[A][A]",
+    "smiles": "c1ccccc1",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "aromatic any path matches benzene",
+    "smarts": "[a][a]",
+    "smiles": "c1ccccc1",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "molecular hydrogen query matches molecular hydrogen",
+    "smarts": "[H][H]",
+    "smiles": "[H][H]",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "molecular hydrogen query matches deuterium protium",
+    "smarts": "[H][H]",
+    "smiles": "[2H][H]",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "atomic-number molecular hydrogen query matches deuterium protium",
+    "smarts": "[#1][#1]",
+    "smiles": "[2H][H]",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "hydrogen chloride query rejects protium chloride",
+    "smarts": "[H]Cl",
+    "smiles": "[H]Cl",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "atomic-number hydrogen chloride query rejects protium chloride",
+    "smarts": "[#1]Cl",
+    "smiles": "[H]Cl",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "hydrogen chloride query matches deuterium chloride",
+    "smarts": "[H]Cl",
+    "smiles": "[2H]Cl",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "atomic-number hydrogen chloride query matches deuterium chloride",
+    "smarts": "[#1]Cl",
+    "smiles": "[2H]Cl",
+    "use_chirality": false,
+    "expected_match": true
+  }
+]

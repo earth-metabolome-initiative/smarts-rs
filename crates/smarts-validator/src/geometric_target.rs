@@ -34,7 +34,7 @@ pub struct UndirectedBond {
 impl UndirectedBond {
     /// Creates a new undirected bond description.
     #[must_use]
-    pub fn new(left_atom: AtomId, right_atom: AtomId, label: BondLabel) -> Self {
+    pub const fn new(left_atom: AtomId, right_atom: AtomId, label: BondLabel) -> Self {
         Self {
             left_atom,
             right_atom,
@@ -152,7 +152,7 @@ impl MoleculeGraph {
 
     /// Returns the wrapped `geometric-traits` graph.
     #[must_use]
-    pub fn raw(&self) -> &RawMoleculeGraph {
+    pub const fn raw(&self) -> &RawMoleculeGraph {
         &self.raw
     }
 }

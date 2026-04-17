@@ -6,6 +6,7 @@ use thiserror::Error;
 use crate::parse::parse_smarts;
 use crate::query::{
     parse_supported_bracket_element, AtomPrimitive, BracketExpr, BracketExprTree, HydrogenKind,
+    NumericQuery, NumericRange,
 };
 use crate::SmartsParseErrorKind;
 
@@ -49,13 +50,13 @@ pub enum BracketParseErrorKind {
 }
 
 impl BracketParseError {
-    fn new(kind: BracketParseErrorKind) -> Self {
+    const fn new(kind: BracketParseErrorKind) -> Self {
         Self { kind }
     }
 
     /// Returns the structured error kind.
     #[must_use]
-    pub fn kind(&self) -> &BracketParseErrorKind {
+    pub const fn kind(&self) -> &BracketParseErrorKind {
         &self.kind
     }
 }
@@ -66,7 +67,7 @@ struct BracketParser<'a> {
 }
 
 impl<'a> BracketParser<'a> {
-    fn new(text: &'a str) -> Self {
+    const fn new(text: &'a str) -> Self {
         Self { text, pos: 0 }
     }
 
@@ -76,11 +77,17 @@ impl<'a> BracketParser<'a> {
         }
 
         let tree = self.parse_low_and(true)?;
+        let atom_map = if !self.is_eof() && self.peek() == ':' {
+            self.pos += 1;
+            Some(u32::from(self.parse_required_u16()?))
+        } else {
+            None
+        };
         if !self.is_eof() {
             return Err(self.error_here(BracketParseErrorKind::UnexpectedCharacter(self.peek())));
         }
 
-        Ok(BracketExpr { tree })
+        Ok(BracketExpr { tree, atom_map })
     }
 
     fn parse_low_and(
@@ -102,7 +109,7 @@ impl<'a> BracketParser<'a> {
         let mut terms = vec![self.parse_high_and(allow_hydrogen_symbol)?];
         while !self.is_eof() && self.peek() == ',' {
             self.pos += 1;
-            terms.push(self.parse_high_and(true)?);
+            terms.push(self.parse_high_and(false)?);
         }
         Ok(collapse_logic(terms, BracketExprTree::Or))
     }
@@ -137,14 +144,13 @@ impl<'a> BracketParser<'a> {
 
         if self.peek() == '!' {
             self.pos += 1;
-            return Ok(BracketExprTree::Not(Box::new(
-                self.parse_unary(allow_hydrogen_symbol)?,
-            )));
+            return Ok(BracketExprTree::Not(Box::new(self.parse_unary(false)?)));
         }
 
         self.parse_primitive(allow_hydrogen_symbol)
     }
 
+    #[allow(clippy::too_many_lines)]
     fn parse_primitive(
         &mut self,
         allow_hydrogen_symbol: bool,
@@ -165,19 +171,31 @@ impl<'a> BracketParser<'a> {
             }
             'D' => {
                 self.pos += 1;
-                AtomPrimitive::Degree(self.parse_optional_u8()?)
+                AtomPrimitive::Degree(self.parse_optional_numeric_query()?)
             }
             'X' => {
                 self.pos += 1;
-                AtomPrimitive::Connectivity(self.parse_optional_u8()?)
+                AtomPrimitive::Connectivity(self.parse_optional_numeric_query()?)
             }
             'v' => {
                 self.pos += 1;
-                AtomPrimitive::Valence(self.parse_optional_u8()?)
+                AtomPrimitive::Valence(self.parse_optional_numeric_query()?)
             }
             'A' => {
-                self.pos += 1;
-                AtomPrimitive::AliphaticAny
+                if let Some((element, aromatic, width)) =
+                    parse_supported_bracket_element(self.remaining())
+                {
+                    if width > 1 {
+                        self.pos += width;
+                        AtomPrimitive::Symbol { element, aromatic }
+                    } else {
+                        self.pos += 1;
+                        AtomPrimitive::AliphaticAny
+                    }
+                } else {
+                    self.pos += 1;
+                    AtomPrimitive::AliphaticAny
+                }
             }
             'a' => {
                 if let Some((element, aromatic, width)) =
@@ -191,31 +209,71 @@ impl<'a> BracketParser<'a> {
                 }
             }
             'H' => {
-                self.pos += 1;
-                if allow_hydrogen_symbol && !self.next_char_is_ascii_digit() {
-                    AtomPrimitive::Symbol {
-                        element: elements_rs::Element::H,
-                        aromatic: false,
+                if let Some((element, aromatic, width)) =
+                    parse_supported_bracket_element(self.remaining())
+                {
+                    if width > 1 {
+                        self.pos += width;
+                        AtomPrimitive::Symbol { element, aromatic }
+                    } else {
+                        self.pos += 1;
+                        if allow_hydrogen_symbol && self.h_is_atomic_hydrogen_context() {
+                            AtomPrimitive::Symbol {
+                                element: elements_rs::Element::H,
+                                aromatic: false,
+                            }
+                        } else {
+                            AtomPrimitive::Hydrogen(
+                                HydrogenKind::Total,
+                                self.parse_optional_numeric_query()?,
+                            )
+                        }
                     }
                 } else {
-                    AtomPrimitive::Hydrogen(HydrogenKind::Total, self.parse_optional_u8()?)
+                    self.pos += 1;
+                    if allow_hydrogen_symbol && self.h_is_atomic_hydrogen_context() {
+                        AtomPrimitive::Symbol {
+                            element: elements_rs::Element::H,
+                            aromatic: false,
+                        }
+                    } else {
+                        AtomPrimitive::Hydrogen(
+                            HydrogenKind::Total,
+                            self.parse_optional_numeric_query()?,
+                        )
+                    }
                 }
             }
             'h' => {
                 self.pos += 1;
-                AtomPrimitive::Hydrogen(HydrogenKind::Implicit, self.parse_optional_u8()?)
+                AtomPrimitive::Hydrogen(
+                    HydrogenKind::Implicit,
+                    self.parse_optional_numeric_query()?,
+                )
             }
             'R' => {
-                self.pos += 1;
-                AtomPrimitive::RingMembership(self.parse_optional_u8()?)
+                if let Some((element, aromatic, width)) =
+                    parse_supported_bracket_element(self.remaining())
+                {
+                    if width > 1 {
+                        self.pos += width;
+                        AtomPrimitive::Symbol { element, aromatic }
+                    } else {
+                        self.pos += 1;
+                        AtomPrimitive::RingMembership(self.parse_optional_numeric_query()?)
+                    }
+                } else {
+                    self.pos += 1;
+                    AtomPrimitive::RingMembership(self.parse_optional_numeric_query()?)
+                }
             }
             'r' => {
                 self.pos += 1;
-                AtomPrimitive::RingSize(self.parse_optional_u8()?)
+                AtomPrimitive::RingSize(self.parse_optional_numeric_query()?)
             }
             'x' => {
                 self.pos += 1;
-                AtomPrimitive::RingConnectivity(self.parse_optional_u8()?)
+                AtomPrimitive::RingConnectivity(self.parse_optional_numeric_query()?)
             }
             '@' => AtomPrimitive::Chirality(self.parse_chirality()?),
             '+' | '-' => self.parse_charge()?,
@@ -229,7 +287,7 @@ impl<'a> BracketParser<'a> {
                     return Err(self.error(BracketParseErrorKind::UnsupportedPrimitive));
                 }
             }
-            '1'..='9' => {
+            '0'..='9' => {
                 let mass = self.parse_required_u16()?;
                 let primitive = self.parse_symbol_after_isotope(mass)?;
                 return Ok(BracketExprTree::Primitive(primitive));
@@ -246,6 +304,11 @@ impl<'a> BracketParser<'a> {
     ) -> Result<AtomPrimitive, BracketParseError> {
         if self.is_eof() {
             return Err(self.error(BracketParseErrorKind::UnexpectedEnd));
+        }
+
+        if self.peek() == '*' {
+            self.pos += 1;
+            return Ok(AtomPrimitive::IsotopeWildcard(mass));
         }
 
         let Some((element, aromatic, width)) = parse_supported_bracket_element(self.remaining())
@@ -367,6 +430,61 @@ impl<'a> BracketParser<'a> {
         })?))
     }
 
+    fn parse_optional_numeric_query(&mut self) -> Result<Option<NumericQuery>, BracketParseError> {
+        if self.is_eof() {
+            return Ok(None);
+        }
+
+        if self.peek().is_ascii_digit() {
+            return Ok(Some(NumericQuery::Exact(self.parse_required_u16()?)));
+        }
+
+        if self.peek() != '{' {
+            return Ok(None);
+        }
+
+        self.pos += 1;
+        let min = if !self.is_eof() && self.peek().is_ascii_digit() {
+            Some(self.parse_required_u16()?)
+        } else {
+            None
+        };
+
+        let max = if !self.is_eof() && self.peek() == '}' {
+            self.pos += 1;
+            min
+        } else {
+            if self.is_eof() || self.peek() != '-' {
+                return Err(self.error(BracketParseErrorKind::UnsupportedPrimitive));
+            }
+            self.pos += 1;
+            let max = if !self.is_eof() && self.peek().is_ascii_digit() {
+                Some(self.parse_required_u16()?)
+            } else {
+                None
+            };
+            if self.is_eof() || self.peek() != '}' {
+                return Err(self.error(BracketParseErrorKind::UnsupportedPrimitive));
+            }
+            self.pos += 1;
+            max
+        };
+
+        if min.is_none() && max.is_none() {
+            return Err(self.error(BracketParseErrorKind::UnsupportedPrimitive));
+        }
+        if let (Some(min), Some(max)) = (min, max) {
+            if min > max {
+                return Err(self.error(BracketParseErrorKind::UnsupportedPrimitive));
+            }
+            if min == max {
+                return Ok(Some(NumericQuery::Exact(min)));
+            }
+        }
+
+        Ok(Some(NumericQuery::Range(NumericRange { min, max })))
+    }
+
     fn parse_required_u16(&mut self) -> Result<u16, BracketParseError> {
         let start = self.pos;
         while !self.is_eof() && self.peek().is_ascii_digit() {
@@ -391,21 +509,47 @@ impl<'a> BracketParser<'a> {
             .is_some_and(u8::is_ascii_digit)
     }
 
+    fn h_is_atomic_hydrogen_context(&self) -> bool {
+        if self.next_char_is_ascii_digit() {
+            return false;
+        }
+        let Some(next) = self.text.as_bytes().get(self.pos).copied() else {
+            return true;
+        };
+        if next != b'+' && next != b'-' {
+            return false;
+        }
+
+        let mut index = self.pos + 1;
+        while let Some(ch) = self.text.as_bytes().get(index).copied() {
+            if ch == next {
+                index += 1;
+                continue;
+            }
+            if ch.is_ascii_digit() {
+                index += 1;
+                continue;
+            }
+            return false;
+        }
+        true
+    }
+
     fn peek(&self) -> char {
         self.text[self.pos..].chars().next().expect("peek past eof")
     }
 
-    fn is_eof(&self) -> bool {
+    const fn is_eof(&self) -> bool {
         self.pos >= self.text.len()
     }
 
     #[allow(clippy::unused_self)]
-    fn error(&self, kind: BracketParseErrorKind) -> BracketParseError {
+    const fn error(&self, kind: BracketParseErrorKind) -> BracketParseError {
         BracketParseError::new(kind)
     }
 
     #[allow(clippy::unused_self)]
-    fn error_here(&self, kind: BracketParseErrorKind) -> BracketParseError {
+    const fn error_here(&self, kind: BracketParseErrorKind) -> BracketParseError {
         BracketParseError::new(kind)
     }
 }
@@ -421,7 +565,7 @@ fn collapse_logic(
     }
 }
 
-fn starts_implicit_and(ch: char) -> bool {
+const fn starts_implicit_and(ch: char) -> bool {
     matches!(
         ch,
         '!' | '*'
@@ -454,7 +598,7 @@ fn starts_implicit_and(ch: char) -> bool {
             | 'S'
             | '+'
             | '-'
-            | '1'..='9'
+            | '0'..='9'
     )
 }
 
@@ -473,6 +617,20 @@ mod tests {
                 isotope: Isotope::try_from((Element::C, 12_u16)).unwrap(),
                 aromatic: false,
             })
+        );
+    }
+
+    #[test]
+    fn parses_isotope_wildcard() {
+        let expr = parse_bracket_text("89*").unwrap();
+        let zero = parse_bracket_text("0*").unwrap();
+        assert_eq!(
+            expr.tree,
+            BracketExprTree::Primitive(AtomPrimitive::IsotopeWildcard(89))
+        );
+        assert_eq!(
+            zero.tree,
+            BracketExprTree::Primitive(AtomPrimitive::IsotopeWildcard(0))
         );
     }
 
@@ -530,6 +688,9 @@ mod tests {
     fn preserves_hydrogen_count_and_atom_disambiguation() {
         let carbon_with_hydrogen = parse_bracket_text("CH").unwrap();
         let carbon_or_hydrogen = parse_bracket_text("C,H").unwrap();
+        let hydrogen_or_chlorine = parse_bracket_text("H,Cl").unwrap();
+        let double_hydrogen = parse_bracket_text("HH").unwrap();
+        let not_hydrogen = parse_bracket_text("!H").unwrap();
 
         assert_eq!(
             carbon_with_hydrogen.tree,
@@ -548,11 +709,31 @@ mod tests {
                     element: Element::C,
                     aromatic: false,
                 }),
+                BracketExprTree::Primitive(AtomPrimitive::Hydrogen(HydrogenKind::Total, None)),
+            ])
+        );
+        assert_eq!(
+            hydrogen_or_chlorine.tree,
+            BracketExprTree::Or(vec![
+                BracketExprTree::Primitive(AtomPrimitive::Hydrogen(HydrogenKind::Total, None)),
                 BracketExprTree::Primitive(AtomPrimitive::Symbol {
-                    element: Element::H,
+                    element: Element::Cl,
                     aromatic: false,
                 }),
             ])
+        );
+        assert_eq!(
+            double_hydrogen.tree,
+            BracketExprTree::HighAnd(vec![
+                BracketExprTree::Primitive(AtomPrimitive::Hydrogen(HydrogenKind::Total, None)),
+                BracketExprTree::Primitive(AtomPrimitive::Hydrogen(HydrogenKind::Total, None)),
+            ])
+        );
+        assert_eq!(
+            not_hydrogen.tree,
+            BracketExprTree::Not(Box::new(BracketExprTree::Primitive(
+                AtomPrimitive::Hydrogen(HydrogenKind::Total, None),
+            )))
         );
     }
 
@@ -565,19 +746,67 @@ mod tests {
 
         assert_eq!(
             degree.tree,
-            BracketExprTree::Primitive(AtomPrimitive::Degree(Some(2)))
+            BracketExprTree::Primitive(AtomPrimitive::Degree(Some(NumericQuery::Exact(2))))
         );
         assert_eq!(
             connectivity.tree,
-            BracketExprTree::Primitive(AtomPrimitive::Connectivity(Some(4)))
+            BracketExprTree::Primitive(AtomPrimitive::Connectivity(Some(NumericQuery::Exact(4))))
         );
         assert_eq!(
             valence.tree,
-            BracketExprTree::Primitive(AtomPrimitive::Valence(Some(3)))
+            BracketExprTree::Primitive(AtomPrimitive::Valence(Some(NumericQuery::Exact(3))))
         );
         assert_eq!(
             ring_connectivity.tree,
-            BracketExprTree::Primitive(AtomPrimitive::RingConnectivity(Some(2)))
+            BracketExprTree::Primitive(AtomPrimitive::RingConnectivity(Some(NumericQuery::Exact(
+                2
+            ),)))
+        );
+    }
+
+    #[test]
+    fn parses_numeric_ranges() {
+        let hydrogen = parse_bracket_text("h{1-}").unwrap();
+        let degree = parse_bracket_text("D{2-3}").unwrap();
+        let ring_membership = parse_bracket_text("R{1-}").unwrap();
+        let ring_connectivity = parse_bracket_text("x{2-}").unwrap();
+
+        assert_eq!(
+            hydrogen.tree,
+            BracketExprTree::Primitive(AtomPrimitive::Hydrogen(
+                HydrogenKind::Implicit,
+                Some(NumericQuery::Range(NumericRange {
+                    min: Some(1),
+                    max: None,
+                })),
+            ))
+        );
+        assert_eq!(
+            degree.tree,
+            BracketExprTree::Primitive(AtomPrimitive::Degree(Some(NumericQuery::Range(
+                NumericRange {
+                    min: Some(2),
+                    max: Some(3),
+                },
+            ))))
+        );
+        assert_eq!(
+            ring_membership.tree,
+            BracketExprTree::Primitive(AtomPrimitive::RingMembership(Some(NumericQuery::Range(
+                NumericRange {
+                    min: Some(1),
+                    max: None,
+                }
+            ),)))
+        );
+        assert_eq!(
+            ring_connectivity.tree,
+            BracketExprTree::Primitive(AtomPrimitive::RingConnectivity(Some(NumericQuery::Range(
+                NumericRange {
+                    min: Some(2),
+                    max: None,
+                }
+            ),)))
         );
     }
 
@@ -671,7 +900,7 @@ mod tests {
                     }),
                     BracketExprTree::Primitive(AtomPrimitive::Hydrogen(
                         HydrogenKind::Total,
-                        Some(1),
+                        Some(NumericQuery::Exact(1)),
                     )),
                 ]),
             ])
@@ -840,8 +1069,8 @@ mod tests {
             &BracketParseErrorKind::UnexpectedEnd
         );
         assert_eq!(
-            parse_bracket_text("D256").unwrap_err().kind(),
-            &BracketParseErrorKind::UnsupportedPrimitive
+            parse_bracket_text("D256").unwrap().tree,
+            BracketExprTree::Primitive(AtomPrimitive::Degree(Some(NumericQuery::Exact(256))))
         );
         assert_eq!(
             parse_bracket_text("65536C").unwrap_err().kind(),

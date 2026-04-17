@@ -30,12 +30,6 @@
     "expected_code": "conflicting_ring_closure_bond"
   },
   {
-    "id": "rdkit-atom-map",
-    "smarts": "[C:1]",
-    "source": "rdkit:Code/GraphMol/SmilesParse/smatest.cpp",
-    "expected_code": "unsupported_atom_map"
-  },
-  {
     "id": "cdk-reaction",
     "smarts": "C>>C",
     "source": "cdk:ParserTest.java",
@@ -216,12 +210,6 @@
     "expected_code": "unexpected_character"
   },
   {
-    "id": "local-bare-sodium-not-allowed",
-    "smarts": "Na",
-    "source": "local:seed",
-    "expected_code": "unexpected_character"
-  },
-  {
     "id": "local-bare-platinum-not-allowed",
     "smarts": "Pt",
     "source": "local:seed",
@@ -230,12 +218,6 @@
   {
     "id": "local-bare-oganesson-not-allowed",
     "smarts": "Og",
-    "source": "local:seed",
-    "expected_code": "unexpected_character"
-  },
-  {
-    "id": "local-bare-arsenic-not-allowed",
-    "smarts": "As",
     "source": "local:seed",
     "expected_code": "unexpected_character"
   },

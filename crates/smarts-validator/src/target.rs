@@ -1,9 +1,7 @@
 //! Target graph traits and chemistry labels used by the matcher.
 
-use alloc::string::String;
 use elements_rs::Element;
-
-use crate::error::SmartsMatchError;
+use smiles_parser::bond::Bond;
 
 /// Dense atom identifier used by the matcher.
 pub type AtomId = usize;
@@ -27,7 +25,7 @@ impl AtomLabel {
     /// Creates a minimal atom label for common tests and prototypes.
     #[inline]
     #[must_use]
-    pub fn new(element: Element) -> Self {
+    pub const fn new(element: Element) -> Self {
         Self {
             element,
             aromatic: false,
@@ -57,6 +55,21 @@ pub enum BondLabel {
     Any,
 }
 
+impl From<Bond> for BondLabel {
+    #[inline]
+    fn from(value: Bond) -> Self {
+        match value {
+            Bond::Single => Self::Single,
+            Bond::Double => Self::Double,
+            Bond::Triple => Self::Triple,
+            Bond::Aromatic => Self::Aromatic,
+            Bond::Up => Self::Up,
+            Bond::Down => Self::Down,
+            Bond::Quadruple => Self::Any,
+        }
+    }
+}
+
 /// A neighboring atom together with the bond used to reach it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Neighbor {
@@ -70,7 +83,7 @@ impl Neighbor {
     /// Creates a neighbor record.
     #[inline]
     #[must_use]
-    pub fn new(atom_id: AtomId, bond: BondLabel) -> Self {
+    pub const fn new(atom_id: AtomId, bond: BondLabel) -> Self {
         Self { atom_id, bond }
     }
 }
@@ -110,36 +123,5 @@ pub trait MoleculeTarget {
     #[inline]
     fn edge_id(&self, _left_atom: AtomId, _right_atom: AtomId) -> Option<usize> {
         None
-    }
-}
-
-/// A minimal owned target representation for string-based placeholder matching.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TargetText {
-    raw: String,
-}
-
-impl TargetText {
-    /// Creates a non-empty placeholder target string.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SmartsMatchError::EmptyTarget`] when `input` is empty.
-    #[inline]
-    pub fn new(input: &str) -> Result<Self, SmartsMatchError> {
-        if input.is_empty() {
-            return Err(SmartsMatchError::EmptyTarget);
-        }
-
-        Ok(Self {
-            raw: String::from(input),
-        })
-    }
-
-    /// Returns the underlying target string.
-    #[inline]
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.raw
     }
 }

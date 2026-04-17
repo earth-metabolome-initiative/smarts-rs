@@ -1,0 +1,18 @@
+[
+  { "name": "recursive exact carbon matches carbon", "smarts": "[$(C)]", "smiles": "C" },
+  { "name": "recursive exact oxygen rejects carbon", "smarts": "[$(O)]", "smiles": "C" },
+  { "name": "recursive carbon oxygen path matches methanol", "smarts": "[$(CO)]", "smiles": "CO" },
+  { "name": "recursive carbon oxygen path rejects ethane", "smarts": "[$(CO)]", "smiles": "CC" },
+  { "name": "recursive neighbour oxygen matches methanol carbon", "smarts": "[$(*O)]", "smiles": "CO" },
+  { "name": "recursive neighbour oxygen rejects ethane carbon", "smarts": "[$(*O)]", "smiles": "CC" },
+  { "name": "recursive carbon with oxygen neighbour matches methanol", "smarts": "[C&$(*O)]", "smiles": "CO" },
+  { "name": "recursive carbon with oxygen neighbour rejects ethane", "smarts": "[C&$(*O)]", "smiles": "CC" },
+  { "name": "recursive carbonyl matches acetaldehyde", "smarts": "[$(C=O)]", "smiles": "CC=O" },
+  { "name": "recursive carbonyl rejects ethanol", "smarts": "[$(C=O)]", "smiles": "CCO" },
+  { "name": "recursive ring path matches cyclopropane", "smarts": "[$(C1CC1)]", "smiles": "C1CC1" },
+  { "name": "recursive ring path rejects propane", "smarts": "[$(C1CC1)]", "smiles": "CCC" },
+  { "name": "recursive disconnected path matches ethane", "smarts": "[$(C.C)]", "smiles": "CC" },
+  { "name": "recursive disconnected path rejects methane", "smarts": "[$(C.C)]", "smiles": "C" },
+  { "name": "recursive nested atom disjunction matches ethanol oxygen", "smarts": "[$([O,N]C)]", "smiles": "CCO" },
+  { "name": "recursive nested atom disjunction rejects ethane", "smarts": "[$([O,N]C)]", "smiles": "CC" }
+]

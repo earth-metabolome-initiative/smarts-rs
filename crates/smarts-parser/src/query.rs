@@ -17,6 +17,24 @@ pub type ComponentId = usize;
 /// Dense zero-level component-group identifier inside one parsed SMARTS query.
 pub type ComponentGroupId = usize;
 
+/// One numeric SMARTS count constraint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NumericQuery {
+    /// Exact numeric value such as `D2`.
+    Exact(u16),
+    /// Inclusive range value such as `D{2-3}` or `h{1-}`.
+    Range(NumericRange),
+}
+
+/// Inclusive numeric SMARTS range constraint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NumericRange {
+    /// Inclusive lower bound, if present.
+    pub min: Option<u16>,
+    /// Inclusive upper bound, if present.
+    pub max: Option<u16>,
+}
+
 /// One parsed atom expression in the SMARTS query graph.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AtomExpr {
@@ -38,6 +56,8 @@ pub enum AtomExpr {
 pub struct BracketExpr {
     /// Root of the boolean expression tree for the bracket atom.
     pub tree: BracketExprTree,
+    /// Optional atom-map number written at the end of the bracket atom, such as `:1`.
+    pub atom_map: Option<u32>,
 }
 
 /// Boolean expression tree used inside bracket atoms.
@@ -46,13 +66,13 @@ pub enum BracketExprTree {
     /// Leaf predicate.
     Primitive(AtomPrimitive),
     /// Unary negation.
-    Not(Box<BracketExprTree>),
+    Not(Box<Self>),
     /// High-precedence conjunction using `&` or implicit juxtaposition.
-    HighAnd(Vec<BracketExprTree>),
+    HighAnd(Vec<Self>),
     /// Disjunction using `,`.
-    Or(Vec<BracketExprTree>),
+    Or(Vec<Self>),
     /// Low-precedence conjunction using `;`.
-    LowAnd(Vec<BracketExprTree>),
+    LowAnd(Vec<Self>),
 }
 
 /// One atomic predicate used inside a bracket atom.
@@ -78,24 +98,26 @@ pub enum AtomPrimitive {
         /// Whether the isotope predicate was written using aromatic lowercase SMARTS syntax.
         aromatic: bool,
     },
+    /// Isotope mass number paired with wildcard atom syntax such as `89*` or `0*`.
+    IsotopeWildcard(u16),
     /// Atomic number predicate such as `#6`.
     AtomicNumber(u16),
-    /// Degree predicate such as `D2`.
-    Degree(Option<u8>),
-    /// Connectivity predicate such as `X3`.
-    Connectivity(Option<u8>),
-    /// Valence predicate such as `v4`.
-    Valence(Option<u8>),
+    /// Degree predicate such as `D2` or `D{2-3}`.
+    Degree(Option<NumericQuery>),
+    /// Connectivity predicate such as `X3` or `X{2-4}`.
+    Connectivity(Option<NumericQuery>),
+    /// Valence predicate such as `v4` or `v{3-}`.
+    Valence(Option<NumericQuery>),
     /// Recursive SMARTS predicate such as `$(CO)`.
     RecursiveQuery(Box<QueryMol>),
-    /// Hydrogen-count predicate such as `H1` or `h1`.
-    Hydrogen(HydrogenKind, Option<u8>),
+    /// Hydrogen-count predicate such as `H1`, `h1`, or `h{1-}`.
+    Hydrogen(HydrogenKind, Option<NumericQuery>),
     /// Ring-membership predicate such as `R` or `R2`.
-    RingMembership(Option<u8>),
-    /// Ring-size predicate such as `r5`.
-    RingSize(Option<u8>),
-    /// Ring-connectivity predicate such as `x2`.
-    RingConnectivity(Option<u8>),
+    RingMembership(Option<NumericQuery>),
+    /// Ring-size predicate such as `r5` or `r{5-6}`.
+    RingSize(Option<NumericQuery>),
+    /// Ring-connectivity predicate such as `x2` or `x{2-}`.
+    RingConnectivity(Option<NumericQuery>),
     /// Atom chirality predicate such as `@`, `@@`, or `@TH1`.
     Chirality(Chirality),
     /// Formal charge predicate such as `+`, `-`, or `+2`.
@@ -126,13 +148,13 @@ pub enum BondExprTree {
     /// Leaf predicate.
     Primitive(BondPrimitive),
     /// Unary negation.
-    Not(Box<BondExprTree>),
+    Not(Box<Self>),
     /// High-precedence conjunction using `&` or implicit juxtaposition.
-    HighAnd(Vec<BondExprTree>),
+    HighAnd(Vec<Self>),
     /// Disjunction using `,`.
-    Or(Vec<BondExprTree>),
+    Or(Vec<Self>),
     /// Low-precedence conjunction using `;`.
-    LowAnd(Vec<BondExprTree>),
+    LowAnd(Vec<Self>),
 }
 
 /// One primitive bond predicate.
@@ -194,8 +216,10 @@ pub struct QueryMol {
 }
 
 impl QueryMol {
+    /// Builds a parsed SMARTS query from already-lowered graph parts.
     #[inline]
-    pub(crate) fn from_parts(
+    #[must_use]
+    pub const fn from_parts(
         atoms: Vec<QueryAtom>,
         bonds: Vec<QueryBond>,
         component_count: usize,
@@ -226,21 +250,21 @@ impl QueryMol {
     /// Returns the number of atoms in the query graph.
     #[inline]
     #[must_use]
-    pub fn atom_count(&self) -> usize {
+    pub const fn atom_count(&self) -> usize {
         self.atoms.len()
     }
 
     /// Returns the number of bonds in the query graph.
     #[inline]
     #[must_use]
-    pub fn bond_count(&self) -> usize {
+    pub const fn bond_count(&self) -> usize {
         self.bonds.len()
     }
 
     /// Returns the number of disconnected components in the query graph.
     #[inline]
     #[must_use]
-    pub fn component_count(&self) -> usize {
+    pub const fn component_count(&self) -> usize {
         self.component_count
     }
 
@@ -263,7 +287,7 @@ impl QueryMol {
     /// Returns whether the query contains no atoms.
     #[inline]
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.atoms.is_empty()
     }
 }
@@ -286,7 +310,11 @@ impl fmt::Display for AtomExpr {
 
 impl fmt::Display for BracketExpr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.tree.fmt(f)
+        self.tree.fmt(f)?;
+        if let Some(atom_map) = self.atom_map {
+            write!(f, ":{atom_map}")?;
+        }
+        Ok(())
     }
 }
 
@@ -310,24 +338,21 @@ impl fmt::Display for AtomPrimitive {
             Self::AromaticAny => f.write_str("a"),
             Self::Symbol { element, aromatic } => write_smarts_element(f, *element, *aromatic),
             Self::Isotope { isotope, aromatic } => write_smarts_isotope(f, *isotope, *aromatic),
+            Self::IsotopeWildcard(mass_number) => write!(f, "{mass_number}*"),
             Self::AtomicNumber(atomic_number) => write!(f, "#{atomic_number}"),
-            Self::Degree(None) => f.write_str("D"),
-            Self::Degree(Some(value)) => write!(f, "D{value}"),
-            Self::Connectivity(None) => f.write_str("X"),
-            Self::Connectivity(Some(value)) => write!(f, "X{value}"),
-            Self::Valence(None) => f.write_str("v"),
-            Self::Valence(Some(value)) => write!(f, "v{value}"),
+            Self::Degree(query) => write_numeric_query_suffix(f, "D", *query),
+            Self::Connectivity(query) => write_numeric_query_suffix(f, "X", *query),
+            Self::Valence(query) => write_numeric_query_suffix(f, "v", *query),
             Self::RecursiveQuery(query) => write!(f, "$({query})"),
-            Self::Hydrogen(HydrogenKind::Total, None) => f.write_str("H"),
-            Self::Hydrogen(HydrogenKind::Total, Some(value)) => write!(f, "H{value}"),
-            Self::Hydrogen(HydrogenKind::Implicit, None) => f.write_str("h"),
-            Self::Hydrogen(HydrogenKind::Implicit, Some(value)) => write!(f, "h{value}"),
-            Self::RingMembership(None) => f.write_str("R"),
-            Self::RingMembership(Some(value)) => write!(f, "R{value}"),
-            Self::RingSize(None) => f.write_str("r"),
-            Self::RingSize(Some(value)) => write!(f, "r{value}"),
-            Self::RingConnectivity(None) => f.write_str("x"),
-            Self::RingConnectivity(Some(value)) => write!(f, "x{value}"),
+            Self::Hydrogen(HydrogenKind::Total, query) => {
+                write_numeric_query_suffix(f, "H", *query)
+            }
+            Self::Hydrogen(HydrogenKind::Implicit, query) => {
+                write_numeric_query_suffix(f, "h", *query)
+            }
+            Self::RingMembership(query) => write_numeric_query_suffix(f, "R", *query),
+            Self::RingSize(query) => write_numeric_query_suffix(f, "r", *query),
+            Self::RingConnectivity(query) => write_numeric_query_suffix(f, "x", *query),
             Self::Chirality(chirality) => chirality.fmt(f),
             Self::Charge(charge) => write_charge(f, *charge),
         }
@@ -402,6 +427,33 @@ fn write_smarts_isotope(
 ) -> fmt::Result {
     write!(f, "{}", isotope.mass_number())?;
     write_smarts_element(f, isotope.element(), aromatic)
+}
+
+fn write_numeric_query_suffix(
+    f: &mut fmt::Formatter<'_>,
+    prefix: &str,
+    query: Option<NumericQuery>,
+) -> fmt::Result {
+    f.write_str(prefix)?;
+    match query {
+        None => Ok(()),
+        Some(NumericQuery::Exact(value)) => write!(f, "{value}"),
+        Some(NumericQuery::Range(range)) => write_numeric_range(f, range),
+    }
+}
+
+fn write_numeric_range(f: &mut fmt::Formatter<'_>, range: NumericRange) -> fmt::Result {
+    f.write_str("{")?;
+    if let Some(min) = range.min {
+        write!(f, "{min}")?;
+    }
+    if range.min != range.max || range.min.is_none() || range.max.is_none() {
+        f.write_str("-")?;
+        if let Some(max) = range.max {
+            write!(f, "{max}")?;
+        }
+    }
+    f.write_str("}")
 }
 
 fn write_charge(f: &mut fmt::Formatter<'_>, charge: i8) -> fmt::Result {
@@ -634,11 +686,10 @@ fn bond_expr_rank(expr: &BondExpr) -> (u8, String) {
     (rank, expr.to_string())
 }
 
+#[allow(clippy::redundant_pub_crate)]
 pub(crate) fn parse_supported_bare_element(input: &str) -> Option<(Element, bool, usize)> {
-    if input.starts_with("Cl") {
-        Some((Element::Cl, false, 2))
-    } else if input.starts_with("Br") {
-        Some((Element::Br, false, 2))
+    if let Some((element, width)) = parse_rdkit_bare_multiletter_element(input) {
+        Some((element, false, width))
     } else {
         parse_aromatic_bare_element(input).or_else(|| match input.as_bytes().first().copied()? {
             b'B' => Some((Element::B, false, 1)),
@@ -654,6 +705,7 @@ pub(crate) fn parse_supported_bare_element(input: &str) -> Option<(Element, bool
     }
 }
 
+#[allow(clippy::redundant_pub_crate)]
 pub(crate) fn parse_supported_bracket_element(input: &str) -> Option<(Element, bool, usize)> {
     parse_aromatic_bracket_element(input)
         .or_else(|| parse_element_symbol(input).map(|(element, width)| (element, false, width)))
@@ -687,6 +739,40 @@ fn parse_aromatic_bare_element(input: &str) -> Option<(Element, bool, usize)> {
         b's' => Some((Element::S, true, 1)),
         _ => None,
     }
+}
+
+fn parse_rdkit_bare_multiletter_element(input: &str) -> Option<(Element, usize)> {
+    const BARE_TWO_LETTER_ELEMENTS: [(&str, Element); 21] = [
+        ("Cl", Element::Cl),
+        ("Br", Element::Br),
+        ("Na", Element::Na),
+        ("Ca", Element::Ca),
+        ("Sc", Element::Sc),
+        ("Co", Element::Co),
+        ("As", Element::As),
+        ("Nb", Element::Nb),
+        ("In", Element::In),
+        ("Sn", Element::Sn),
+        ("Sb", Element::Sb),
+        ("Cs", Element::Cs),
+        ("Ba", Element::Ba),
+        ("Os", Element::Os),
+        ("Pb", Element::Pb),
+        ("Po", Element::Po),
+        ("Ac", Element::Ac),
+        ("Pa", Element::Pa),
+        ("Np", Element::Np),
+        ("No", Element::No),
+        ("Cn", Element::Cn),
+    ];
+
+    for (symbol, element) in BARE_TWO_LETTER_ELEMENTS {
+        if input.starts_with(symbol) {
+            return Some((element, 2));
+        }
+    }
+
+    None
 }
 
 fn parse_element_symbol(input: &str) -> Option<(Element, usize)> {
@@ -784,6 +870,7 @@ mod tests {
             (
                 AtomExpr::Bracket(BracketExpr {
                     tree: BracketExprTree::Primitive(AtomPrimitive::Wildcard),
+                    atom_map: None,
                 })
                 .to_string(),
                 "[*]",
@@ -806,6 +893,7 @@ mod tests {
                 .to_string(),
                 "80se",
             ),
+            (AtomPrimitive::IsotopeWildcard(89).to_string(), "89*"),
             (AtomPrimitive::AtomicNumber(6).to_string(), "#6"),
             (AtomPrimitive::Degree(None).to_string(), "D"),
             (AtomPrimitive::Connectivity(None).to_string(), "X"),
@@ -842,7 +930,7 @@ mod tests {
             (
                 BracketExprTree::HighAnd(vec![
                     BracketExprTree::Primitive(AtomPrimitive::AliphaticAny),
-                    BracketExprTree::Primitive(AtomPrimitive::Degree(Some(4))),
+                    BracketExprTree::Primitive(AtomPrimitive::Degree(Some(NumericQuery::Exact(4)))),
                 ])
                 .to_string(),
                 "A&D4",
@@ -850,14 +938,18 @@ mod tests {
             (
                 BracketExprTree::Or(vec![
                     BracketExprTree::Primitive(AtomPrimitive::AromaticAny),
-                    BracketExprTree::Primitive(AtomPrimitive::RingMembership(Some(2))),
+                    BracketExprTree::Primitive(AtomPrimitive::RingMembership(Some(
+                        NumericQuery::Exact(2),
+                    ))),
                 ])
                 .to_string(),
                 "a,R2",
             ),
             (
                 BracketExprTree::LowAnd(vec![
-                    BracketExprTree::Primitive(AtomPrimitive::Valence(Some(3))),
+                    BracketExprTree::Primitive(AtomPrimitive::Valence(Some(NumericQuery::Exact(
+                        3,
+                    )))),
                     BracketExprTree::Primitive(AtomPrimitive::Charge(-2)),
                 ])
                 .to_string(),
@@ -1088,17 +1180,38 @@ mod tests {
 
     #[test]
     fn covers_remaining_display_and_helper_variants() {
-        assert_eq!(AtomPrimitive::Connectivity(Some(7)).to_string(), "X7");
         assert_eq!(
-            AtomPrimitive::Hydrogen(HydrogenKind::Total, Some(2)).to_string(),
+            AtomPrimitive::Connectivity(Some(NumericQuery::Exact(7))).to_string(),
+            "X7"
+        );
+        assert_eq!(
+            AtomPrimitive::Hydrogen(HydrogenKind::Total, Some(NumericQuery::Exact(2))).to_string(),
             "H2"
         );
         assert_eq!(
-            AtomPrimitive::Hydrogen(HydrogenKind::Implicit, Some(3)).to_string(),
+            AtomPrimitive::Hydrogen(HydrogenKind::Implicit, Some(NumericQuery::Exact(3)))
+                .to_string(),
             "h3"
         );
-        assert_eq!(AtomPrimitive::RingSize(Some(4)).to_string(), "r4");
-        assert_eq!(AtomPrimitive::RingConnectivity(Some(2)).to_string(), "x2");
+        assert_eq!(
+            AtomPrimitive::RingSize(Some(NumericQuery::Exact(4))).to_string(),
+            "r4"
+        );
+        assert_eq!(
+            AtomPrimitive::RingConnectivity(Some(NumericQuery::Exact(2))).to_string(),
+            "x2"
+        );
+        assert_eq!(
+            AtomPrimitive::Hydrogen(
+                HydrogenKind::Implicit,
+                Some(NumericQuery::Range(NumericRange {
+                    min: Some(1),
+                    max: None,
+                })),
+            )
+            .to_string(),
+            "h{1-}"
+        );
         assert_eq!(
             AtomPrimitive::Chirality(Chirality::TH(1)).to_string(),
             "@TH1",

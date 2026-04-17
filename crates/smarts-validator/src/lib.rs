@@ -3,10 +3,11 @@
 //! SMARTS validation against target molecules.
 //!
 //! This crate is the future matching layer for compiled SMARTS queries.
-//! For now it only provides a small, thread-safe scaffold:
+//! The current implementation supports the first real validator slice:
 //!
 //! - a match entrypoint
-//! - target/preparation placeholders
+//! - `smiles-parser` backed target preparation
+//! - single-atom SMARTS evaluation against frozen `RDKit` fixtures
 //! - a structured error type
 //!
 //! The parser crate owns syntax and query IR. This crate will own target
@@ -23,28 +24,26 @@ pub mod geometric_target;
 pub mod matching;
 /// Prepared target sidecars and cached molecule properties.
 pub mod prepared;
+/// Conservative screening summaries for many-query workflows.
+pub mod screening;
 /// Target graph traits and simple placeholder target types.
 pub mod target;
 
 pub use error::SmartsMatchError;
 pub use matching::matches;
 pub use prepared::{EdgeProps, NodeProps, PreparedMolecule, PreparedTarget};
+pub use screening::{QueryScreen, TargetScreen};
 pub use target::{AtomId, AtomLabel, BondLabel, MoleculeTarget, Neighbor};
 
 #[cfg(test)]
 mod tests {
-    use super::error::SmartsMatchError;
-    use super::target::TargetText;
+    use core::str::FromStr;
+
+    use smarts_parser::QueryMol;
 
     #[test]
-    fn target_text_rejects_empty_input() {
-        let err = TargetText::new("").unwrap_err();
-        assert_eq!(err, SmartsMatchError::EmptyTarget);
-    }
-
-    #[test]
-    fn target_text_preserves_input() {
-        let target = TargetText::new("CCO").unwrap();
-        assert_eq!(target.as_str(), "CCO");
+    fn matches_single_atom_query_against_smiles_target() {
+        let query = QueryMol::from_str("[O;H1]").unwrap();
+        assert!(crate::matches(&query, "CCO").unwrap());
     }
 }

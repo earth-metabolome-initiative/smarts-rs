@@ -29,9 +29,6 @@ pub enum SmartsParseErrorKind {
 /// SMARTS syntax families that are intentionally deferred.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum UnsupportedFeature {
-    /// Atom maps such as `:1`.
-    #[error("atom maps")]
-    AtomMap,
     /// Unsupported bracket primitives beyond the current subset.
     #[error("atom primitive")]
     AtomPrimitive,
@@ -63,9 +60,8 @@ impl UnsupportedFeature {
     /// Returns a stable machine-readable error code for one unsupported feature.
     #[inline]
     #[must_use]
-    pub fn code(self) -> &'static str {
+    pub const fn code(self) -> &'static str {
         match self {
-            Self::AtomMap => "unsupported_atom_map",
             Self::AtomPrimitive => "unsupported_atom_primitive",
             Self::Branch => "unsupported_branch",
             Self::ExplicitBond => "unsupported_explicit_bond",
@@ -80,21 +76,21 @@ impl SmartsParseError {
     /// Creates an error.
     #[inline]
     #[must_use]
-    pub fn new(kind: SmartsParseErrorKind) -> Self {
+    pub const fn new(kind: SmartsParseErrorKind) -> Self {
         Self { kind }
     }
 
     /// Returns the structured error kind.
     #[inline]
     #[must_use]
-    pub fn kind(&self) -> SmartsParseErrorKind {
+    pub const fn kind(&self) -> SmartsParseErrorKind {
         self.kind
     }
 
     /// Returns a stable machine-readable error code.
     #[inline]
     #[must_use]
-    pub fn code(&self) -> &'static str {
+    pub const fn code(&self) -> &'static str {
         match self.kind {
             SmartsParseErrorKind::EmptyInput => "empty_input",
             SmartsParseErrorKind::UnexpectedEndOfInput => "unexpected_end_of_input",
@@ -146,11 +142,6 @@ mod tests {
                 "unterminated_bracket_atom",
             ),
             (
-                SmartsParseErrorKind::UnsupportedFeature(UnsupportedFeature::AtomMap),
-                "unsupported SMARTS feature: atom maps",
-                "unsupported_atom_map",
-            ),
-            (
                 SmartsParseErrorKind::UnsupportedFeature(UnsupportedFeature::AtomPrimitive),
                 "unsupported SMARTS feature: atom primitive",
                 "unsupported_atom_primitive",
@@ -200,13 +191,6 @@ mod tests {
 
     #[test]
     fn unsupported_feature_codes_are_individually_covered() {
-        assert_eq!(
-            SmartsParseError::new(SmartsParseErrorKind::UnsupportedFeature(
-                UnsupportedFeature::AtomMap,
-            ))
-            .code(),
-            "unsupported_atom_map"
-        );
         assert_eq!(
             SmartsParseError::new(SmartsParseErrorKind::UnsupportedFeature(
                 UnsupportedFeature::AtomPrimitive,

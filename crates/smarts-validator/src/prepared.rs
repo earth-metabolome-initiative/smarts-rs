@@ -1,8 +1,14 @@
-//! Prepared molecule sidecars and placeholder prepared targets.
+//! Prepared molecule sidecars and prepared target caches.
 
-use alloc::vec::Vec;
+use alloc::{collections::BTreeMap, vec, vec::Vec};
+use elements_rs::Element;
+use smiles_parser::{
+    atom::{bracketed::chirality::Chirality, Atom},
+    bond::bond_edge::bond_edge_other,
+    AromaticityAssignment, AromaticityPolicy, DoubleBondStereoConfig, RingMembership, Smiles,
+};
 
-use crate::target::{AtomId, MoleculeTarget, TargetText};
+use crate::target::{AtomId, BondLabel, MoleculeTarget};
 
 /// Dense per-atom prepared properties.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14,7 +20,7 @@ impl<T> NodeProps<T> {
     /// Builds node properties from a dense vector aligned with atom IDs.
     #[inline]
     #[must_use]
-    pub fn new(values: Vec<T>) -> Self {
+    pub const fn new(values: Vec<T>) -> Self {
         Self { values }
     }
 
@@ -28,14 +34,14 @@ impl<T> NodeProps<T> {
     /// Returns the number of stored atom properties.
     #[inline]
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.values.len()
     }
 
     /// Returns whether there are no stored atom properties.
     #[inline]
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.values.is_empty()
     }
 }
@@ -50,7 +56,7 @@ impl<T> EdgeProps<T> {
     /// Builds edge properties from a dense vector aligned with edge IDs.
     #[inline]
     #[must_use]
-    pub fn new(values: Vec<T>) -> Self {
+    pub const fn new(values: Vec<T>) -> Self {
         Self { values }
     }
 
@@ -64,14 +70,14 @@ impl<T> EdgeProps<T> {
     /// Returns the number of stored edge properties.
     #[inline]
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.values.len()
     }
 
     /// Returns whether there are no stored edge properties.
     #[inline]
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.values.is_empty()
     }
 }
@@ -103,7 +109,7 @@ impl<T: MoleculeTarget> PreparedMolecule<T> {
     /// Returns the original target.
     #[inline]
     #[must_use]
-    pub fn target(&self) -> &T {
+    pub const fn target(&self) -> &T {
         &self.target
     }
 
@@ -117,52 +123,496 @@ impl<T: MoleculeTarget> PreparedMolecule<T> {
     /// Returns the dense degree sidecar.
     #[inline]
     #[must_use]
-    pub fn degrees(&self) -> &NodeProps<usize> {
+    pub const fn degrees(&self) -> &NodeProps<usize> {
         &self.degrees
     }
 }
 
-/// Target data after preparation for the placeholder string entrypoint.
+/// Prepared target data for a parsed `SMILES` molecule.
 ///
-/// This remains separate from [`PreparedMolecule`] because the string-based
-/// `matches` API is still just a scaffold.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// This is the first real target backend for `smarts-validator`. It keeps the
+/// parsed [`Smiles`] graph plus the first cached properties required for
+/// single-atom SMARTS evaluation.
+#[derive(Debug, Clone)]
 pub struct PreparedTarget {
-    target: TargetText,
+    target: Smiles,
+    aromaticity: AromaticityAssignment,
+    ring_membership: RingMembership,
+    tetrahedral_chiralities: NodeProps<Option<Chirality>>,
+    double_bond_stereo: BTreeMap<(AtomId, AtomId), DoubleBondStereoConfig>,
+    connected_components: NodeProps<usize>,
+    degrees: NodeProps<usize>,
+    connectivities: NodeProps<u8>,
+    implicit_hydrogens: NodeProps<u8>,
+    total_hydrogens: NodeProps<u8>,
+    total_valences: NodeProps<u8>,
+    ring_membership_counts: NodeProps<u8>,
+    ring_bond_counts: NodeProps<u8>,
+    smallest_ring_sizes: NodeProps<u8>,
 }
 
 impl PreparedTarget {
-    /// Wraps the placeholder target after preparation.
-    #[inline]
+    /// Prepares a parsed target molecule for SMARTS matching.
     #[must_use]
-    pub fn new(target: TargetText) -> Self {
-        Self { target }
+    pub fn new(target: Smiles) -> Self {
+        let aromaticity = target.aromaticity_assignment_for(AromaticityPolicy::RdkitDefault);
+        let ring_membership = target.ring_membership();
+        let symm_sssr = target.symm_sssr_result();
+        let tetrahedral_chiralities = NodeProps::new(
+            (0..target.nodes().len())
+                .map(|atom_id| target.smarts_tetrahedral_chirality(atom_id))
+                .collect(),
+        );
+        let double_bond_stereo = semantic_double_bond_stereo_configs(&target);
+        let connected_components = connected_component_ids(&target);
+        let degrees = NodeProps::new(
+            (0..target.nodes().len())
+                .map(|atom_id| target.edge_count_for_node(atom_id))
+                .collect(),
+        );
+        let connectivities = NodeProps::new(
+            (0..target.nodes().len())
+                .map(|atom_id| target.connectivity_count(atom_id))
+                .collect(),
+        );
+        let implicit_hydrogens = NodeProps::new(
+            (0..target.nodes().len())
+                .map(|atom_id| target.implicit_hydrogen_count(atom_id))
+                .collect(),
+        );
+        let total_hydrogens = NodeProps::new(
+            target
+                .nodes()
+                .iter()
+                .enumerate()
+                .map(|(atom_id, atom)| {
+                    let neighbor_hydrogens = explicit_hydrogen_neighbor_count(&target, atom_id);
+                    atom.hydrogen_count()
+                        .checked_add(target.implicit_hydrogen_count(atom_id))
+                        .and_then(|value| value.checked_add(neighbor_hydrogens))
+                        .unwrap_or(u8::MAX)
+                })
+                .collect(),
+        );
+        let total_valences = NodeProps::new(
+            (0..target.nodes().len())
+                .map(|atom_id| target.smarts_total_valence(atom_id, &aromaticity))
+                .collect(),
+        );
+        let ring_bond_counts = NodeProps::new(
+            (0..target.nodes().len())
+                .map(|atom_id| ring_bond_count(&ring_membership, atom_id))
+                .collect(),
+        );
+        let (ring_membership_counts, smallest_ring_sizes) =
+            ring_cycle_properties(target.nodes().len(), symm_sssr.cycles());
+        Self {
+            target,
+            aromaticity,
+            ring_membership,
+            tetrahedral_chiralities,
+            double_bond_stereo,
+            connected_components,
+            degrees,
+            connectivities,
+            implicit_hydrogens,
+            total_hydrogens,
+            total_valences,
+            ring_membership_counts,
+            ring_bond_counts,
+            smallest_ring_sizes,
+        }
     }
 
-    /// Returns the underlying placeholder target.
+    /// Returns the underlying parsed target molecule.
     #[inline]
     #[must_use]
-    pub fn target(&self) -> &TargetText {
+    pub const fn target(&self) -> &Smiles {
         &self.target
+    }
+
+    /// Returns the number of atoms in the prepared target.
+    #[inline]
+    #[must_use]
+    pub fn atom_count(&self) -> usize {
+        self.target.nodes().len()
+    }
+
+    /// Returns the parsed atom for the provided atom id.
+    #[inline]
+    #[must_use]
+    pub fn atom(&self, atom_id: AtomId) -> Option<&Atom> {
+        self.target.node_by_id(atom_id)
+    }
+
+    /// Returns the effective bond label between two atoms, taking the cached
+    /// aromaticity assignment into account.
+    #[must_use]
+    pub fn bond(&self, left_atom: AtomId, right_atom: AtomId) -> Option<BondLabel> {
+        self.target
+            .edge_for_node_pair((left_atom, right_atom))
+            .map(|edge| {
+                if self.aromaticity.contains_edge(left_atom, right_atom) {
+                    BondLabel::Aromatic
+                } else {
+                    BondLabel::from(edge.2)
+                }
+            })
+    }
+
+    /// Returns a zero-allocation iterator over neighbors of one atom together
+    /// with their effective bond labels.
+    pub fn neighbors(&self, atom_id: AtomId) -> impl Iterator<Item = (AtomId, BondLabel)> + '_ {
+        self.target.edges_for_node(atom_id).filter_map(move |edge| {
+            let other = bond_edge_other(edge, atom_id)?;
+            let label = if self.aromaticity.contains_edge(atom_id, other) {
+                BondLabel::Aromatic
+            } else {
+                BondLabel::from(edge.2)
+            };
+            Some((other, label))
+        })
+    }
+
+    /// Returns whether the provided atom is aromatic under the RDKit-default
+    /// aromaticity assignment.
+    #[inline]
+    #[must_use]
+    pub fn is_aromatic(&self, atom_id: AtomId) -> bool {
+        self.aromaticity.contains_atom(atom_id)
+    }
+
+    /// Returns whether the provided atom belongs to at least one ring.
+    #[inline]
+    #[must_use]
+    pub fn is_ring_atom(&self, atom_id: AtomId) -> bool {
+        self.ring_membership.contains_atom(atom_id)
+    }
+
+    /// Returns whether the provided bond belongs to at least one ring.
+    #[inline]
+    #[must_use]
+    pub fn is_ring_bond(&self, left_atom: AtomId, right_atom: AtomId) -> bool {
+        self.ring_membership.contains_edge(left_atom, right_atom)
+    }
+
+    /// Returns the semantic SMARTS-facing tetrahedral chirality of the atom.
+    #[inline]
+    #[must_use]
+    pub fn tetrahedral_chirality(&self, atom_id: AtomId) -> Option<Chirality> {
+        self.tetrahedral_chiralities.get(atom_id).copied().flatten()
+    }
+
+    /// Returns the semantic SMARTS-facing double-bond stereo configuration.
+    #[inline]
+    #[must_use]
+    pub fn double_bond_stereo_config(
+        &self,
+        left_atom: AtomId,
+        right_atom: AtomId,
+    ) -> Option<DoubleBondStereoConfig> {
+        self.double_bond_stereo
+            .get(&edge_key(left_atom, right_atom))
+            .copied()
+    }
+
+    /// Returns the connected-component identifier for the provided atom.
+    #[inline]
+    #[must_use]
+    pub fn connected_component(&self, atom_id: AtomId) -> Option<usize> {
+        self.connected_components.get(atom_id).copied()
+    }
+
+    /// Returns the cached topological degree for the provided atom.
+    #[inline]
+    #[must_use]
+    pub fn degree(&self, atom_id: AtomId) -> Option<usize> {
+        self.degrees.get(atom_id).copied()
+    }
+
+    /// Returns the SMARTS connectivity count for the provided atom.
+    ///
+    /// This is the RDKit-style `X` value:
+    /// topological degree plus bracket-explicit hydrogens plus implicit
+    /// hydrogens. Explicit hydrogen neighbor nodes are already included in the
+    /// topological degree and are not counted twice.
+    #[inline]
+    #[must_use]
+    pub fn connectivity(&self, atom_id: AtomId) -> Option<u8> {
+        self.connectivities.get(atom_id).copied()
+    }
+
+    /// Returns the cached implicit hydrogen count for the provided atom.
+    #[inline]
+    #[must_use]
+    pub fn implicit_hydrogen_count(&self, atom_id: AtomId) -> Option<u8> {
+        self.implicit_hydrogens.get(atom_id).copied()
+    }
+
+    /// Returns the cached total hydrogen count for the provided atom.
+    #[inline]
+    #[must_use]
+    pub fn total_hydrogen_count(&self, atom_id: AtomId) -> Option<u8> {
+        self.total_hydrogens.get(atom_id).copied()
+    }
+
+    /// Returns the RDKit-style total valence for the provided atom.
+    #[inline]
+    #[must_use]
+    pub fn total_valence(&self, atom_id: AtomId) -> Option<u8> {
+        self.total_valences.get(atom_id).copied()
+    }
+
+    /// Returns the number of symmetrized-SSSR rings containing the atom.
+    #[inline]
+    #[must_use]
+    pub fn ring_membership_count(&self, atom_id: AtomId) -> Option<u8> {
+        self.ring_membership_counts.get(atom_id).copied()
+    }
+
+    /// Returns the number of ring bonds incident to the atom.
+    #[inline]
+    #[must_use]
+    pub fn ring_bond_count(&self, atom_id: AtomId) -> Option<u8> {
+        self.ring_bond_counts.get(atom_id).copied()
+    }
+
+    /// Returns the smallest symmetrized-SSSR ring size containing the atom.
+    #[inline]
+    #[must_use]
+    pub fn smallest_ring_size(&self, atom_id: AtomId) -> Option<u8> {
+        self.smallest_ring_sizes.get(atom_id).copied()
+    }
+}
+
+fn explicit_hydrogen_neighbor_count(target: &Smiles, atom_id: usize) -> u8 {
+    target
+        .edges_for_node(atom_id)
+        .filter_map(|edge| bond_edge_other(edge, atom_id))
+        .filter(|&neighbor_id| {
+            target
+                .node_by_id(neighbor_id)
+                .and_then(Atom::element)
+                .is_some_and(|element| element == Element::H)
+        })
+        .count()
+        .try_into()
+        .unwrap_or(u8::MAX)
+}
+
+fn ring_bond_count(ring_membership: &RingMembership, atom_id: usize) -> u8 {
+    ring_membership
+        .bond_edges()
+        .iter()
+        .filter(|edge| edge[0] == atom_id || edge[1] == atom_id)
+        .count()
+        .try_into()
+        .unwrap_or(u8::MAX)
+}
+
+fn ring_cycle_properties(
+    atom_count: usize,
+    cycles: &[Vec<usize>],
+) -> (NodeProps<u8>, NodeProps<u8>) {
+    let mut ring_counts = vec![0_u8; atom_count];
+    let mut smallest_sizes = vec![0_u8; atom_count];
+
+    for cycle in cycles {
+        let cycle_len = u8::try_from(cycle.len()).unwrap_or(u8::MAX);
+        for &atom_id in cycle {
+            ring_counts[atom_id] = ring_counts[atom_id].saturating_add(1);
+            let current = &mut smallest_sizes[atom_id];
+            if *current == 0 || cycle_len < *current {
+                *current = cycle_len;
+            }
+        }
+    }
+
+    (NodeProps::new(ring_counts), NodeProps::new(smallest_sizes))
+}
+
+fn connected_component_ids(target: &Smiles) -> NodeProps<usize> {
+    let atom_count = target.nodes().len();
+    let mut components = vec![usize::MAX; atom_count];
+    let mut next_component = 0usize;
+    let mut stack = Vec::new();
+
+    for start_atom in 0..atom_count {
+        if components[start_atom] != usize::MAX {
+            continue;
+        }
+
+        components[start_atom] = next_component;
+        stack.push(start_atom);
+
+        while let Some(atom_id) = stack.pop() {
+            for edge in target.edges_for_node(atom_id) {
+                let Some(other_atom) = bond_edge_other(edge, atom_id) else {
+                    continue;
+                };
+                if components[other_atom] == usize::MAX {
+                    components[other_atom] = next_component;
+                    stack.push(other_atom);
+                }
+            }
+        }
+
+        next_component += 1;
+    }
+
+    NodeProps::new(components)
+}
+
+fn semantic_double_bond_stereo_configs(
+    target: &Smiles,
+) -> BTreeMap<(AtomId, AtomId), DoubleBondStereoConfig> {
+    let mut configs = BTreeMap::new();
+    for atom_id in 0..target.nodes().len() {
+        for edge in target.edges_for_node(atom_id) {
+            let Some(other_atom) = bond_edge_other(edge, atom_id) else {
+                continue;
+            };
+            if atom_id >= other_atom {
+                continue;
+            }
+            if let Some(config) = target.double_bond_stereo_config(atom_id, other_atom) {
+                configs.insert(edge_key(atom_id, other_atom), config);
+            }
+        }
+    }
+    configs
+}
+
+#[inline]
+const fn edge_key(left_atom: AtomId, right_atom: AtomId) -> (AtomId, AtomId) {
+    if left_atom <= right_atom {
+        (left_atom, right_atom)
+    } else {
+        (right_atom, left_atom)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
     use alloc::vec;
+    use core::str::FromStr;
     use elements_rs::Element;
+    use smiles_parser::Smiles;
 
     use super::{EdgeProps, NodeProps, PreparedMolecule, PreparedTarget};
     use crate::{
         geometric_target::{MoleculeGraph, UndirectedBond},
-        target::{AtomLabel, BondLabel, TargetText},
+        target::{AtomLabel, BondLabel},
     };
 
     #[test]
-    fn prepared_target_keeps_original_input() {
-        let target = TargetText::new("NCC").unwrap();
+    fn prepared_target_keeps_smiles_and_basic_caches() {
+        let target = Smiles::from_str("CCO").unwrap();
         let prepared = PreparedTarget::new(target);
-        assert_eq!(prepared.target().as_str(), "NCC");
+
+        assert_eq!(prepared.atom_count(), 3);
+        assert_eq!(prepared.target().to_string(), "CCO");
+        assert_eq!(prepared.degree(0), Some(1));
+        assert_eq!(prepared.degree(1), Some(2));
+        assert_eq!(prepared.degree(2), Some(1));
+        assert_eq!(prepared.implicit_hydrogen_count(0), Some(3));
+        assert_eq!(prepared.implicit_hydrogen_count(1), Some(2));
+        assert_eq!(prepared.implicit_hydrogen_count(2), Some(1));
+        assert_eq!(prepared.total_hydrogen_count(0), Some(3));
+        assert_eq!(prepared.total_hydrogen_count(1), Some(2));
+        assert_eq!(prepared.total_hydrogen_count(2), Some(1));
+        assert_eq!(prepared.connectivity(0), Some(4));
+        assert_eq!(prepared.connectivity(1), Some(4));
+        assert_eq!(prepared.connectivity(2), Some(2));
+        assert_eq!(prepared.total_valence(0), Some(4));
+        assert_eq!(prepared.total_valence(1), Some(4));
+        assert_eq!(prepared.total_valence(2), Some(2));
+        assert_eq!(prepared.connected_component(0), Some(0));
+        assert_eq!(prepared.connected_component(1), Some(0));
+        assert_eq!(prepared.connected_component(2), Some(0));
+    }
+
+    #[test]
+    fn prepared_target_caches_connected_components() {
+        let prepared = PreparedTarget::new(Smiles::from_str("CC.O").unwrap());
+
+        assert_eq!(prepared.connected_component(0), Some(0));
+        assert_eq!(prepared.connected_component(1), Some(0));
+        assert_eq!(prepared.connected_component(2), Some(1));
+    }
+
+    #[test]
+    fn prepared_target_uses_rdkit_default_aromaticity() {
+        let target = Smiles::from_str("c1ccccc1").unwrap();
+        let prepared = PreparedTarget::new(target);
+
+        for atom_id in 0..prepared.atom_count() {
+            assert!(prepared.is_aromatic(atom_id));
+        }
+    }
+
+    #[test]
+    fn prepared_target_caches_ring_properties() {
+        let target = Smiles::from_str("c1ccc2ccccc2c1").unwrap();
+        let prepared = PreparedTarget::new(target);
+
+        assert_eq!(prepared.ring_membership_count(0), Some(1));
+        assert_eq!(prepared.ring_membership_count(3), Some(2));
+        assert_eq!(prepared.ring_bond_count(0), Some(2));
+        assert_eq!(prepared.ring_bond_count(3), Some(3));
+        assert_eq!(prepared.smallest_ring_size(0), Some(6));
+        assert_eq!(prepared.smallest_ring_size(3), Some(6));
+        assert!(prepared.is_ring_atom(0));
+        assert!(prepared.is_ring_bond(0, 1));
+        assert!(!prepared.is_ring_bond(0, 4));
+        assert_eq!(prepared.connectivity(0), Some(3));
+        assert_eq!(prepared.connectivity(3), Some(3));
+        assert_eq!(prepared.total_valence(0), Some(4));
+        assert_eq!(prepared.total_valence(3), Some(4));
+    }
+
+    #[test]
+    fn prepared_target_caches_special_connectivity_and_valence_cases() {
+        let ammonium = PreparedTarget::new(Smiles::from_str("[NH4+]").unwrap());
+        assert_eq!(ammonium.connectivity(0), Some(4));
+        assert_eq!(ammonium.total_valence(0), Some(4));
+
+        let sodium = PreparedTarget::new(Smiles::from_str("[Na+]").unwrap());
+        assert_eq!(sodium.connectivity(0), Some(0));
+        assert_eq!(sodium.total_valence(0), Some(0));
+
+        let pyrrolic = PreparedTarget::new(Smiles::from_str("[nH]1cccc1").unwrap());
+        assert_eq!(pyrrolic.connectivity(0), Some(3));
+        assert_eq!(pyrrolic.total_valence(0), Some(3));
+
+        let phosphoric = PreparedTarget::new(Smiles::from_str("P(=O)(O)(O)O").unwrap());
+        assert_eq!(phosphoric.connectivity(0), Some(4));
+        assert_eq!(phosphoric.total_valence(0), Some(5));
+    }
+
+    #[test]
+    fn prepared_target_caches_semantic_stereo() {
+        let left = PreparedTarget::new(Smiles::from_str("F[C@H](Cl)Br").unwrap());
+        let right = PreparedTarget::new(Smiles::from_str("F[C@@H](Cl)Br").unwrap());
+        let trans = PreparedTarget::new(Smiles::from_str("F/C=C/F").unwrap());
+        let cis = PreparedTarget::new(Smiles::from_str("F/C=C\\F").unwrap());
+        let plain = PreparedTarget::new(Smiles::from_str("FC=CF").unwrap());
+
+        assert_ne!(
+            left.tetrahedral_chirality(1),
+            right.tetrahedral_chirality(1)
+        );
+        assert!(left.tetrahedral_chirality(1).is_some());
+        assert_eq!(
+            trans.double_bond_stereo_config(1, 2),
+            Some(smiles_parser::DoubleBondStereoConfig::E)
+        );
+        assert_eq!(
+            cis.double_bond_stereo_config(1, 2),
+            Some(smiles_parser::DoubleBondStereoConfig::Z)
+        );
+        assert_eq!(plain.double_bond_stereo_config(1, 2), None);
     }
 
     #[test]

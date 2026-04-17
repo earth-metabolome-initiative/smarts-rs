@@ -42,7 +42,7 @@ struct PendingRingClosure {
 }
 
 impl<'a> Parser<'a> {
-    fn new(input: &'a str) -> Self {
+    const fn new(input: &'a str) -> Self {
         Self {
             input,
             pos: 0,
@@ -237,7 +237,7 @@ impl<'a> Parser<'a> {
         Err(self.error(SmartsParseErrorKind::UnexpectedEndOfInput))
     }
 
-    fn parse_component_separator(&mut self) {
+    const fn parse_component_separator(&mut self) {
         self.pos += 1;
         self.current_component += 1;
         self.current_atom = None;
@@ -516,11 +516,6 @@ impl<'a> Parser<'a> {
 
         let end = self.pos;
         let text = &self.input[start + 1..end];
-        if find_atom_map(text).is_some() {
-            return Err(self.error(SmartsParseErrorKind::UnsupportedFeature(
-                UnsupportedFeature::AtomMap,
-            )));
-        }
         let bracket = parse_bracket_text(text).map_err(|err| self.map_bracket_error(&err))?;
         self.pos += 1;
 
@@ -535,12 +530,32 @@ impl<'a> Parser<'a> {
             return Ok(AtomExpr::Wildcard);
         }
 
-        let Some((element, aromatic, width)) = parse_supported_bare_element(remaining) else {
-            return Err(self.error_here(SmartsParseErrorKind::UnexpectedCharacter(self.peek())));
-        };
+        if let Some((element, aromatic, width)) = parse_supported_bare_element(remaining) {
+            self.pos += width;
+            return Ok(AtomExpr::Bare { element, aromatic });
+        }
 
-        self.pos += width;
-        Ok(AtomExpr::Bare { element, aromatic })
+        if remaining.starts_with('A') {
+            self.pos += 1;
+            return Ok(AtomExpr::Bracket(crate::query::BracketExpr {
+                tree: crate::query::BracketExprTree::Primitive(
+                    crate::query::AtomPrimitive::AliphaticAny,
+                ),
+                atom_map: None,
+            }));
+        }
+
+        if remaining.starts_with('a') {
+            self.pos += 1;
+            return Ok(AtomExpr::Bracket(crate::query::BracketExpr {
+                tree: crate::query::BracketExprTree::Primitive(
+                    crate::query::AtomPrimitive::AromaticAny,
+                ),
+                atom_map: None,
+            }));
+        }
+
+        Err(self.error_here(SmartsParseErrorKind::UnexpectedCharacter(self.peek())))
     }
 
     fn skip_whitespace(&mut self) {
@@ -556,22 +571,22 @@ impl<'a> Parser<'a> {
             .expect("parser peek past eof")
     }
 
-    fn is_eof(&self) -> bool {
+    const fn is_eof(&self) -> bool {
         self.pos >= self.input.len()
     }
 
     #[allow(clippy::unused_self)]
-    fn error_here(&self, kind: SmartsParseErrorKind) -> SmartsParseError {
+    const fn error_here(&self, kind: SmartsParseErrorKind) -> SmartsParseError {
         self.error(kind)
     }
 
     #[allow(clippy::unused_self)]
-    fn error(&self, kind: SmartsParseErrorKind) -> SmartsParseError {
+    const fn error(&self, kind: SmartsParseErrorKind) -> SmartsParseError {
         SmartsParseError::new(kind)
     }
 
     #[allow(clippy::unused_self)]
-    fn map_bracket_error(&self, err: &BracketParseError) -> SmartsParseError {
+    const fn map_bracket_error(&self, err: &BracketParseError) -> SmartsParseError {
         let kind = match err.kind() {
             BracketParseErrorKind::Empty | BracketParseErrorKind::UnexpectedEnd => {
                 SmartsParseErrorKind::UnexpectedEndOfInput
@@ -610,39 +625,11 @@ fn collapse_bond_logic(
     }
 }
 
-fn find_atom_map(text: &str) -> Option<usize> {
-    let mut recursive_depth = 0usize;
-    let mut chars = text.char_indices().peekable();
-
-    while let Some((index, ch)) = chars.next() {
-        if text[index..].starts_with("$(") {
-            recursive_depth += 1;
-            chars.next();
-            continue;
-        }
-
-        if recursive_depth == 0 {
-            if ch == ':' && chars.peek().is_some_and(|(_, next)| next.is_ascii_digit()) {
-                return Some(index);
-            }
-            continue;
-        }
-
-        match ch {
-            '(' => recursive_depth += 1,
-            ')' => recursive_depth = recursive_depth.saturating_sub(1),
-            _ => {}
-        }
-    }
-
-    None
-}
-
-fn is_supported_explicit_bond_char(ch: char) -> bool {
+const fn is_supported_explicit_bond_char(ch: char) -> bool {
     matches!(ch, '!' | '-' | '=' | '#' | ':' | '~' | '/' | '\\' | '@')
 }
 
-fn starts_implicit_bond_and(ch: char) -> bool {
+const fn starts_implicit_bond_and(ch: char) -> bool {
     matches!(ch, '!' | '-' | '=' | '#' | ':' | '~' | '/' | '\\' | '@')
 }
 
@@ -692,10 +679,6 @@ mod tests {
                 BondExprTree::Primitive(BondPrimitive::Bond(Bond::Double)),
             ])
         );
-
-        assert_eq!(find_atom_map("C:1"), Some(1));
-        assert_eq!(find_atom_map("$(C:1)"), None);
-        assert_eq!(find_atom_map("$(C(C):1):2"), Some(9));
 
         for ch in ['!', '-', '=', '#', ':', '~', '/', '\\', '@'] {
             assert!(is_supported_explicit_bond_char(ch));

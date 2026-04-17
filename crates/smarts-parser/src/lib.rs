@@ -17,7 +17,7 @@ use core::str::FromStr;
 mod bracket;
 mod error;
 mod parse;
-mod query;
+pub(crate) mod query;
 
 pub use bracket::{
     parse_bracket_text as fuzz_parse_bracket_text, BracketParseError as FuzzBracketParseError,
@@ -27,7 +27,8 @@ pub use error::{SmartsParseError, SmartsParseErrorKind, UnsupportedFeature};
 pub use parse::parse_smarts;
 pub use query::{
     AtomExpr, AtomId, AtomPrimitive, BondExpr, BondExprTree, BondId, BondPrimitive, BracketExpr,
-    BracketExprTree, ComponentGroupId, ComponentId, HydrogenKind, QueryAtom, QueryBond, QueryMol,
+    BracketExprTree, ComponentGroupId, ComponentId, HydrogenKind, NumericQuery, NumericRange,
+    QueryAtom, QueryBond, QueryMol,
 };
 pub use smiles_parser::atom::bracketed::chirality::Chirality;
 
@@ -226,13 +227,58 @@ mod tests {
                         }),
                         BracketExprTree::Primitive(AtomPrimitive::Hydrogen(
                             HydrogenKind::Total,
-                            Some(1),
+                            Some(NumericQuery::Exact(1)),
                         )),
                     ])
                 );
             }
             other => panic!("expected bracket atom, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_atom_maps_at_end_of_bracket_atoms() {
+        let query = parse_smarts("[C:1]").unwrap();
+        match &query.atoms()[0].expr {
+            AtomExpr::Bracket(expr) => {
+                assert_eq!(
+                    expr.tree,
+                    BracketExprTree::Primitive(AtomPrimitive::Symbol {
+                        element: Element::C,
+                        aromatic: false,
+                    })
+                );
+                assert_eq!(expr.atom_map, Some(1));
+            }
+            other => panic!("expected bracket atom, got {other:?}"),
+        }
+
+        let query = parse_smarts("[C,N,O:12]").unwrap();
+        match &query.atoms()[0].expr {
+            AtomExpr::Bracket(expr) => {
+                assert_eq!(expr.atom_map, Some(12));
+                assert_eq!(
+                    expr.tree,
+                    BracketExprTree::Or(vec![
+                        BracketExprTree::Primitive(AtomPrimitive::Symbol {
+                            element: Element::C,
+                            aromatic: false,
+                        }),
+                        BracketExprTree::Primitive(AtomPrimitive::Symbol {
+                            element: Element::N,
+                            aromatic: false,
+                        }),
+                        BracketExprTree::Primitive(AtomPrimitive::Symbol {
+                            element: Element::O,
+                            aromatic: false,
+                        }),
+                    ])
+                );
+            }
+            other => panic!("expected bracket atom, got {other:?}"),
+        }
+
+        assert_eq!(query.to_string(), "[C,N,O:12]");
     }
 
     #[test]
@@ -255,7 +301,7 @@ mod tests {
                             }),
                             BracketExprTree::Primitive(AtomPrimitive::Hydrogen(
                                 HydrogenKind::Total,
-                                Some(1),
+                                Some(NumericQuery::Exact(1)),
                             )),
                         ]),
                     ])
@@ -309,6 +355,7 @@ mod tests {
     #[test]
     fn parses_isotope_and_degree_primitives() {
         let isotope = parse_smarts("[12C]").unwrap();
+        let isotope_wildcard = parse_smarts("[89*]").unwrap();
         let degree = parse_smarts("[D3]").unwrap();
         let ring_connectivity = parse_smarts("[x2]").unwrap();
 
@@ -329,7 +376,19 @@ mod tests {
             AtomExpr::Bracket(expr) => {
                 assert_eq!(
                     expr.tree,
-                    BracketExprTree::Primitive(AtomPrimitive::Degree(Some(3)))
+                    BracketExprTree::Primitive(AtomPrimitive::Degree(
+                        Some(NumericQuery::Exact(3),)
+                    ))
+                );
+            }
+            other => panic!("expected bracket atom, got {other:?}"),
+        }
+
+        match &isotope_wildcard.atoms()[0].expr {
+            AtomExpr::Bracket(expr) => {
+                assert_eq!(
+                    expr.tree,
+                    BracketExprTree::Primitive(AtomPrimitive::IsotopeWildcard(89))
                 );
             }
             other => panic!("expected bracket atom, got {other:?}"),
@@ -339,7 +398,9 @@ mod tests {
             AtomExpr::Bracket(expr) => {
                 assert_eq!(
                     expr.tree,
-                    BracketExprTree::Primitive(AtomPrimitive::RingConnectivity(Some(2)))
+                    BracketExprTree::Primitive(AtomPrimitive::RingConnectivity(Some(
+                        NumericQuery::Exact(2),
+                    )))
                 );
             }
             other => panic!("expected bracket atom, got {other:?}"),
@@ -524,6 +585,26 @@ mod tests {
     }
 
     #[test]
+    fn parses_bracketed_elements_starting_with_h() {
+        for smarts in ["[He]", "[Hf]", "[Hg]"] {
+            assert!(parse_smarts(smarts).is_ok(), "{smarts}");
+        }
+    }
+
+    #[test]
+    fn parses_bracketed_elements_that_overlap_atom_primitives() {
+        for smarts in ["[Al]", "[At]", "[Ag]", "[Au]", "[Re]"] {
+            assert!(parse_smarts(smarts).is_ok(), "{smarts}");
+        }
+    }
+
+    #[test]
+    fn parses_bare_aliphatic_and_aromatic_any_atoms() {
+        assert!(parse_smarts("A").is_ok());
+        assert!(parse_smarts("a").is_ok());
+    }
+
+    #[test]
     fn parses_bond_expression_or() {
         let query = parse_smarts("C-,=N").unwrap();
 
@@ -651,21 +732,21 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_organic_elements_as_bare_atoms() {
-        let err = parse_smarts("Na").unwrap_err();
-        assert_eq!(err.kind(), SmartsParseErrorKind::UnexpectedCharacter('a'));
+    fn parses_rdkit_accepted_and_rejected_bare_elements() {
+        for smarts in ["Na", "As", "Cn"] {
+            assert!(parse_smarts(smarts).is_ok(), "{smarts}");
+        }
 
-        let err = parse_smarts("Pt").unwrap_err();
-        assert_eq!(err.kind(), SmartsParseErrorKind::UnexpectedCharacter('t'));
-
-        let err = parse_smarts("Og").unwrap_err();
-        assert_eq!(err.kind(), SmartsParseErrorKind::UnexpectedCharacter('g'));
-
-        let err = parse_smarts("As").unwrap_err();
-        assert_eq!(err.kind(), SmartsParseErrorKind::UnexpectedCharacter('A'));
-
-        let err = parse_smarts("Se").unwrap_err();
-        assert_eq!(err.kind(), SmartsParseErrorKind::UnexpectedCharacter('e'));
+        for (smarts, expected) in [
+            ("Pt", SmartsParseErrorKind::UnexpectedCharacter('t')),
+            ("Og", SmartsParseErrorKind::UnexpectedCharacter('g')),
+            ("Se", SmartsParseErrorKind::UnexpectedCharacter('e')),
+            ("At", SmartsParseErrorKind::UnexpectedCharacter('t')),
+            ("Al", SmartsParseErrorKind::UnexpectedCharacter('l')),
+        ] {
+            let err = parse_smarts(smarts).unwrap_err();
+            assert_eq!(err.kind(), expected, "{smarts}");
+        }
     }
 
     #[test]
