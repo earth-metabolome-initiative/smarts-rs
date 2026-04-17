@@ -210,9 +210,9 @@ checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 
 [[package]]
 name = "elements_rs"
-version = "0.2.0"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "657c0017a1a97c730b74d0838551e26f2039077cc10a235a5f74169f249b90dd"
+checksum = "f6ff486947c32888bc0f13dc1f2556999b2d010b624f71f7a414e5ae8d810f8d"
 dependencies = [
  "serde",
  "strum",
@@ -260,7 +260,20 @@ dependencies = [
  "multi_ranged",
  "num-traits",
  "rand",
- "serde",
+ "thiserror",
+]
+
+[[package]]
+name = "geometric-traits"
+version = "0.1.0"
+source = "git+https://github.com/earth-metabolome-initiative/geometric-traits?branch=main#eec1488c592e8299a30096208ed9c439a1dd40de"
+dependencies = [
+ "bitvec",
+ "hashbrown",
+ "lender",
+ "multi_ranged",
+ "num-traits",
+ "rand",
  "thiserror",
 ]
 
@@ -569,6 +582,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
+name = "smallvec"
+version = "1.15.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
+
+[[package]]
 name = "smarts-parser"
 version = "0.1.0"
 dependencies = [
@@ -576,6 +595,7 @@ dependencies = [
  "elements_rs",
  "serde",
  "serde_json",
+ "smiles-parser",
  "thiserror",
 ]
 
@@ -584,8 +604,19 @@ name = "smarts-validator"
 version = "0.1.0"
 dependencies = [
  "elements_rs",
- "geometric-traits",
+ "geometric-traits 0.1.0",
  "smarts-parser",
+]
+
+[[package]]
+name = "smiles-parser"
+version = "0.1.0"
+dependencies = [
+ "elements_rs",
+ "geometric-traits 0.1.0 (git+https://github.com/earth-metabolome-initiative/geometric-traits?branch=main)",
+ "hashbrown",
+ "smallvec",
+ "thiserror",
 ]
 
 [[package]]

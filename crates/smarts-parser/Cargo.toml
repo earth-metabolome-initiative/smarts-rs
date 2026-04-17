@@ -3,7 +3,11 @@ name = "smarts-parser"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Parser-first SMARTS query crate"
+readme = "../../README.md"
+keywords = ["smarts", "chemistry", "parser"]
+categories = ["parser-implementations", "science"]
 
 [features]
 default = []
@@ -14,6 +18,7 @@ workspace = true
 
 [dependencies]
 elements_rs = { version = "0.2.0", default-features = false }
+smiles-parser = { path = "../../../smiles-parser", default-features = false }
 serde = { version = "1.0", default-features = false, features = ["alloc"], optional = true }
 thiserror = { version = "2.0", default-features = false }
 

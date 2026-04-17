@@ -3,7 +3,11 @@ name = "smarts-validator"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Validation and matching scaffold for SMARTS queries"
+readme = "../../README.md"
+keywords = ["smarts", "chemistry", "substructure"]
+categories = ["science"]
 
 [lints]
 workspace = true

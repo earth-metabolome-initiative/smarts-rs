@@ -6,6 +6,7 @@ use alloc::{
 };
 use core::fmt;
 use elements_rs::{Element, ElementVariant, Isotope, MassNumber};
+use smiles_parser::{atom::bracketed::chirality::Chirality, bond::Bond};
 
 /// Dense atom identifier inside one parsed SMARTS query.
 pub type AtomId = usize;
@@ -110,37 +111,6 @@ pub enum HydrogenKind {
     Implicit,
 }
 
-/// Atom chirality predicate used inside a bracket atom.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Chirality {
-    /// Clockwise shorthand `@`.
-    Clockwise,
-    /// Counter-clockwise shorthand `@@`.
-    CounterClockwise,
-    /// Explicit chiral class such as `@TH1` or `@SP`.
-    Class {
-        /// Chiral class family.
-        class: ChiralClass,
-        /// Optional class-specific permutation number.
-        permutation: Option<u8>,
-    },
-}
-
-/// Chiral class family used by explicit SMARTS atom stereo syntax.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum ChiralClass {
-    /// Tetrahedral `TH`.
-    Tetrahedral,
-    /// Allene-like `AL`.
-    Allene,
-    /// Square-planar `SP`.
-    SquarePlanar,
-    /// Trigonal-bipyramidal `TB`.
-    TrigonalBipyramidal,
-    /// Octahedral `OH`.
-    Octahedral,
-}
-
 /// Parsed bond expression between two query atoms.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum BondExpr {
@@ -166,24 +136,28 @@ pub enum BondExprTree {
 }
 
 /// One primitive bond predicate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BondPrimitive {
-    /// Single bond `-`.
-    Single,
-    /// Double bond `=`.
-    Double,
-    /// Triple bond `#`.
-    Triple,
-    /// Aromatic bond `:`.
-    Aromatic,
+    /// Concrete directional or order-specific bond kinds reused from `smiles-parser`.
+    Bond(Bond),
     /// Any bond `~`.
     Any,
-    /// Directional up bond `/`.
-    Up,
-    /// Directional down bond `\`.
-    Down,
     /// Ring bond `@`.
     Ring,
+}
+
+impl PartialOrd for BondPrimitive {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for BondPrimitive {
+    #[inline]
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        bond_primitive_order_key(*self).cmp(&bond_primitive_order_key(*other))
+    }
 }
 
 /// One parsed query atom in the compiled SMARTS graph.
@@ -360,34 +334,6 @@ impl fmt::Display for AtomPrimitive {
     }
 }
 
-impl fmt::Display for Chirality {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Clockwise => f.write_str("@"),
-            Self::CounterClockwise => f.write_str("@@"),
-            Self::Class { class, permutation } => {
-                write!(f, "@{class}")?;
-                if let Some(value) = permutation {
-                    write!(f, "{value}")?;
-                }
-                Ok(())
-            }
-        }
-    }
-}
-
-impl fmt::Display for ChiralClass {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::Tetrahedral => "TH",
-            Self::Allene => "AL",
-            Self::SquarePlanar => "SP",
-            Self::TrigonalBipyramidal => "TB",
-            Self::Octahedral => "OH",
-        })
-    }
-}
-
 impl fmt::Display for BondExpr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -411,16 +357,11 @@ impl fmt::Display for BondExprTree {
 
 impl fmt::Display for BondPrimitive {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::Single => "-",
-            Self::Double => "=",
-            Self::Triple => "#",
-            Self::Aromatic => ":",
-            Self::Any => "~",
-            Self::Up => "/",
-            Self::Down => "\\",
-            Self::Ring => "@",
-        })
+        match self {
+            Self::Bond(bond) => bond.fmt(f),
+            Self::Any => f.write_str("~"),
+            Self::Ring => f.write_str("@"),
+        }
     }
 }
 
@@ -474,6 +415,20 @@ fn write_charge(f: &mut fmt::Formatter<'_>, charge: i8) -> fmt::Result {
         write!(f, "{sign}")
     } else {
         write!(f, "{sign}{magnitude}")
+    }
+}
+
+const fn bond_primitive_order_key(primitive: BondPrimitive) -> u8 {
+    match primitive {
+        BondPrimitive::Bond(Bond::Single) => 0,
+        BondPrimitive::Bond(Bond::Double) => 1,
+        BondPrimitive::Bond(Bond::Triple) => 2,
+        BondPrimitive::Bond(Bond::Quadruple) => 3,
+        BondPrimitive::Bond(Bond::Aromatic) => 4,
+        BondPrimitive::Bond(Bond::Up) => 5,
+        BondPrimitive::Bond(Bond::Down) => 6,
+        BondPrimitive::Any => 7,
+        BondPrimitive::Ring => 8,
     }
 }
 
@@ -797,6 +752,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn displays_all_atom_and_bond_primitive_variants() {
         let aromatic_isotope = Isotope::try_from((Element::Se, 80_u16)).unwrap();
         let recursive = QueryMol::from_parts(
@@ -868,18 +824,14 @@ mod tests {
             (AtomPrimitive::Charge(0).to_string(), "+0"),
             (AtomPrimitive::Charge(-1).to_string(), "-"),
             (
-                AtomPrimitive::Chirality(Chirality::Class {
-                    class: ChiralClass::Allene,
-                    permutation: None,
-                })
-                .to_string(),
-                "@AL",
+                AtomPrimitive::Chirality(Chirality::AL(1)).to_string(),
+                "@AL1",
             ),
-            (Chirality::Clockwise.to_string(), "@"),
-            (Chirality::CounterClockwise.to_string(), "@@"),
-            (ChiralClass::SquarePlanar.to_string(), "SP"),
-            (ChiralClass::TrigonalBipyramidal.to_string(), "TB"),
-            (ChiralClass::Octahedral.to_string(), "OH"),
+            (Chirality::At.to_string(), "@"),
+            (Chirality::AtAt.to_string(), "@@"),
+            (Chirality::SP(1).to_string(), "@SP1"),
+            (Chirality::TB(1).to_string(), "@TB1"),
+            (Chirality::OH(1).to_string(), "@OH1"),
             (
                 BracketExprTree::Not(Box::new(BracketExprTree::Primitive(
                     AtomPrimitive::AtomicNumber(1),
@@ -923,7 +875,7 @@ mod tests {
             ),
             (
                 BondExprTree::HighAnd(vec![
-                    BondExprTree::Primitive(BondPrimitive::Single),
+                    BondExprTree::Primitive(BondPrimitive::Bond(Bond::Single)),
                     BondExprTree::Primitive(BondPrimitive::Ring),
                 ])
                 .to_string(),
@@ -931,16 +883,16 @@ mod tests {
             ),
             (
                 BondExprTree::Or(vec![
-                    BondExprTree::Primitive(BondPrimitive::Up),
-                    BondExprTree::Primitive(BondPrimitive::Down),
+                    BondExprTree::Primitive(BondPrimitive::Bond(Bond::Up)),
+                    BondExprTree::Primitive(BondPrimitive::Bond(Bond::Down)),
                 ])
                 .to_string(),
                 "/,\\",
             ),
             (
                 BondExprTree::LowAnd(vec![
-                    BondExprTree::Primitive(BondPrimitive::Double),
-                    BondExprTree::Primitive(BondPrimitive::Aromatic),
+                    BondExprTree::Primitive(BondPrimitive::Bond(Bond::Double)),
+                    BondExprTree::Primitive(BondPrimitive::Bond(Bond::Aromatic)),
                 ])
                 .to_string(),
                 "=;:",
@@ -1003,7 +955,7 @@ mod tests {
         assert_eq!(bond_expr_rank(&BondExpr::Elided), (0, String::new()));
         assert_eq!(
             bond_expr_rank(&BondExpr::Query(BondExprTree::Primitive(
-                BondPrimitive::Single
+                BondPrimitive::Bond(Bond::Single)
             )))
             .0,
             1,
@@ -1017,7 +969,7 @@ mod tests {
         );
         assert_eq!(
             bond_expr_rank(&BondExpr::Query(BondExprTree::HighAnd(vec![
-                BondExprTree::Primitive(BondPrimitive::Single),
+                BondExprTree::Primitive(BondPrimitive::Bond(Bond::Single)),
                 BondExprTree::Primitive(BondPrimitive::Ring),
             ])))
             .0,
@@ -1025,16 +977,16 @@ mod tests {
         );
         assert_eq!(
             bond_expr_rank(&BondExpr::Query(BondExprTree::Or(vec![
-                BondExprTree::Primitive(BondPrimitive::Single),
-                BondExprTree::Primitive(BondPrimitive::Double),
+                BondExprTree::Primitive(BondPrimitive::Bond(Bond::Single)),
+                BondExprTree::Primitive(BondPrimitive::Bond(Bond::Double)),
             ])))
             .0,
             4,
         );
         assert_eq!(
             bond_expr_rank(&BondExpr::Query(BondExprTree::LowAnd(vec![
-                BondExprTree::Primitive(BondPrimitive::Single),
-                BondExprTree::Primitive(BondPrimitive::Double),
+                BondExprTree::Primitive(BondPrimitive::Bond(Bond::Single)),
+                BondExprTree::Primitive(BondPrimitive::Bond(Bond::Double)),
             ])))
             .0,
             5,
@@ -1117,7 +1069,7 @@ mod tests {
                 1,
                 3,
                 4,
-                BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Double)),
+                BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Bond(Bond::Double))),
             ),
             bond(
                 2,
@@ -1148,15 +1100,10 @@ mod tests {
         assert_eq!(AtomPrimitive::RingSize(Some(4)).to_string(), "r4");
         assert_eq!(AtomPrimitive::RingConnectivity(Some(2)).to_string(), "x2");
         assert_eq!(
-            AtomPrimitive::Chirality(Chirality::Class {
-                class: ChiralClass::Tetrahedral,
-                permutation: Some(1),
-            })
-            .to_string(),
+            AtomPrimitive::Chirality(Chirality::TH(1)).to_string(),
             "@TH1",
         );
-        assert_eq!(ChiralClass::Tetrahedral.to_string(), "TH");
-        assert_eq!(BondPrimitive::Triple.to_string(), "#");
+        assert_eq!(BondPrimitive::Bond(Bond::Triple).to_string(), "#");
 
         assert_eq!(
             parse_supported_bare_element("F"),
@@ -1250,7 +1197,7 @@ mod tests {
                 2,
                 6,
                 7,
-                BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Single)),
+                BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Bond(Bond::Single))),
             ),
             bond(
                 4,
@@ -1258,7 +1205,7 @@ mod tests {
                 3,
                 8,
                 9,
-                BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Double)),
+                BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Bond(Bond::Double))),
             ),
         ];
         let query = QueryMol::from_parts(atoms, bonds, 1, vec![None]);

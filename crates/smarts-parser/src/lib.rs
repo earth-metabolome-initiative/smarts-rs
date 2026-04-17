@@ -10,6 +10,7 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
+#[cfg(feature = "serde")]
 use alloc::string::ToString;
 use core::str::FromStr;
 
@@ -26,9 +27,9 @@ pub use error::{SmartsParseError, SmartsParseErrorKind, UnsupportedFeature};
 pub use parse::parse_smarts;
 pub use query::{
     AtomExpr, AtomId, AtomPrimitive, BondExpr, BondExprTree, BondId, BondPrimitive, BracketExpr,
-    BracketExprTree, ChiralClass, Chirality, ComponentGroupId, ComponentId, HydrogenKind,
-    QueryAtom, QueryBond, QueryMol,
+    BracketExprTree, ComponentGroupId, ComponentId, HydrogenKind, QueryAtom, QueryBond, QueryMol,
 };
+pub use smiles_parser::atom::bracketed::chirality::Chirality;
 
 impl FromStr for QueryMol {
     type Err = SmartsParseError;
@@ -65,6 +66,7 @@ mod tests {
     use super::*;
     use alloc::{boxed::Box, collections::BTreeMap, string::ToString, vec, vec::Vec};
     use elements_rs::{Element, Isotope};
+    use smiles_parser::bond::Bond;
 
     fn assert_same_query_structure(left: &QueryMol, right: &QueryMol) {
         assert_eq!(left.atom_count(), right.atom_count());
@@ -159,7 +161,7 @@ mod tests {
         assert_eq!(query.bond_count(), 1);
         assert_eq!(
             query.bonds()[0].expr,
-            BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Double))
+            BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Bond(Bond::Double)))
         );
     }
 
@@ -360,7 +362,7 @@ mod tests {
                             element: Element::C,
                             aromatic: false,
                         }),
-                        BracketExprTree::Primitive(AtomPrimitive::Chirality(Chirality::Clockwise,)),
+                        BracketExprTree::Primitive(AtomPrimitive::Chirality(Chirality::At)),
                         BracketExprTree::Primitive(AtomPrimitive::Hydrogen(
                             HydrogenKind::Total,
                             None,
@@ -380,9 +382,7 @@ mod tests {
                             element: Element::C,
                             aromatic: false,
                         }),
-                        BracketExprTree::Primitive(AtomPrimitive::Chirality(
-                            Chirality::CounterClockwise,
-                        )),
+                        BracketExprTree::Primitive(AtomPrimitive::Chirality(Chirality::AtAt)),
                         BracketExprTree::Primitive(AtomPrimitive::Hydrogen(
                             HydrogenKind::Total,
                             None,
@@ -402,10 +402,7 @@ mod tests {
                             element: Element::C,
                             aromatic: false,
                         }),
-                        BracketExprTree::Primitive(AtomPrimitive::Chirality(Chirality::Class {
-                            class: ChiralClass::Tetrahedral,
-                            permutation: Some(1),
-                        })),
+                        BracketExprTree::Primitive(AtomPrimitive::Chirality(Chirality::TH(1))),
                     ])
                 );
             }
@@ -421,7 +418,7 @@ mod tests {
                             element: Element::N,
                             aromatic: true,
                         }),
-                        BracketExprTree::Primitive(AtomPrimitive::Chirality(Chirality::Clockwise,)),
+                        BracketExprTree::Primitive(AtomPrimitive::Chirality(Chirality::At)),
                         BracketExprTree::Primitive(AtomPrimitive::Hydrogen(
                             HydrogenKind::Total,
                             None,
@@ -535,8 +532,8 @@ mod tests {
         assert_eq!(
             query.bonds()[0].expr,
             BondExpr::Query(BondExprTree::Or(vec![
-                BondExprTree::Primitive(BondPrimitive::Single),
-                BondExprTree::Primitive(BondPrimitive::Double),
+                BondExprTree::Primitive(BondPrimitive::Bond(Bond::Single)),
+                BondExprTree::Primitive(BondPrimitive::Bond(Bond::Double)),
             ]))
         );
     }
@@ -555,7 +552,7 @@ mod tests {
         assert_eq!(
             single_ring.bonds()[0].expr,
             BondExpr::Query(BondExprTree::HighAnd(vec![
-                BondExprTree::Primitive(BondPrimitive::Single),
+                BondExprTree::Primitive(BondPrimitive::Bond(Bond::Single)),
                 BondExprTree::Primitive(BondPrimitive::Ring),
             ]))
         );
@@ -570,24 +567,24 @@ mod tests {
         assert_eq!(
             constrained.bonds()[0].expr,
             BondExpr::Query(BondExprTree::LowAnd(vec![
-                BondExprTree::Primitive(BondPrimitive::Single),
+                BondExprTree::Primitive(BondPrimitive::Bond(Bond::Single)),
                 BondExprTree::Not(Box::new(BondExprTree::Primitive(BondPrimitive::Ring))),
             ]))
         );
         assert_eq!(
             negated_single.bonds()[0].expr,
             BondExpr::Query(BondExprTree::Not(Box::new(BondExprTree::Primitive(
-                BondPrimitive::Single,
+                BondPrimitive::Bond(Bond::Single),
             ))))
         );
         assert_eq!(
             mixed.bonds()[0].expr,
             BondExpr::Query(BondExprTree::Or(vec![
                 BondExprTree::HighAnd(vec![
-                    BondExprTree::Primitive(BondPrimitive::Single),
+                    BondExprTree::Primitive(BondPrimitive::Bond(Bond::Single)),
                     BondExprTree::Primitive(BondPrimitive::Ring),
                 ]),
-                BondExprTree::Primitive(BondPrimitive::Double),
+                BondExprTree::Primitive(BondPrimitive::Bond(Bond::Double)),
             ]))
         );
     }
@@ -748,7 +745,7 @@ mod tests {
                 assert_eq!(nested.bond_count(), 1);
                 assert_eq!(
                     nested.bonds()[0].expr,
-                    BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Aromatic))
+                    BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Bond(Bond::Aromatic)))
                 );
             }
             other => panic!("expected bracket atom, got {other:?}"),
@@ -763,15 +760,15 @@ mod tests {
         assert_eq!(directional.bond_count(), 3);
         assert_eq!(
             directional.bonds()[0].expr,
-            BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Up))
+            BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Bond(Bond::Up)))
         );
         assert_eq!(
             directional.bonds()[1].expr,
-            BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Double))
+            BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Bond(Bond::Double)))
         );
         assert_eq!(
             directional.bonds()[2].expr,
-            BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Down))
+            BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Bond(Bond::Down)))
         );
 
         assert_eq!(ring_bond.bond_count(), 1);

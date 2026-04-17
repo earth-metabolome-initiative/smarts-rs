@@ -1,11 +1,11 @@
 use alloc::{boxed::Box, vec, vec::Vec};
 use elements_rs::Isotope;
+use smiles_parser::atom::bracketed::chirality::Chirality;
 use thiserror::Error;
 
 use crate::parse::parse_smarts;
 use crate::query::{
-    parse_supported_bracket_element, AtomPrimitive, BracketExpr, BracketExprTree, ChiralClass,
-    Chirality, HydrogenKind,
+    parse_supported_bracket_element, AtomPrimitive, BracketExpr, BracketExprTree, HydrogenKind,
 };
 use crate::SmartsParseErrorKind;
 
@@ -302,36 +302,35 @@ impl<'a> BracketParser<'a> {
 
         if !self.is_eof() && self.peek() == '@' {
             self.pos += 1;
-            return Ok(Chirality::CounterClockwise);
+            return Ok(Chirality::AtAt);
         }
 
-        let class = if self.remaining().starts_with("TH") {
+        if self.remaining().starts_with("TH") {
             self.pos += 2;
-            Some(ChiralClass::Tetrahedral)
+            return self.parse_chiral_permutation(Chirality::try_th);
         } else if self.remaining().starts_with("AL") {
             self.pos += 2;
-            Some(ChiralClass::Allene)
+            return self.parse_chiral_permutation(Chirality::try_al);
         } else if self.remaining().starts_with("SP") {
             self.pos += 2;
-            Some(ChiralClass::SquarePlanar)
+            return self.parse_chiral_permutation(Chirality::try_sp);
         } else if self.remaining().starts_with("TB") {
             self.pos += 2;
-            Some(ChiralClass::TrigonalBipyramidal)
+            return self.parse_chiral_permutation(Chirality::try_tb);
         } else if self.remaining().starts_with("OH") {
             self.pos += 2;
-            Some(ChiralClass::Octahedral)
-        } else {
-            None
-        };
+            return self.parse_chiral_permutation(Chirality::try_oh);
+        }
 
-        let Some(class) = class else {
-            return Ok(Chirality::Clockwise);
-        };
+        Ok(Chirality::At)
+    }
 
-        let permutation = self.parse_optional_u8()?;
-        validate_chiral_permutation(class, permutation).map_err(|kind| self.error(kind))?;
-
-        Ok(Chirality::Class { class, permutation })
+    fn parse_chiral_permutation(
+        &mut self,
+        constructor: fn(u8) -> Result<Chirality, smiles_parser::SmilesError>,
+    ) -> Result<Chirality, BracketParseError> {
+        let value = self.parse_optional_u8()?.unwrap_or(1);
+        constructor(value).map_err(|_| self.error(BracketParseErrorKind::UnsupportedPrimitive))
     }
 
     fn parse_charge(&mut self) -> Result<AtomPrimitive, BracketParseError> {
@@ -400,10 +399,12 @@ impl<'a> BracketParser<'a> {
         self.pos >= self.text.len()
     }
 
+    #[allow(clippy::unused_self)]
     fn error(&self, kind: BracketParseErrorKind) -> BracketParseError {
         BracketParseError::new(kind)
     }
 
+    #[allow(clippy::unused_self)]
     fn error_here(&self, kind: BracketParseErrorKind) -> BracketParseError {
         BracketParseError::new(kind)
     }
@@ -455,28 +456,6 @@ fn starts_implicit_and(ch: char) -> bool {
             | '-'
             | '1'..='9'
     )
-}
-
-fn validate_chiral_permutation(
-    class: ChiralClass,
-    permutation: Option<u8>,
-) -> Result<(), BracketParseErrorKind> {
-    let Some(value) = permutation else {
-        return Ok(());
-    };
-
-    let valid = match class {
-        ChiralClass::Tetrahedral | ChiralClass::Allene => (1..=2).contains(&value),
-        ChiralClass::SquarePlanar => (1..=3).contains(&value),
-        ChiralClass::TrigonalBipyramidal => (1..=20).contains(&value),
-        ChiralClass::Octahedral => (1..=30).contains(&value),
-    };
-
-    if valid {
-        Ok(())
-    } else {
-        Err(BracketParseErrorKind::UnsupportedPrimitive)
-    }
 }
 
 #[cfg(test)]
@@ -618,7 +597,7 @@ mod tests {
                     element: Element::C,
                     aromatic: false,
                 }),
-                BracketExprTree::Primitive(AtomPrimitive::Chirality(Chirality::Clockwise)),
+                BracketExprTree::Primitive(AtomPrimitive::Chirality(Chirality::At)),
                 BracketExprTree::Primitive(AtomPrimitive::Hydrogen(HydrogenKind::Total, None)),
             ])
         );
@@ -629,7 +608,7 @@ mod tests {
                     element: Element::C,
                     aromatic: false,
                 }),
-                BracketExprTree::Primitive(AtomPrimitive::Chirality(Chirality::CounterClockwise,)),
+                BracketExprTree::Primitive(AtomPrimitive::Chirality(Chirality::AtAt)),
                 BracketExprTree::Primitive(AtomPrimitive::Hydrogen(HydrogenKind::Total, None)),
             ])
         );
@@ -640,10 +619,7 @@ mod tests {
                     element: Element::C,
                     aromatic: false,
                 }),
-                BracketExprTree::Primitive(AtomPrimitive::Chirality(Chirality::Class {
-                    class: ChiralClass::Tetrahedral,
-                    permutation: Some(1),
-                })),
+                BracketExprTree::Primitive(AtomPrimitive::Chirality(Chirality::TH(1))),
             ])
         );
         assert_eq!(
@@ -653,10 +629,7 @@ mod tests {
                     element: Element::C,
                     aromatic: false,
                 }),
-                BracketExprTree::Primitive(AtomPrimitive::Chirality(Chirality::Class {
-                    class: ChiralClass::SquarePlanar,
-                    permutation: None,
-                })),
+                BracketExprTree::Primitive(AtomPrimitive::Chirality(Chirality::SP(1))),
             ])
         );
         assert_eq!(
@@ -666,10 +639,7 @@ mod tests {
                     element: Element::C,
                     aromatic: false,
                 }),
-                BracketExprTree::Primitive(AtomPrimitive::Chirality(Chirality::Class {
-                    class: ChiralClass::TrigonalBipyramidal,
-                    permutation: Some(10),
-                })),
+                BracketExprTree::Primitive(AtomPrimitive::Chirality(Chirality::TB(10))),
             ])
         );
         assert_eq!(
@@ -679,10 +649,7 @@ mod tests {
                     element: Element::C,
                     aromatic: false,
                 }),
-                BracketExprTree::Primitive(AtomPrimitive::Chirality(Chirality::Class {
-                    class: ChiralClass::Octahedral,
-                    permutation: Some(30),
-                })),
+                BracketExprTree::Primitive(AtomPrimitive::Chirality(Chirality::OH(30))),
             ])
         );
     }

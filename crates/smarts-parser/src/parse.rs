@@ -2,6 +2,7 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
+use smiles_parser::bond::Bond;
 
 use crate::bracket::{parse_bracket_text, BracketParseError, BracketParseErrorKind};
 use crate::error::UnsupportedFeature;
@@ -311,14 +312,14 @@ impl<'a> Parser<'a> {
 
     fn parse_bond_primitive(&mut self) -> Result<BondPrimitive, SmartsParseError> {
         let primitive = match self.peek() {
-            '-' => BondPrimitive::Single,
-            '=' => BondPrimitive::Double,
-            '#' => BondPrimitive::Triple,
-            ':' => BondPrimitive::Aromatic,
+            '-' => BondPrimitive::Bond(Bond::Single),
+            '=' => BondPrimitive::Bond(Bond::Double),
+            '#' => BondPrimitive::Bond(Bond::Triple),
+            ':' => BondPrimitive::Bond(Bond::Aromatic),
             '~' => BondPrimitive::Any,
             '@' => BondPrimitive::Ring,
-            '/' => BondPrimitive::Up,
-            '\\' => BondPrimitive::Down,
+            '/' => BondPrimitive::Bond(Bond::Up),
+            '\\' => BondPrimitive::Bond(Bond::Down),
             other => {
                 return Err(self.error_here(SmartsParseErrorKind::UnexpectedCharacter(other)));
             }
@@ -559,14 +560,17 @@ impl<'a> Parser<'a> {
         self.pos >= self.input.len()
     }
 
+    #[allow(clippy::unused_self)]
     fn error_here(&self, kind: SmartsParseErrorKind) -> SmartsParseError {
         self.error(kind)
     }
 
+    #[allow(clippy::unused_self)]
     fn error(&self, kind: SmartsParseErrorKind) -> SmartsParseError {
         SmartsParseError::new(kind)
     }
 
+    #[allow(clippy::unused_self)]
     fn map_bracket_error(&self, err: &BracketParseError) -> SmartsParseError {
         let kind = match err.kind() {
             BracketParseErrorKind::Empty | BracketParseErrorKind::UnexpectedEnd => {
@@ -650,8 +654,8 @@ mod tests {
 
     #[test]
     fn helper_functions_cover_internal_bond_and_atom_map_logic() {
-        let single = BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Single));
-        let double = BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Double));
+        let single = BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Bond(Bond::Single)));
+        let double = BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Bond(Bond::Double)));
 
         assert_eq!(resolve_ring_bond(None, None), Some(BondExpr::Elided));
         assert_eq!(
@@ -678,14 +682,14 @@ mod tests {
         assert_eq!(
             collapse_bond_logic(
                 vec![
-                    BondExprTree::Primitive(BondPrimitive::Single),
-                    BondExprTree::Primitive(BondPrimitive::Double),
+                    BondExprTree::Primitive(BondPrimitive::Bond(Bond::Single)),
+                    BondExprTree::Primitive(BondPrimitive::Bond(Bond::Double)),
                 ],
                 BondExprTree::Or,
             ),
             BondExprTree::Or(vec![
-                BondExprTree::Primitive(BondPrimitive::Single),
-                BondExprTree::Primitive(BondPrimitive::Double),
+                BondExprTree::Primitive(BondPrimitive::Bond(Bond::Single)),
+                BondExprTree::Primitive(BondPrimitive::Bond(Bond::Double)),
             ])
         );
 
