@@ -56,6 +56,9 @@ jobs:
     name: Coverage
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -87,3 +90,10 @@ jobs:
         with:
           name: coverage-xml
           path: coverage/
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          use_oidc: true
+          directory: coverage
+          verbose: true
