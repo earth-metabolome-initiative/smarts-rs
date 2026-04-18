@@ -312,6 +312,31 @@ mod tests {
     }
 
     #[test]
+    fn parses_multiletter_bracket_elements_that_overlap_primitives() {
+        let query =
+            parse_smarts("[La,Ce,Pr,Nd,Pm,Sm,Eu,Gd,Tb,Dy,Ho,Er,Tm,Yb,Lu]").unwrap();
+        assert_eq!(
+            query.to_string(),
+            "[La,Ce,Pr,Nd,Pm,Sm,Eu,Gd,Tb,Dy,Ho,Er,Tm,Yb,Lu]"
+        );
+
+        let AtomExpr::Bracket(expr) = &query.atoms()[0].expr else {
+            panic!("expected bracket atom");
+        };
+        let BracketExprTree::Or(items) = &expr.tree else {
+            panic!("expected bracket OR expression");
+        };
+
+        assert!(items.iter().any(|item| {
+            *item
+                == BracketExprTree::Primitive(AtomPrimitive::Symbol {
+                    element: Element::Dy,
+                    aromatic: false,
+                })
+        }));
+    }
+
+    #[test]
     fn parses_negated_atomic_number() {
         let query = parse_smarts("[!#1]").unwrap();
         let atom = &query.atoms()[0];

@@ -159,6 +159,16 @@ impl<'a> BracketParser<'a> {
             return Err(self.error(BracketParseErrorKind::UnexpectedEnd));
         }
 
+        if let Some((element, aromatic, width)) = parse_supported_bracket_element(self.remaining()) {
+            if width > 1 {
+                self.pos += width;
+                return Ok(BracketExprTree::Primitive(AtomPrimitive::Symbol {
+                    element,
+                    aromatic,
+                }));
+            }
+        }
+
         let primitive = match self.peek() {
             '*' => {
                 self.pos += 1;
