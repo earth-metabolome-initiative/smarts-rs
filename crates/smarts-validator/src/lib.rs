@@ -32,7 +32,11 @@ pub mod screening;
 pub mod target;
 
 pub use error::SmartsMatchError;
-pub use matching::{matches, matches_compiled, matches_prepared, CompiledQuery};
+pub use matching::{
+    match_count, match_count_compiled, match_count_prepared, matches, matches_compiled,
+    matches_prepared, substructure_matches, substructure_matches_compiled,
+    substructure_matches_prepared, CompiledQuery,
+};
 pub use prepared::{EdgeProps, NodeProps, PreparedMolecule, PreparedTarget};
 pub use screening::{QueryScreen, TargetScreen};
 pub use target::{AtomId, AtomLabel, BondLabel, MoleculeTarget, Neighbor};

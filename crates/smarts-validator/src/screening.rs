@@ -334,6 +334,49 @@ mod tests {
     }
 
     #[test]
+    fn screen_rejects_missing_atoms_elements_aromaticity_and_ring_membership() {
+        let atom_count_query = QueryScreen::new(&QueryMol::from_str("CCC").unwrap());
+        let aromatic_query = QueryScreen::new(&QueryMol::from_str("c").unwrap());
+        let ring_query = QueryScreen::new(&QueryMol::from_str("[R]").unwrap());
+        let element_query = QueryScreen::new(&QueryMol::from_str("[Cl]").unwrap());
+
+        let small_target = TargetScreen::new(&PreparedTarget::new(Smiles::from_str("CC").unwrap()));
+        let aliphatic_target =
+            TargetScreen::new(&PreparedTarget::new(Smiles::from_str("CC").unwrap()));
+        let acyclic_target =
+            TargetScreen::new(&PreparedTarget::new(Smiles::from_str("CCC").unwrap()));
+        let oxygen_target = TargetScreen::new(&PreparedTarget::new(Smiles::from_str("O").unwrap()));
+
+        assert!(!atom_count_query.may_match(&small_target));
+        assert!(!aromatic_query.may_match(&aliphatic_target));
+        assert!(!ring_query.may_match(&acyclic_target));
+        assert!(!element_query.may_match(&oxygen_target));
+    }
+
+    #[test]
+    fn query_screen_extracts_atomic_number_isotope_and_nonpositive_ring_bounds_conservatively() {
+        let atomic_number = QueryScreen::new(&QueryMol::from_str("[#8]").unwrap());
+        let isotope = QueryScreen::new(&QueryMol::from_str("[18O]").unwrap());
+        let ring_zero = QueryScreen::new(&QueryMol::from_str("[R0]").unwrap());
+        let ring_range_zero = QueryScreen::new(&QueryMol::from_str("[r{0-2}]").unwrap());
+
+        assert_eq!(
+            atomic_number
+                .required_element_counts
+                .get(&elements_rs::Element::O),
+            Some(&1)
+        );
+        assert_eq!(
+            isotope
+                .required_element_counts
+                .get(&elements_rs::Element::O),
+            Some(&1)
+        );
+        assert_eq!(ring_zero.min_ring_atom_count, 0);
+        assert_eq!(ring_range_zero.min_ring_atom_count, 0);
+    }
+
+    #[test]
     fn screen_never_filters_true_matches_from_frozen_fixtures() {
         for fixture in [
             include_str!("../../../corpus/validator/single-atom-v0.rdkit.json"),

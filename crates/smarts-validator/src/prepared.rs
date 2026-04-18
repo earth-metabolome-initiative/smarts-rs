@@ -495,7 +495,7 @@ const fn edge_key(left_atom: AtomId, right_atom: AtomId) -> (AtomId, AtomId) {
 #[cfg(test)]
 mod tests {
     use alloc::string::ToString;
-    use alloc::vec;
+    use alloc::{vec, vec::Vec};
     use core::str::FromStr;
     use elements_rs::Element;
     use smiles_parser::Smiles;
@@ -503,7 +503,7 @@ mod tests {
     use super::{EdgeProps, NodeProps, PreparedMolecule, PreparedTarget};
     use crate::{
         geometric_target::{MoleculeGraph, UndirectedBond},
-        target::{AtomLabel, BondLabel},
+        target::{AtomLabel, BondLabel, MoleculeTarget},
     };
 
     #[test]
@@ -616,10 +616,28 @@ mod tests {
     }
 
     #[test]
+    fn prepared_target_handles_non_ring_non_stereo_and_missing_atoms() {
+        let prepared = PreparedTarget::new(Smiles::from_str("CC").unwrap());
+
+        assert_eq!(prepared.target().to_string(), "CC");
+        assert_eq!(prepared.bond(0, 1), Some(BondLabel::Single));
+        assert_eq!(prepared.bond(0, 2), None);
+        assert_eq!(
+            prepared.neighbors(0).collect::<Vec<_>>(),
+            vec![(1, BondLabel::Single)]
+        );
+        assert!(!prepared.is_ring_bond(0, 1));
+        assert_eq!(prepared.tetrahedral_chirality(0), None);
+        assert_eq!(prepared.double_bond_stereo_config(0, 1), None);
+        assert_eq!(prepared.connected_component(9), None);
+    }
+
+    #[test]
     fn node_props_are_dense_and_indexed_by_atom_id() {
         let props = NodeProps::new(vec![2usize, 4, 1]);
 
         assert_eq!(props.len(), 3);
+        assert!(!props.is_empty());
         assert_eq!(props.get(1), Some(&4));
         assert_eq!(props.get(3), None);
     }
@@ -629,8 +647,18 @@ mod tests {
         let props = EdgeProps::new(vec!["a", "b"]);
 
         assert_eq!(props.len(), 2);
+        assert!(!props.is_empty());
         assert_eq!(props.get(0), Some(&"a"));
         assert_eq!(props.get(2), None);
+    }
+
+    #[test]
+    fn empty_property_sidecars_report_empty() {
+        let node_props = NodeProps::<usize>::new(vec![]);
+        let edge_props = EdgeProps::<u8>::new(vec![]);
+
+        assert!(node_props.is_empty());
+        assert!(edge_props.is_empty());
     }
 
     #[test]
@@ -652,6 +680,8 @@ mod tests {
         assert_eq!(prepared.degree(0), Some(1));
         assert_eq!(prepared.degree(1), Some(2));
         assert_eq!(prepared.degree(2), Some(1));
+        assert_eq!(prepared.degree(9), None);
+        assert_eq!(prepared.target().atom_count(), 3);
         assert_eq!(prepared.degrees().len(), 3);
     }
 }

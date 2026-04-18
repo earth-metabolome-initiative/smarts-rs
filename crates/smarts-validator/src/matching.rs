@@ -1,4 +1,4 @@
-use alloc::{collections::BTreeMap, string::String, string::ToString};
+use alloc::{boxed::Box, collections::BTreeMap, string::String, string::ToString};
 use core::cell::RefCell;
 
 use elements_rs::{AtomicNumber, ElementVariant, MassNumber};
@@ -18,6 +18,7 @@ type RecursiveMatchCache = BTreeMap<(usize, usize), bool>;
 type QueryNeighbors = alloc::vec::Vec<alloc::vec::Vec<(QueryAtomId, usize)>>;
 type CompiledQueryParts = (QueryNeighbors, alloc::vec::Vec<usize>, QueryStereoPlan);
 type AtomStereoCache = BTreeMap<AtomStereoCacheKey, Option<Chirality>>;
+type UniqueMatches = BTreeMap<Box<[usize]>, Box<[usize]>>;
 
 struct SearchContext<'a> {
     query_neighbors: &'a [alloc::vec::Vec<(QueryAtomId, usize)>],
@@ -171,6 +172,116 @@ pub fn matches_prepared(
 #[must_use]
 pub fn matches_compiled(query: &CompiledQuery, target: &PreparedTarget) -> bool {
     query_matches(query, target)
+}
+
+/// Collect all unique accepted substructure matches for one SMARTS query
+/// against one target `SMILES` string.
+///
+/// Each inner match lists target atom ids in query atom order.
+///
+/// # Errors
+///
+/// Returns:
+/// - [`SmartsMatchError::EmptyTarget`] for empty target strings
+/// - [`SmartsMatchError::InvalidTargetSmiles`] when the target is not valid
+///   `SMILES`
+/// - [`SmartsMatchError::UnsupportedAtomPrimitive`] when the query uses an
+///   atom primitive outside the current validator slice
+/// - [`SmartsMatchError::UnsupportedBondPrimitive`] when the query uses a bond
+///   primitive outside the current validator slice
+pub fn substructure_matches(
+    query: &QueryMol,
+    target: &str,
+) -> Result<Box<[Box<[usize]>]>, SmartsMatchError> {
+    if target.is_empty() {
+        return Err(SmartsMatchError::EmptyTarget);
+    }
+
+    let target =
+        target
+            .parse::<Smiles>()
+            .map_err(|error| SmartsMatchError::InvalidTargetSmiles {
+                source: error.smiles_error(),
+                start: error.start(),
+                end: error.end(),
+            })?;
+    let prepared = PreparedTarget::new(target);
+
+    substructure_matches_prepared(query, &prepared)
+}
+
+/// Collect all unique accepted substructure matches for one SMARTS query
+/// against one prepared target molecule.
+///
+/// Each inner match lists target atom ids in query atom order.
+///
+/// # Errors
+///
+/// Returns:
+/// - [`SmartsMatchError::UnsupportedAtomPrimitive`] when the query uses an
+///   atom primitive outside the current validator slice
+/// - [`SmartsMatchError::UnsupportedBondPrimitive`] when the query uses a bond
+///   primitive outside the current validator slice
+pub fn substructure_matches_prepared(
+    query: &QueryMol,
+    target: &PreparedTarget,
+) -> Result<Box<[Box<[usize]>]>, SmartsMatchError> {
+    let compiled = CompiledQuery::new(query.clone())?;
+    Ok(substructure_matches_compiled(&compiled, target))
+}
+
+/// Collect all unique accepted substructure matches for one compiled SMARTS
+/// query against one prepared target.
+///
+/// Each inner match lists target atom ids in query atom order.
+#[must_use]
+pub fn substructure_matches_compiled(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+) -> Box<[Box<[usize]>]> {
+    query_substructure_matches(query, target)
+}
+
+/// Count all unique accepted substructure matches for one SMARTS query
+/// against one target `SMILES` string.
+///
+/// # Errors
+///
+/// Returns:
+/// - [`SmartsMatchError::EmptyTarget`] for empty target strings
+/// - [`SmartsMatchError::InvalidTargetSmiles`] when the target is not valid
+///   `SMILES`
+/// - [`SmartsMatchError::UnsupportedAtomPrimitive`] when the query uses an
+///   atom primitive outside the current validator slice
+/// - [`SmartsMatchError::UnsupportedBondPrimitive`] when the query uses a bond
+///   primitive outside the current validator slice
+pub fn match_count(query: &QueryMol, target: &str) -> Result<usize, SmartsMatchError> {
+    substructure_matches(query, target).map(|matches| matches.len())
+}
+
+/// Count all unique accepted substructure matches for one SMARTS query
+/// against one prepared target.
+///
+/// # Errors
+///
+/// Returns:
+/// - [`SmartsMatchError::UnsupportedAtomPrimitive`] when the query uses an
+///   atom primitive outside the current validator slice
+/// - [`SmartsMatchError::UnsupportedBondPrimitive`] when the query uses a bond
+///   primitive outside the current validator slice
+pub fn match_count_prepared(
+    query: &QueryMol,
+    target: &PreparedTarget,
+) -> Result<usize, SmartsMatchError> {
+    substructure_matches_prepared(query, target).map(|matches| matches.len())
+}
+
+/// Count all unique accepted substructure matches for one compiled SMARTS
+/// query against one prepared target.
+#[inline]
+#[must_use]
+pub fn match_count_compiled(query: &CompiledQuery, target: &PreparedTarget) -> usize {
+    substructure_matches_compiled(query, target).len()
 }
 
 fn ensure_supported_query(
@@ -332,6 +443,14 @@ fn query_matches(query: &CompiledQuery, target: &PreparedTarget) -> bool {
     query_matches_with_mapping(query, target, &mut recursive_cache, None, None)
 }
 
+fn query_substructure_matches(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+) -> Box<[Box<[usize]>]> {
+    let mut recursive_cache = RecursiveMatchCache::new();
+    query_substructure_matches_with_mapping(query, target, &mut recursive_cache, None, None)
+}
+
 fn query_matches_with_mapping(
     query: &CompiledQuery,
     target: &PreparedTarget,
@@ -385,6 +504,72 @@ fn query_matches_with_mapping(
         };
 
     search_mapping(&query.query, target, &mut context, mapped_count)
+}
+
+fn query_substructure_matches_with_mapping(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    recursive_cache: &mut RecursiveMatchCache,
+    initial_query_atom: Option<QueryAtomId>,
+    initial_target_atom: Option<usize>,
+) -> Box<[Box<[usize]>]> {
+    let mut query_to_target = alloc::vec![None; query.query.atom_count()];
+    let mut used_target_atoms = alloc::vec![false; target.atom_count()];
+    let mut context = SearchContext {
+        query_neighbors: &query.query_neighbors,
+        query_degrees: &query.query_degrees,
+        query_to_target: &mut query_to_target,
+        used_target_atoms: &mut used_target_atoms,
+        stereo_plan: &query.stereo_plan,
+        atom_stereo_cache: &query.atom_stereo_cache,
+        recursive_cache,
+    };
+    let mapped_count =
+        if let (Some(query_atom), Some(target_atom)) = (initial_query_atom, initial_target_atom) {
+            if target
+                .degree(target_atom)
+                .is_some_and(|degree| degree < query.query_degrees[query_atom])
+            {
+                return Box::default();
+            }
+            if !component_constraints_match(
+                query_atom,
+                target_atom,
+                &query.query,
+                target,
+                context.query_to_target,
+            ) {
+                return Box::default();
+            }
+            if !atom_expr_matches(
+                &query.query.atoms()[query_atom].expr,
+                query_atom,
+                context.stereo_plan,
+                target,
+                target_atom,
+                context.recursive_cache,
+            ) {
+                return Box::default();
+            }
+            context.query_to_target[query_atom] = Some(target_atom);
+            context.used_target_atoms[target_atom] = true;
+            1
+        } else {
+            0
+        };
+
+    let mut matches = UniqueMatches::new();
+    collect_mappings(
+        &query.query,
+        target,
+        &mut context,
+        mapped_count,
+        &mut matches,
+    );
+    matches
+        .into_values()
+        .collect::<alloc::vec::Vec<_>>()
+        .into_boxed_slice()
 }
 
 fn build_query_neighbors(
@@ -1015,6 +1200,104 @@ fn search_mapping(
     false
 }
 
+fn collect_mappings(
+    query: &QueryMol,
+    target: &PreparedTarget,
+    context: &mut SearchContext<'_>,
+    mapped_count: usize,
+    matches: &mut UniqueMatches,
+) {
+    if mapped_count == query.atom_count() {
+        if stereo_constraints_match(
+            query,
+            context.stereo_plan,
+            context.query_neighbors,
+            target,
+            context.query_to_target,
+            context.atom_stereo_cache,
+        ) {
+            let mapping = current_query_order_mapping(context.query_to_target);
+            matches
+                .entry(canonical_match_key(&mapping))
+                .or_insert(mapping);
+        }
+        return;
+    }
+
+    let next_query_atom = select_next_query_atom(context.query_neighbors, context.query_to_target);
+    let query_atom = &query.atoms()[next_query_atom];
+    let candidate_target_atoms = candidate_target_atoms(
+        next_query_atom,
+        query,
+        context.stereo_plan,
+        target,
+        context.query_neighbors,
+        context.query_to_target,
+    );
+
+    for target_atom in candidate_target_atoms {
+        if context.used_target_atoms[target_atom] {
+            continue;
+        }
+        if target
+            .degree(target_atom)
+            .is_some_and(|degree| degree < context.query_degrees[next_query_atom])
+        {
+            continue;
+        }
+        if !component_constraints_match(
+            next_query_atom,
+            target_atom,
+            query,
+            target,
+            context.query_to_target,
+        ) {
+            continue;
+        }
+        if !atom_expr_matches(
+            &query_atom.expr,
+            next_query_atom,
+            context.stereo_plan,
+            target,
+            target_atom,
+            context.recursive_cache,
+        ) {
+            continue;
+        }
+        if !mapped_bonds_match(
+            next_query_atom,
+            target_atom,
+            query,
+            context.stereo_plan,
+            target,
+            context.query_neighbors,
+            context.query_to_target,
+        ) {
+            continue;
+        }
+
+        context.query_to_target[next_query_atom] = Some(target_atom);
+        context.used_target_atoms[target_atom] = true;
+        collect_mappings(query, target, context, mapped_count + 1, matches);
+        context.used_target_atoms[target_atom] = false;
+        context.query_to_target[next_query_atom] = None;
+    }
+}
+
+fn current_query_order_mapping(query_to_target: &[Option<usize>]) -> Box<[usize]> {
+    query_to_target
+        .iter()
+        .map(|target_atom| target_atom.expect("complete mappings must bind every query atom"))
+        .collect::<alloc::vec::Vec<_>>()
+        .into_boxed_slice()
+}
+
+fn canonical_match_key(mapping: &[usize]) -> Box<[usize]> {
+    let mut canonical = mapping.to_vec();
+    canonical.sort_unstable();
+    canonical.into_boxed_slice()
+}
+
 fn component_constraints_match(
     query_atom: QueryAtomId,
     target_atom: usize,
@@ -1605,7 +1888,8 @@ mod tests {
     use smiles_parser::Smiles;
 
     use super::{
-        component_constraints_match, matches, matches_compiled, query_matches, CompiledQuery,
+        component_constraints_match, match_count, match_count_compiled, matches, matches_compiled,
+        query_matches, substructure_matches, CompiledQuery,
     };
     use crate::error::SmartsMatchError;
     use crate::prepared::PreparedTarget;
@@ -1648,6 +1932,56 @@ mod tests {
         let prepared = PreparedTarget::new(Smiles::from_str("F/C=C/F").unwrap());
         assert!(matches_compiled(&compiled, &prepared));
         assert!(matches(compiled.query(), "F/C=C/F").unwrap());
+    }
+
+    #[test]
+    fn counted_matches_follow_rdkit_uniquify_for_symmetric_queries() {
+        let query = QueryMol::from_str("CC").unwrap();
+        assert_eq!(match_count(&query, "CC").unwrap(), 1);
+        assert_eq!(
+            substructure_matches(&query, "CC").unwrap().as_ref(),
+            &[alloc::boxed::Box::<[usize]>::from([0, 1])]
+        );
+    }
+
+    #[test]
+    fn counted_matches_include_overlapping_embeddings() {
+        let query = QueryMol::from_str("CC").unwrap();
+        assert_eq!(match_count(&query, "CCC").unwrap(), 2);
+        assert_eq!(
+            substructure_matches(&query, "CCC").unwrap().as_ref(),
+            &[
+                alloc::boxed::Box::<[usize]>::from([0, 1]),
+                alloc::boxed::Box::<[usize]>::from([1, 2]),
+            ]
+        );
+    }
+
+    #[test]
+    fn counted_matches_handle_simple_single_atom_cases() {
+        assert_eq!(
+            match_count(&QueryMol::from_str("C").unwrap(), "CCC").unwrap(),
+            3
+        );
+        assert_eq!(
+            match_count(&QueryMol::from_str("[#8]").unwrap(), "O=CO").unwrap(),
+            2
+        );
+        assert_eq!(
+            match_count(&QueryMol::from_str("[#8]").unwrap(), "CC.O").unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn counted_matches_agree_with_boolean_matching() {
+        let query = QueryMol::from_str("C.C").unwrap();
+        let prepared = PreparedTarget::new(Smiles::from_str("CC").unwrap());
+        let compiled = CompiledQuery::new(query).unwrap();
+        assert_eq!(
+            matches_compiled(&compiled, &prepared),
+            match_count_compiled(&compiled, &prepared) > 0
+        );
     }
 
     #[test]

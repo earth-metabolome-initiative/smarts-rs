@@ -125,3 +125,77 @@ pub trait MoleculeTarget {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use elements_rs::Element;
+    use smiles_parser::bond::Bond;
+
+    use super::{AtomId, AtomLabel, BondLabel, MoleculeTarget, Neighbor};
+
+    struct DummyTarget;
+
+    impl MoleculeTarget for DummyTarget {
+        type Neighbors<'a>
+            = core::iter::Copied<core::slice::Iter<'a, Neighbor>>
+        where
+            Self: 'a;
+
+        fn atom_count(&self) -> usize {
+            2
+        }
+
+        fn atom(&self, atom_id: AtomId) -> Option<&AtomLabel> {
+            static ATOMS: [AtomLabel; 2] = [AtomLabel::new(Element::C), AtomLabel::new(Element::O)];
+            ATOMS.get(atom_id)
+        }
+
+        fn bond(&self, left_atom: AtomId, right_atom: AtomId) -> Option<BondLabel> {
+            matches!((left_atom, right_atom), (0, 1) | (1, 0)).then_some(BondLabel::Double)
+        }
+
+        fn neighbors(&self, atom_id: AtomId) -> Self::Neighbors<'_> {
+            static FIRST: [Neighbor; 1] = [Neighbor::new(1, BondLabel::Double)];
+            static SECOND: [Neighbor; 1] = [Neighbor::new(0, BondLabel::Double)];
+            match atom_id {
+                0 => FIRST.iter().copied(),
+                1 => SECOND.iter().copied(),
+                _ => [].iter().copied(),
+            }
+        }
+    }
+
+    #[test]
+    fn atom_labels_and_neighbors_have_expected_defaults() {
+        assert_eq!(
+            AtomLabel::new(Element::N),
+            AtomLabel {
+                element: Element::N,
+                aromatic: false,
+                isotope: None,
+                formal_charge: 0,
+                explicit_hydrogens: 0,
+            }
+        );
+        assert_eq!(Neighbor::new(7, BondLabel::Triple).atom_id, 7);
+        assert_eq!(Neighbor::new(7, BondLabel::Triple).bond, BondLabel::Triple);
+    }
+
+    #[test]
+    fn bond_label_conversion_covers_remaining_variants() {
+        assert_eq!(BondLabel::from(Bond::Aromatic), BondLabel::Aromatic);
+        assert_eq!(BondLabel::from(Bond::Down), BondLabel::Down);
+        assert_eq!(BondLabel::from(Bond::Quadruple), BondLabel::Any);
+    }
+
+    #[test]
+    fn default_trait_helpers_cover_has_bond_degree_and_edge_id() {
+        let target = DummyTarget;
+
+        assert!(target.has_bond(0, 1));
+        assert!(!target.has_bond(0, 0));
+        assert_eq!(target.degree(0), 1);
+        assert_eq!(target.degree(99), 0);
+        assert_eq!(target.edge_id(0, 1), None);
+    }
+}

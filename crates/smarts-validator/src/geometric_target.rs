@@ -197,6 +197,7 @@ impl MoleculeTarget for MoleculeGraph {
 mod tests {
     use alloc::{vec, vec::Vec};
     use elements_rs::Element;
+    use geometric_traits::traits::MonopartiteGraph;
 
     use super::{MoleculeGraph, MoleculeGraphError, UndirectedBond};
     use crate::target::{AtomLabel, BondLabel, MoleculeTarget, Neighbor};
@@ -265,6 +266,22 @@ mod tests {
     }
 
     #[test]
+    fn neighbor_iterator_supports_reverse_traversal() {
+        let graph = ethanol_graph();
+        let mut neighbors = graph.neighbors(1);
+
+        assert_eq!(
+            neighbors.next_back(),
+            Some(Neighbor::new(2, BondLabel::Single))
+        );
+        assert_eq!(
+            neighbors.next_back(),
+            Some(Neighbor::new(0, BondLabel::Single))
+        );
+        assert_eq!(neighbors.next_back(), None);
+    }
+
+    #[test]
     fn supports_duplicate_atom_labels_without_artificial_identity() {
         let graph = MoleculeGraph::new(
             vec![AtomLabel::new(Element::C), AtomLabel::new(Element::C)],
@@ -291,5 +308,49 @@ mod tests {
                 atom_count: 1,
             }
         );
+    }
+
+    #[test]
+    fn rejects_left_atom_indices_that_are_out_of_bounds() {
+        let error = MoleculeGraph::new(
+            vec![AtomLabel::new(Element::C)],
+            [UndirectedBond::new(2, 0, BondLabel::Single)],
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            MoleculeGraphError::AtomOutOfBounds {
+                atom_index: 2,
+                atom_count: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn duplicate_bonds_are_rejected_by_the_sparse_matrix_backend() {
+        let error = MoleculeGraph::new(
+            vec![AtomLabel::new(Element::C), AtomLabel::new(Element::C)],
+            [
+                UndirectedBond::new(0, 1, BondLabel::Single),
+                UndirectedBond::new(0, 1, BondLabel::Single),
+            ],
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, MoleculeGraphError::InvalidBondList { .. }));
+    }
+
+    #[test]
+    fn self_loop_bonds_are_not_mirrored_and_raw_graph_is_exposed() {
+        let graph = MoleculeGraph::new(
+            vec![AtomLabel::new(Element::C)],
+            [UndirectedBond::new(0, 0, BondLabel::Single)],
+        )
+        .unwrap();
+
+        assert_eq!(graph.degree(0), 1);
+        assert_eq!(graph.edge_id(0, 0), Some(0));
+        assert_eq!(graph.raw().number_of_nodes(), 1);
     }
 }
