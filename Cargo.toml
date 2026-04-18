@@ -41,6 +41,3 @@ lto = "thin"
 
 [profile.bench]
 inherits = "release"
-
-[patch."https://github.com/earth-metabolome-initiative/geometric-traits"]
-geometric-traits = { path = "../geometric-traits" }

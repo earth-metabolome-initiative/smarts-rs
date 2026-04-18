@@ -1,0 +1,114 @@
+[
+  {
+    "name": "daylight-specified-chiral-carbon-at-forward",
+    "smarts": "[$([#6X4@](*)(*)(*)*),$([#6X4@H](*)(*)*)]",
+    "smiles": "F[C@H](Cl)Br",
+    "use_chirality": true,
+    "expected_match": true
+  },
+  {
+    "name": "daylight-specified-chiral-carbon-at-opposite",
+    "smarts": "[$([#6X4@](*)(*)(*)*),$([#6X4@H](*)(*)*)]",
+    "smiles": "F[C@@H](Cl)Br",
+    "use_chirality": true,
+    "expected_match": true
+  },
+  {
+    "name": "daylight-specified-chiral-carbon-atat-forward",
+    "smarts": "[$([#6X4@@](*)(*)(*)*),$([#6X4@@H](*)(*)*)]",
+    "smiles": "F[C@H](Cl)Br",
+    "use_chirality": true,
+    "expected_match": true
+  },
+  {
+    "name": "daylight-specified-chiral-carbon-atat-opposite",
+    "smarts": "[$([#6X4@@](*)(*)(*)*),$([#6X4@@H](*)(*)*)]",
+    "smiles": "F[C@@H](Cl)Br",
+    "use_chirality": true,
+    "expected_match": true
+  },
+  {
+    "name": "disjunctive-neighbor-ath-forward",
+    "smarts": "[C@H](F)([O,N])Cl",
+    "smiles": "F[C@H](O)Cl",
+    "use_chirality": true,
+    "expected_match": false
+  },
+  {
+    "name": "disjunctive-neighbor-ath-opposite",
+    "smarts": "[C@H](F)([O,N])Cl",
+    "smiles": "F[C@@H](O)Cl",
+    "use_chirality": true,
+    "expected_match": true
+  },
+  {
+    "name": "disjunctive-neighbor-atath-forward",
+    "smarts": "[C@@H](F)([O,N])Cl",
+    "smiles": "F[C@H](O)Cl",
+    "use_chirality": true,
+    "expected_match": true
+  },
+  {
+    "name": "disjunctive-neighbor-atath-opposite",
+    "smarts": "[C@@H](F)([O,N])Cl",
+    "smiles": "F[C@@H](O)Cl",
+    "use_chirality": true,
+    "expected_match": false
+  },
+  {
+    "name": "wildcard-neighbor-ath-forward",
+    "smarts": "[C@H](F)(*)Cl",
+    "smiles": "F[C@H](O)Cl",
+    "use_chirality": true,
+    "expected_match": false
+  },
+  {
+    "name": "wildcard-neighbor-ath-opposite",
+    "smarts": "[C@H](F)(*)Cl",
+    "smiles": "F[C@@H](O)Cl",
+    "use_chirality": true,
+    "expected_match": true
+  },
+  {
+    "name": "wildcard-neighbor-atath-forward",
+    "smarts": "[C@@H](F)(*)Cl",
+    "smiles": "F[C@H](O)Cl",
+    "use_chirality": true,
+    "expected_match": true
+  },
+  {
+    "name": "wildcard-neighbor-atath-opposite",
+    "smarts": "[C@@H](F)(*)Cl",
+    "smiles": "F[C@@H](O)Cl",
+    "use_chirality": true,
+    "expected_match": false
+  },
+  {
+    "name": "sugar5-ribofuranose",
+    "smarts": "[OX2;$([r5]1@[C@@](!@[OX2,NX3,SX2,FX1,ClX1,BrX1,IX1])@C@C@C1),$([r6]1@[C@@](!@[OX2,NX3,SX2,FX1,ClX1,BrX1,IX1])@C@C@C@C1)]",
+    "smiles": "OC[C@H]1O[C@@H](O)[C@H](O)[C@H]1O",
+    "use_chirality": true,
+    "expected_match": true
+  },
+  {
+    "name": "sugar5-glucopyranose",
+    "smarts": "[OX2;$([r5]1@[C@@](!@[OX2,NX3,SX2,FX1,ClX1,BrX1,IX1])@C@C@C1),$([r6]1@[C@@](!@[OX2,NX3,SX2,FX1,ClX1,BrX1,IX1])@C@C@C@C1)]",
+    "smiles": "OC[C@H]1O[C@@H](O)[C@H](O)[C@@H](O)[C@H]1O",
+    "use_chirality": true,
+    "expected_match": true
+  },
+  {
+    "name": "sugar6-ribofuranose",
+    "smarts": "[OX2;$([r5]1@[C@](!@[OX2,NX3,SX2,FX1,ClX1,BrX1,IX1])@C@C@C1),$([r6]1@[C@](!@[OX2,NX3,SX2,FX1,ClX1,BrX1,IX1])@C@C@C@C1)]",
+    "smiles": "OC[C@H]1O[C@@H](O)[C@H](O)[C@H]1O",
+    "use_chirality": true,
+    "expected_match": false
+  },
+  {
+    "name": "sugar6-glucopyranose",
+    "smarts": "[OX2;$([r5]1@[C@](!@[OX2,NX3,SX2,FX1,ClX1,BrX1,IX1])@C@C@C1),$([r6]1@[C@](!@[OX2,NX3,SX2,FX1,ClX1,BrX1,IX1])@C@C@C@C1)]",
+    "smiles": "OC[C@H]1O[C@@H](O)[C@H](O)[C@@H](O)[C@H]1O",
+    "use_chirality": true,
+    "expected_match": false
+  }
+]

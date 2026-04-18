@@ -1,4 +1,5 @@
-use alloc::{collections::BTreeMap, string::ToString};
+use alloc::{collections::BTreeMap, string::String, string::ToString};
+use core::cell::RefCell;
 
 use elements_rs::{AtomicNumber, ElementVariant, MassNumber};
 use smarts_parser::{
@@ -14,6 +15,9 @@ use smiles_parser::{
 use crate::{error::SmartsMatchError, prepared::PreparedTarget, target::BondLabel};
 
 type RecursiveMatchCache = BTreeMap<(usize, usize), bool>;
+type QueryNeighbors = alloc::vec::Vec<alloc::vec::Vec<(QueryAtomId, usize)>>;
+type CompiledQueryParts = (QueryNeighbors, alloc::vec::Vec<usize>, QueryStereoPlan);
+type AtomStereoCache = BTreeMap<AtomStereoCacheKey, Option<Chirality>>;
 
 struct SearchContext<'a> {
     query_neighbors: &'a [alloc::vec::Vec<(QueryAtomId, usize)>],
@@ -21,12 +25,12 @@ struct SearchContext<'a> {
     query_to_target: &'a mut [Option<usize>],
     used_target_atoms: &'a mut [bool],
     stereo_plan: &'a QueryStereoPlan,
+    atom_stereo_cache: &'a RefCell<AtomStereoCache>,
     recursive_cache: &'a mut RecursiveMatchCache,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct QueryStereoPlan {
-    atom_chiralities: alloc::vec::Vec<Option<Chirality>>,
     directional_bond_ids: alloc::vec::Vec<bool>,
     double_bond_constraints: alloc::vec::Vec<QueryDoubleBondStereoConstraint>,
 }
@@ -36,6 +40,63 @@ struct QueryDoubleBondStereoConstraint {
     left_atom: QueryAtomId,
     right_atom: QueryAtomId,
     config: DoubleBondStereoConfig,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct QueryDirectionalSubstituent {
+    bond_id: usize,
+    direction: Bond,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct QueryLocalSubstituent {
+    bond_id: usize,
+    direction: Option<Bond>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct AtomStereoCacheKey {
+    query_atom_id: QueryAtomId,
+    neighbor_tokens: alloc::vec::Vec<String>,
+}
+
+/// Reusable compiled SMARTS query state for repeated matching.
+#[derive(Debug, Clone)]
+pub struct CompiledQuery {
+    query: QueryMol,
+    query_neighbors: QueryNeighbors,
+    query_degrees: alloc::vec::Vec<usize>,
+    stereo_plan: QueryStereoPlan,
+    atom_stereo_cache: RefCell<AtomStereoCache>,
+}
+
+impl CompiledQuery {
+    /// Compile one parsed SMARTS query into reusable matcher state.
+    ///
+    /// # Errors
+    ///
+    /// Returns:
+    /// - [`SmartsMatchError::UnsupportedAtomPrimitive`] when the query uses an
+    ///   atom primitive outside the current validator slice
+    /// - [`SmartsMatchError::UnsupportedBondPrimitive`] when the query uses a
+    ///   bond primitive outside the current validator slice
+    pub fn new(query: QueryMol) -> Result<Self, SmartsMatchError> {
+        let (query_neighbors, query_degrees, stereo_plan) = compile_query_parts(&query)?;
+        Ok(Self {
+            query,
+            query_neighbors,
+            query_degrees,
+            stereo_plan,
+            atom_stereo_cache: RefCell::new(AtomStereoCache::new()),
+        })
+    }
+
+    /// Borrow the underlying parsed SMARTS query.
+    #[inline]
+    #[must_use]
+    pub const fn query(&self) -> &QueryMol {
+        &self.query
+    }
 }
 
 /// Match a compiled SMARTS query against a target `SMILES` string.
@@ -71,10 +132,6 @@ pub fn matches(query: &QueryMol, target: &str) -> Result<bool, SmartsMatchError>
         return Err(SmartsMatchError::EmptyTarget);
     }
 
-    let query_neighbors = build_query_neighbors(query);
-    let stereo_plan = build_query_stereo_plan(query, &query_neighbors)?;
-    ensure_supported_query(query, &stereo_plan)?;
-
     let target =
         target
             .parse::<Smiles>()
@@ -85,7 +142,35 @@ pub fn matches(query: &QueryMol, target: &str) -> Result<bool, SmartsMatchError>
             })?;
     let prepared = PreparedTarget::new(target);
 
-    Ok(query_matches(query, &prepared))
+    matches_prepared(query, &prepared)
+}
+
+/// Match a compiled SMARTS query against a prepared target molecule.
+///
+/// This convenience entrypoint still derives reusable query-side state for
+/// each call. For repeated matching of one SMARTS against many targets, prefer
+/// [`CompiledQuery`] plus [`matches_compiled`].
+///
+/// # Errors
+///
+/// Returns:
+/// - [`SmartsMatchError::UnsupportedAtomPrimitive`] when the query uses an
+///   atom primitive outside the current validator slice
+/// - [`SmartsMatchError::UnsupportedBondPrimitive`] when the query uses a bond
+///   primitive outside the current validator slice
+pub fn matches_prepared(
+    query: &QueryMol,
+    target: &PreparedTarget,
+) -> Result<bool, SmartsMatchError> {
+    let compiled = CompiledQuery::new(query.clone())?;
+    Ok(matches_compiled(&compiled, target))
+}
+
+/// Match one reusable compiled SMARTS query against a prepared target.
+#[inline]
+#[must_use]
+pub fn matches_compiled(query: &CompiledQuery, target: &PreparedTarget) -> bool {
+    query_matches(query, target)
 }
 
 fn ensure_supported_query(
@@ -118,6 +203,14 @@ fn ensure_supported_bond_expr(
         BondExpr::Elided => Ok(()),
         BondExpr::Query(tree) => ensure_supported_bond_tree(tree),
     }
+}
+
+fn query_bond_is_directional(stereo_plan: &QueryStereoPlan, bond_id: usize) -> bool {
+    stereo_plan
+        .directional_bond_ids
+        .get(bond_id)
+        .copied()
+        .unwrap_or(false)
 }
 
 fn ensure_supported_bond_tree(tree: &BondExprTree) -> Result<(), SmartsMatchError> {
@@ -198,9 +291,15 @@ fn ensure_supported_atom_primitive(
         | AtomPrimitive::RingConnectivity(_)
         | AtomPrimitive::AtomicNumber(_)
         | AtomPrimitive::Charge(_)
-        | AtomPrimitive::Chirality(Chirality::At | Chirality::AtAt | Chirality::TH(1 | 2)) => {
-            Ok(())
-        }
+        | AtomPrimitive::Chirality(
+            Chirality::At
+            | Chirality::AtAt
+            | Chirality::TH(1 | 2)
+            | Chirality::AL(1 | 2)
+            | Chirality::SP(1..=3)
+            | Chirality::TB(1..=20)
+            | Chirality::OH(1..=30),
+        ) => Ok(()),
         AtomPrimitive::RecursiveQuery(query) => {
             let query_neighbors = build_query_neighbors(query);
             let recursive_stereo_plan = build_query_stereo_plan(query, &query_neighbors)?;
@@ -217,55 +316,59 @@ const fn unsupported_atom_primitive(primitive: &'static str) -> SmartsMatchError
     SmartsMatchError::UnsupportedAtomPrimitive { primitive }
 }
 
-fn query_matches(query: &QueryMol, target: &PreparedTarget) -> bool {
+fn compile_query_parts(query: &QueryMol) -> Result<CompiledQueryParts, SmartsMatchError> {
+    let query_neighbors = build_query_neighbors(query);
+    let stereo_plan = build_query_stereo_plan(query, &query_neighbors)?;
+    ensure_supported_query(query, &stereo_plan)?;
+    let query_degrees = query_neighbors
+        .iter()
+        .map(alloc::vec::Vec::len)
+        .collect::<alloc::vec::Vec<_>>();
+    Ok((query_neighbors, query_degrees, stereo_plan))
+}
+
+fn query_matches(query: &CompiledQuery, target: &PreparedTarget) -> bool {
     let mut recursive_cache = RecursiveMatchCache::new();
     query_matches_with_mapping(query, target, &mut recursive_cache, None, None)
 }
 
 fn query_matches_with_mapping(
-    query: &QueryMol,
+    query: &CompiledQuery,
     target: &PreparedTarget,
     recursive_cache: &mut RecursiveMatchCache,
     initial_query_atom: Option<QueryAtomId>,
     initial_target_atom: Option<usize>,
 ) -> bool {
-    let query_neighbors = build_query_neighbors(query);
-    let Ok(stereo_plan) = build_query_stereo_plan(query, &query_neighbors) else {
-        return false;
-    };
-    let query_degrees = query_neighbors
-        .iter()
-        .map(alloc::vec::Vec::len)
-        .collect::<alloc::vec::Vec<_>>();
-    let mut query_to_target = alloc::vec![None; query.atom_count()];
+    let mut query_to_target = alloc::vec![None; query.query.atom_count()];
     let mut used_target_atoms = alloc::vec![false; target.atom_count()];
     let mut context = SearchContext {
-        query_neighbors: &query_neighbors,
-        query_degrees: &query_degrees,
+        query_neighbors: &query.query_neighbors,
+        query_degrees: &query.query_degrees,
         query_to_target: &mut query_to_target,
         used_target_atoms: &mut used_target_atoms,
-        stereo_plan: &stereo_plan,
+        stereo_plan: &query.stereo_plan,
+        atom_stereo_cache: &query.atom_stereo_cache,
         recursive_cache,
     };
     let mapped_count =
         if let (Some(query_atom), Some(target_atom)) = (initial_query_atom, initial_target_atom) {
             if target
                 .degree(target_atom)
-                .is_some_and(|degree| degree < query_degrees[query_atom])
+                .is_some_and(|degree| degree < query.query_degrees[query_atom])
             {
                 return false;
             }
             if !component_constraints_match(
                 query_atom,
                 target_atom,
-                query,
+                &query.query,
                 target,
                 context.query_to_target,
             ) {
                 return false;
             }
             if !atom_expr_matches(
-                &query.atoms()[query_atom].expr,
+                &query.query.atoms()[query_atom].expr,
                 query_atom,
                 context.stereo_plan,
                 target,
@@ -281,7 +384,7 @@ fn query_matches_with_mapping(
             0
         };
 
-    search_mapping(query, target, &mut context, mapped_count)
+    search_mapping(&query.query, target, &mut context, mapped_count)
 }
 
 fn build_query_neighbors(
@@ -299,11 +402,6 @@ fn build_query_stereo_plan(
     query: &QueryMol,
     query_neighbors: &[alloc::vec::Vec<(QueryAtomId, usize)>],
 ) -> Result<QueryStereoPlan, SmartsMatchError> {
-    let mut atom_chiralities = alloc::vec![None; query.atom_count()];
-    for atom in query.atoms() {
-        atom_chiralities[atom.id] = build_query_atom_chirality(query, query_neighbors, atom.id)?;
-    }
-
     let mut directional_bond_ids = alloc::vec![false; query.bond_count()];
     let mut double_bond_constraints = alloc::vec::Vec::new();
 
@@ -312,61 +410,56 @@ fn build_query_stereo_plan(
             continue;
         }
 
-        let left = directional_neighbor(query, query_neighbors, bond.src, bond.id, bond.dst)?;
-        let right = directional_neighbor(query, query_neighbors, bond.dst, bond.id, bond.src)?;
+        let left_directional =
+            directional_substituents(query, query_neighbors, bond.src, bond.id, bond.dst)?;
+        let right_directional =
+            directional_substituents(query, query_neighbors, bond.dst, bond.id, bond.src)?;
 
-        match (left, right) {
-            (None | Some(_), None) | (None, Some(_)) => {}
-            (Some((left_bond_id, left_direction)), Some((right_bond_id, right_direction))) => {
-                directional_bond_ids[left_bond_id] = true;
-                directional_bond_ids[right_bond_id] = true;
-                let config = if left_direction == right_direction {
-                    DoubleBondStereoConfig::E
-                } else {
-                    DoubleBondStereoConfig::Z
-                };
-                double_bond_constraints.push(QueryDoubleBondStereoConstraint {
-                    left_atom: bond.src,
-                    right_atom: bond.dst,
-                    config,
-                });
-            }
+        if left_directional.is_empty() || right_directional.is_empty() {
+            continue;
         }
+
+        let left_local = local_substituents(query, query_neighbors, bond.src, bond.id, bond.dst)?;
+        let right_local = local_substituents(query, query_neighbors, bond.dst, bond.id, bond.src)?;
+        let (fragment, left_atom_id, right_atom_id) =
+            build_local_double_bond_fragment(&left_local, &right_local)?;
+        let local_smiles = fragment
+            .parse::<Smiles>()
+            .map_err(|_| unsupported_bond_primitive("/"))?;
+        let config = local_smiles
+            .double_bond_stereo_config(left_atom_id, right_atom_id)
+            .ok_or_else(|| unsupported_bond_primitive("/"))?;
+
+        for substituent in left_directional.iter().chain(right_directional.iter()) {
+            directional_bond_ids[substituent.bond_id] = true;
+        }
+        double_bond_constraints.push(QueryDoubleBondStereoConstraint {
+            left_atom: bond.src,
+            right_atom: bond.dst,
+            config,
+        });
     }
 
     Ok(QueryStereoPlan {
-        atom_chiralities,
         directional_bond_ids,
         double_bond_constraints,
     })
 }
 
-fn build_query_atom_chirality(
-    query: &QueryMol,
-    query_neighbors: &[alloc::vec::Vec<(QueryAtomId, usize)>],
-    atom_id: QueryAtomId,
-) -> Result<Option<Chirality>, SmartsMatchError> {
-    let Some(query_chirality) = extract_query_chirality(&query.atoms()[atom_id].expr) else {
-        return Ok(None);
-    };
-    if !is_supported_query_chirality(query_chirality) {
-        return Err(unsupported_atom_primitive("@"));
-    }
-
-    if query_neighbors[atom_id].len() < 3 {
-        return Ok(None);
-    }
-
-    let (local_fragment, local_center_atom_id) =
-        build_local_stereo_fragment(query, query_neighbors, atom_id)?;
-    let local_smiles = local_fragment
-        .parse::<Smiles>()
-        .map_err(|_| unsupported_atom_primitive("@"))?;
-
-    Ok(local_smiles.smarts_tetrahedral_chirality(local_center_atom_id))
+const fn is_supported_query_chirality(chirality: Chirality) -> bool {
+    matches!(
+        chirality,
+        Chirality::At
+            | Chirality::AtAt
+            | Chirality::TH(1 | 2)
+            | Chirality::AL(1 | 2)
+            | Chirality::SP(1..=3)
+            | Chirality::TB(1..=20)
+            | Chirality::OH(1..=30)
+    )
 }
 
-const fn is_supported_query_chirality(chirality: Chirality) -> bool {
+const fn query_chirality_requires_tetrahedral_match(chirality: Chirality) -> bool {
     matches!(
         chirality,
         Chirality::At | Chirality::AtAt | Chirality::TH(1 | 2)
@@ -396,8 +489,12 @@ fn build_local_stereo_fragment(
     query: &QueryMol,
     query_neighbors: &[alloc::vec::Vec<(QueryAtomId, usize)>],
     atom_id: QueryAtomId,
-) -> Result<(alloc::string::String, usize), SmartsMatchError> {
+    neighbor_tokens: &[String],
+) -> Result<(String, usize), SmartsMatchError> {
     let incident = &query_neighbors[atom_id];
+    let Some(query_chirality) = extract_query_chirality(&query.atoms()[atom_id].expr) else {
+        return Err(unsupported_atom_primitive("@"));
+    };
     let preserve_incoming_neighbor = query_has_total_hydrogen(&query.atoms()[atom_id].expr);
     let prefix_neighbor = preserve_incoming_neighbor
         .then(|| {
@@ -411,37 +508,147 @@ fn build_local_stereo_fragment(
         .len()
         .saturating_sub(usize::from(prefix_neighbor.is_some()));
 
-    let mut fragment = if let Some(prefix_index) = prefix_neighbor {
-        let (neighbor_atom, bond_id) = incident[prefix_index];
-        let mut fragment = render_local_atom_expr(&query.atoms()[neighbor_atom].expr)?;
-        let bond_text = local_stereo_bond_text(&query.bonds()[bond_id].expr)?;
-        let center_text = render_local_atom_expr(&query.atoms()[atom_id].expr)?;
-        fragment.push_str(bond_text);
-        fragment.push_str(&center_text);
-        fragment
-    } else {
-        render_local_atom_expr(&query.atoms()[atom_id].expr)?
-    };
+    let mut fragment = prefix_neighbor.map_or_else(
+        || render_local_stereo_center(query_chirality, preserve_incoming_neighbor),
+        |prefix_index| {
+            let (_, bond_id) = incident[prefix_index];
+            let mut fragment = neighbor_tokens[prefix_index].clone();
+            fragment.push_str(local_stereo_bond_text(&query.bonds()[bond_id].expr));
+            fragment.push_str(&render_local_stereo_center(
+                query_chirality,
+                preserve_incoming_neighbor,
+            ));
+            fragment
+        },
+    );
 
     let mut rendered_remaining = 0usize;
-    for (index, (neighbor_atom, bond_id)) in incident.iter().enumerate() {
+    for (index, (_, bond_id)) in incident.iter().enumerate() {
         if Some(index) == prefix_neighbor {
             continue;
         }
         rendered_remaining += 1;
-        let bond_text = local_stereo_bond_text(&query.bonds()[*bond_id].expr)?;
-        let atom_text = render_local_atom_expr(&query.atoms()[*neighbor_atom].expr)?;
+        let atom_text = &neighbor_tokens[index];
+        let bond_text = local_stereo_bond_text(&query.bonds()[*bond_id].expr);
         if rendered_remaining == remaining_count {
             fragment.push_str(bond_text);
-            fragment.push_str(&atom_text);
+            fragment.push_str(atom_text);
         } else {
             fragment.push('(');
             fragment.push_str(bond_text);
-            fragment.push_str(&atom_text);
+            fragment.push_str(atom_text);
             fragment.push(')');
         }
     }
     Ok((fragment, usize::from(prefix_neighbor.is_some())))
+}
+
+fn local_neighbor_tokens_for_mapping(
+    incident: &[(QueryAtomId, usize)],
+    query_to_target: &[Option<usize>],
+    target: &PreparedTarget,
+) -> Result<alloc::vec::Vec<String>, SmartsMatchError> {
+    const PLACEHOLDER_ATOMS: [&str; 8] = ["F", "Cl", "Br", "I", "N", "O", "P", "S"];
+
+    let target_atoms_in_incident_order = incident
+        .iter()
+        .map(|(neighbor_atom, _)| {
+            query_to_target[*neighbor_atom].ok_or_else(|| unsupported_atom_primitive("@"))
+        })
+        .collect::<Result<alloc::vec::Vec<_>, _>>()?;
+    let mut target_atoms = target_atoms_in_incident_order.clone();
+    target_atoms.sort_unstable();
+    target_atoms.dedup();
+
+    if target_atoms.len() > PLACEHOLDER_ATOMS.len() {
+        return Err(unsupported_atom_primitive("@"));
+    }
+
+    let rendered_atoms = target_atoms
+        .iter()
+        .map(|target_atom_id| render_target_stereo_atom(target, *target_atom_id))
+        .collect::<alloc::vec::Vec<_>>();
+    let mut assigned_tokens = alloc::vec::Vec::with_capacity(target_atoms.len());
+    let mut placeholder_index = 0usize;
+
+    for (index, target_atom_id) in target_atoms.into_iter().enumerate() {
+        let rendered_atom = rendered_atoms[index].clone();
+        let rendered_atom_is_unique = rendered_atom.as_ref().is_some_and(|rendered_atom| {
+            rendered_atoms
+                .iter()
+                .filter(|other_rendered_atom| other_rendered_atom.as_ref() == Some(rendered_atom))
+                .count()
+                == 1
+        });
+
+        if rendered_atom_is_unique {
+            assigned_tokens.push((
+                target_atom_id,
+                rendered_atom.expect("checked that the rendered atom exists"),
+            ));
+            continue;
+        }
+
+        while PLACEHOLDER_ATOMS
+            .get(placeholder_index)
+            .is_some_and(|placeholder_atom| {
+                assigned_tokens
+                    .iter()
+                    .any(|(_, assigned_token)| assigned_token == placeholder_atom)
+            })
+        {
+            placeholder_index += 1;
+        }
+        let Some(placeholder_atom) = PLACEHOLDER_ATOMS.get(placeholder_index) else {
+            return Err(unsupported_atom_primitive("@"));
+        };
+        assigned_tokens.push((
+            target_atom_id,
+            String::from(*placeholder_atom),
+        ));
+        placeholder_index += 1;
+    }
+
+    target_atoms_in_incident_order
+        .into_iter()
+        .map(|target_atom_id| {
+            assigned_tokens
+                .iter()
+                .find_map(|(mapped_target_atom_id, placeholder_atom)| {
+                    (*mapped_target_atom_id == target_atom_id).then_some(placeholder_atom.clone())
+                })
+                .ok_or_else(|| unsupported_atom_primitive("@"))
+        })
+        .collect()
+}
+
+fn render_target_stereo_atom(
+    target: &PreparedTarget,
+    atom_id: usize,
+) -> Option<String> {
+    let atom = target.atom(atom_id)?;
+    let mut symbol = atom.element()?.to_string();
+    if target.is_aromatic(atom_id) {
+        symbol.make_ascii_lowercase();
+    }
+
+    if atom.isotope_mass_number().is_none()
+        && atom.charge_value() == 0
+        && atom.element() != Some(elements_rs::Element::H)
+    {
+        return Some(symbol);
+    }
+
+    let mut rendered = String::from("[");
+    if let Some(isotope_mass_number) = atom.isotope_mass_number() {
+        rendered.push_str(&isotope_mass_number.to_string());
+    }
+    rendered.push_str(&symbol);
+    if atom.charge_value() != 0 {
+        rendered.push_str(&render_charge(atom.charge_value()));
+    }
+    rendered.push(']');
+    Some(rendered)
 }
 
 fn query_has_total_hydrogen(expr: &AtomExpr) -> bool {
@@ -461,147 +668,31 @@ fn bracket_tree_has_total_hydrogen(tree: &BracketExprTree) -> bool {
     }
 }
 
-fn render_local_atom_expr(expr: &AtomExpr) -> Result<alloc::string::String, SmartsMatchError> {
-    match expr {
-        AtomExpr::Wildcard => Err(unsupported_atom_primitive("@")),
-        AtomExpr::Bare { element, aromatic } => Ok(render_symbol(*element, *aromatic)),
-        AtomExpr::Bracket(expr) => render_local_bracket_expr(&expr.tree),
-    }
-}
-
-fn render_local_bracket_expr(
-    tree: &BracketExprTree,
-) -> Result<alloc::string::String, SmartsMatchError> {
-    let mut symbol = None::<(elements_rs::Element, bool)>;
-    let mut isotope = None::<(elements_rs::Isotope, bool)>;
-    let mut chirality = None::<Chirality>;
-    let mut hydrogen = None::<u8>;
-    let mut has_hydrogen = false;
-    let mut charge = None::<i8>;
-
-    match tree {
-        BracketExprTree::Primitive(primitive) => apply_local_bracket_primitive(
-            primitive,
-            &mut symbol,
-            &mut isotope,
-            &mut chirality,
-            &mut has_hydrogen,
-            &mut hydrogen,
-            &mut charge,
-        )?,
-        BracketExprTree::HighAnd(items) => {
-            for item in items {
-                let BracketExprTree::Primitive(primitive) = item else {
-                    return Err(unsupported_atom_primitive("@"));
-                };
-                apply_local_bracket_primitive(
-                    primitive,
-                    &mut symbol,
-                    &mut isotope,
-                    &mut chirality,
-                    &mut has_hydrogen,
-                    &mut hydrogen,
-                    &mut charge,
-                )?;
-            }
-        }
-        BracketExprTree::Not(_) | BracketExprTree::Or(_) | BracketExprTree::LowAnd(_) => {
-            return Err(unsupported_atom_primitive("@"));
-        }
-    }
-
-    let mut rendered = alloc::string::String::from("[");
-    match (symbol, isotope) {
-        (Some((element, aromatic)), None) => rendered.push_str(&render_symbol(element, aromatic)),
-        (None, Some((isotope, aromatic))) => {
-            rendered.push_str(&isotope.mass_number().to_string());
-            rendered.push_str(&render_symbol(isotope.element(), aromatic));
-        }
-        _ => return Err(unsupported_atom_primitive("@")),
-    }
-    if let Some(chirality) = chirality {
-        rendered.push_str(&render_local_chirality(chirality, has_hydrogen));
-    }
+fn render_local_stereo_center(chirality: Chirality, has_hydrogen: bool) -> String {
+    let mut rendered = String::from("[C");
+    rendered.push_str(&render_local_chirality(chirality, has_hydrogen));
     if has_hydrogen {
         rendered.push('H');
-        if let Some(value) = hydrogen {
-            rendered.push_str(&value.to_string());
-        }
-    }
-    if let Some(charge) = charge {
-        rendered.push_str(&render_charge(charge));
     }
     rendered.push(']');
-    Ok(rendered)
+    rendered
 }
 
-fn apply_local_bracket_primitive(
-    primitive: &AtomPrimitive,
-    symbol: &mut Option<(elements_rs::Element, bool)>,
-    isotope: &mut Option<(elements_rs::Isotope, bool)>,
-    chirality: &mut Option<Chirality>,
-    has_hydrogen: &mut bool,
-    hydrogen: &mut Option<u8>,
-    charge: &mut Option<i8>,
-) -> Result<(), SmartsMatchError> {
-    match primitive {
-        AtomPrimitive::Symbol { element, aromatic } => {
-            *symbol = Some((*element, *aromatic));
-            Ok(())
-        }
-        AtomPrimitive::Isotope {
-            isotope: value,
-            aromatic,
-        } => {
-            *isotope = Some((*value, *aromatic));
-            Ok(())
-        }
-        AtomPrimitive::Chirality(value) => {
-            if !is_supported_query_chirality(*value) {
-                return Err(unsupported_atom_primitive("@"));
-            }
-            *chirality = Some(*value);
-            Ok(())
-        }
-        AtomPrimitive::Hydrogen(HydrogenKind::Total, value) => {
-            *has_hydrogen = true;
-            *hydrogen = exact_numeric_query_u8(*value);
-            if value.is_some() && hydrogen.is_none() {
-                return Err(unsupported_atom_primitive("{...}"));
-            }
-            Ok(())
-        }
-        AtomPrimitive::Charge(value) => {
-            *charge = Some(*value);
-            Ok(())
-        }
-        _ => Err(unsupported_atom_primitive("@")),
-    }
-}
-
-fn render_symbol(element: elements_rs::Element, aromatic: bool) -> alloc::string::String {
-    let mut symbol = element.to_string();
-    if aromatic {
-        symbol.make_ascii_lowercase();
-    }
-    symbol
-}
-
-fn render_charge(charge: i8) -> alloc::string::String {
+fn render_charge(charge: i8) -> String {
     match charge.cmp(&0) {
         core::cmp::Ordering::Less => {
             let magnitude = charge.unsigned_abs();
             if magnitude == 1 {
-                alloc::string::String::from("-")
+                String::from("-")
             } else {
                 alloc::format!("-{magnitude}")
             }
         }
-        core::cmp::Ordering::Equal => alloc::string::String::new(),
+        core::cmp::Ordering::Equal => String::new(),
         core::cmp::Ordering::Greater => {
             let magnitude = u8::try_from(charge).unwrap_or(u8::MAX);
             if magnitude == 1 {
-                alloc::string::String::from("+")
+                String::from("+")
             } else {
                 alloc::format!("+{magnitude}")
             }
@@ -609,15 +700,11 @@ fn render_charge(charge: i8) -> alloc::string::String {
     }
 }
 
-const fn exact_numeric_query_u16(query: Option<NumericQuery>) -> Option<u16> {
-    match query {
-        Some(NumericQuery::Exact(value)) => Some(value),
-        None | Some(NumericQuery::Range(_)) => None,
+const fn local_stereo_bond_text(expr: &BondExpr) -> &'static str {
+    match expr {
+        BondExpr::Elided => "",
+        BondExpr::Query(_) => "-",
     }
-}
-
-fn exact_numeric_query_u8(query: Option<NumericQuery>) -> Option<u8> {
-    exact_numeric_query_u16(query).and_then(|value| u8::try_from(value).ok())
 }
 
 fn numeric_query_matches_u16(query: NumericQuery, actual: u16) -> bool {
@@ -641,59 +728,197 @@ fn ring_query_matches_u16(query: Option<NumericQuery>, actual: u16) -> bool {
     query.map_or(actual > 0, |query| numeric_query_matches_u16(query, actual))
 }
 
-fn render_local_chirality(chirality: Chirality, has_hydrogen: bool) -> alloc::string::String {
+fn render_local_chirality(chirality: Chirality, has_hydrogen: bool) -> String {
     match (chirality, has_hydrogen) {
-        (Chirality::At, true) => alloc::string::String::from("@"),
-        (Chirality::AtAt, true) => alloc::string::String::from("@@"),
+        (Chirality::At, true) => String::from("@"),
+        (Chirality::AtAt, true) => String::from("@@"),
         (Chirality::At, false) => Chirality::TH(1).to_string(),
         (Chirality::AtAt, false) => Chirality::TH(2).to_string(),
         _ => chirality.to_string(),
     }
 }
 
-const fn local_stereo_bond_text(expr: &BondExpr) -> Result<&'static str, SmartsMatchError> {
-    match expr {
-        BondExpr::Elided => Ok(""),
-        BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Bond(Bond::Single))) => Ok("-"),
-        BondExpr::Query(_) => Err(unsupported_atom_primitive("@")),
-    }
-}
-
-fn directional_neighbor(
+fn directional_substituents(
     query: &QueryMol,
     query_neighbors: &[alloc::vec::Vec<(QueryAtomId, usize)>],
     endpoint: QueryAtomId,
     double_bond_id: usize,
     opposite_endpoint: QueryAtomId,
-) -> Result<Option<(usize, Bond)>, SmartsMatchError> {
-    let mut directional = None;
+) -> Result<alloc::vec::Vec<QueryDirectionalSubstituent>, SmartsMatchError> {
+    let mut directional = alloc::vec::Vec::new();
     for (neighbor_atom, bond_id) in &query_neighbors[endpoint] {
         if *bond_id == double_bond_id || *neighbor_atom == opposite_endpoint {
             continue;
         }
-        let Some(direction) = simple_directional_bond(&query.bonds()[*bond_id].expr) else {
-            if contains_directional_primitive(&query.bonds()[*bond_id].expr) {
-                return Err(unsupported_bond_primitive("/"));
-            }
+        let Some(direction) = first_supported_directional_bond(&query.bonds()[*bond_id].expr)?
+        else {
             continue;
         };
-        if directional.is_some() {
-            return Err(unsupported_bond_primitive("/"));
-        }
-        directional = Some((*bond_id, direction));
+        directional.push(QueryDirectionalSubstituent {
+            bond_id: *bond_id,
+            direction,
+        });
     }
     Ok(directional)
 }
 
-const fn simple_directional_bond(expr: &BondExpr) -> Option<Bond> {
-    match expr {
-        BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Bond(Bond::Up | Bond::Down))) => {
-            match expr {
-                BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Bond(bond))) => Some(*bond),
-                _ => None,
-            }
+fn local_substituents(
+    query: &QueryMol,
+    query_neighbors: &[alloc::vec::Vec<(QueryAtomId, usize)>],
+    endpoint: QueryAtomId,
+    double_bond_id: usize,
+    opposite_endpoint: QueryAtomId,
+) -> Result<alloc::vec::Vec<QueryLocalSubstituent>, SmartsMatchError> {
+    let mut substituents = alloc::vec::Vec::new();
+    for (neighbor_atom, bond_id) in &query_neighbors[endpoint] {
+        if *bond_id == double_bond_id || *neighbor_atom == opposite_endpoint {
+            continue;
         }
-        _ => None,
+        let expr = &query.bonds()[*bond_id].expr;
+        let direction = first_supported_directional_bond(expr)?;
+        substituents.push(QueryLocalSubstituent {
+            bond_id: *bond_id,
+            direction,
+        });
+    }
+    Ok(substituents)
+}
+
+fn build_local_double_bond_fragment(
+    left_substituents: &[QueryLocalSubstituent],
+    right_substituents: &[QueryLocalSubstituent],
+) -> Result<(String, usize, usize), SmartsMatchError> {
+    const PLACEHOLDER_ATOMS: [&str; 8] = ["F", "Cl", "Br", "I", "N", "O", "P", "S"];
+
+    let total_substituents = left_substituents.len() + right_substituents.len();
+    if total_substituents > PLACEHOLDER_ATOMS.len() {
+        return Err(unsupported_bond_primitive("/"));
+    }
+
+    let mut next_placeholder = 0usize;
+    let mut next_atom_id = 0usize;
+    let mut fragment = String::new();
+
+    let left_prefix_index = left_substituents
+        .iter()
+        .position(|substituent| substituent.direction.is_some())
+        .or_else(|| (!left_substituents.is_empty()).then_some(0));
+
+    if let Some(prefix_index) = left_prefix_index {
+        fragment.push_str(PLACEHOLDER_ATOMS[next_placeholder]);
+        fragment.push_str(local_double_bond_direction_text(
+            left_substituents[prefix_index].direction,
+        ));
+        next_placeholder += 1;
+        next_atom_id += 1;
+    }
+
+    let left_center_atom_id = next_atom_id;
+    fragment.push('C');
+    next_atom_id += 1;
+
+    for (index, substituent) in left_substituents.iter().enumerate() {
+        if Some(index) == left_prefix_index {
+            continue;
+        }
+        fragment.push('(');
+        fragment.push_str(local_double_bond_direction_text(substituent.direction));
+        fragment.push_str(PLACEHOLDER_ATOMS[next_placeholder]);
+        fragment.push(')');
+        next_placeholder += 1;
+        next_atom_id += 1;
+    }
+
+    fragment.push('=');
+    let right_center_atom_id = next_atom_id;
+    fragment.push('C');
+    next_atom_id += 1;
+
+    if let Some(continuation_index) = right_continuation_index(right_substituents) {
+        for (index, substituent) in right_substituents.iter().enumerate() {
+            if index == continuation_index {
+                continue;
+            }
+            fragment.push('(');
+            fragment.push_str(local_double_bond_direction_text(substituent.direction));
+            fragment.push_str(PLACEHOLDER_ATOMS[next_placeholder]);
+            fragment.push(')');
+            next_placeholder += 1;
+            next_atom_id += 1;
+        }
+
+        let continuation = right_substituents[continuation_index];
+        fragment.push_str(local_double_bond_direction_text(continuation.direction));
+        fragment.push_str(PLACEHOLDER_ATOMS[next_placeholder]);
+        let _ = next_atom_id;
+    }
+
+    Ok((fragment, left_center_atom_id, right_center_atom_id))
+}
+
+fn right_continuation_index(substituents: &[QueryLocalSubstituent]) -> Option<usize> {
+    substituents
+        .iter()
+        .position(|substituent| substituent.direction.is_none())
+        .or_else(|| (!substituents.is_empty()).then(|| substituents.len() - 1))
+}
+
+const fn local_double_bond_direction_text(direction: Option<Bond>) -> &'static str {
+    match direction {
+        Some(Bond::Up) => "/",
+        Some(Bond::Down) => "\\",
+        _ => "",
+    }
+}
+
+fn first_supported_directional_bond(expr: &BondExpr) -> Result<Option<Bond>, SmartsMatchError> {
+    match expr {
+        BondExpr::Elided => Ok(None),
+        BondExpr::Query(tree) => first_supported_directional_bond_tree(tree),
+    }
+}
+
+fn bond_expr_contains_negated_directional_primitive(expr: &BondExpr) -> bool {
+    match expr {
+        BondExpr::Elided => false,
+        BondExpr::Query(tree) => bond_tree_contains_negated_directional_primitive(tree),
+    }
+}
+
+fn bond_tree_contains_negated_directional_primitive(tree: &BondExprTree) -> bool {
+    match tree {
+        BondExprTree::Primitive(_) => false,
+        BondExprTree::Not(inner) => bond_tree_contains_directional_primitive(inner),
+        BondExprTree::HighAnd(items) | BondExprTree::Or(items) | BondExprTree::LowAnd(items) => {
+            let mut index = 0usize;
+            while index < items.len() {
+                if bond_tree_contains_negated_directional_primitive(&items[index]) {
+                    return true;
+                }
+                index += 1;
+            }
+            false
+        }
+    }
+}
+
+fn first_supported_directional_bond_tree(
+    tree: &BondExprTree,
+) -> Result<Option<Bond>, SmartsMatchError> {
+    match tree {
+        BondExprTree::Primitive(BondPrimitive::Bond(Bond::Up | Bond::Down)) => match tree {
+            BondExprTree::Primitive(BondPrimitive::Bond(bond)) => Ok(Some(*bond)),
+            _ => Ok(None),
+        },
+        BondExprTree::Primitive(_) | BondExprTree::Not(_) => Ok(None),
+        BondExprTree::HighAnd(items) | BondExprTree::Or(items) | BondExprTree::LowAnd(items) => {
+            for item in items {
+                if let Some(direction) = first_supported_directional_bond_tree(item)? {
+                    return Ok(Some(direction));
+                }
+            }
+            Ok(None)
+        }
     }
 }
 
@@ -702,13 +927,6 @@ const fn is_simple_double_bond_expr(expr: &BondExpr) -> bool {
         expr,
         BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Bond(Bond::Double)))
     )
-}
-
-fn contains_directional_primitive(expr: &BondExpr) -> bool {
-    match expr {
-        BondExpr::Elided => false,
-        BondExpr::Query(tree) => bond_tree_contains_directional_primitive(tree),
-    }
 }
 
 fn bond_tree_contains_directional_primitive(tree: &BondExprTree) -> bool {
@@ -729,7 +947,14 @@ fn search_mapping(
     mapped_count: usize,
 ) -> bool {
     if mapped_count == query.atom_count() {
-        return stereo_constraints_match(context.stereo_plan, target, context.query_to_target);
+        return stereo_constraints_match(
+            query,
+            context.stereo_plan,
+            context.query_neighbors,
+            target,
+            context.query_to_target,
+            context.atom_stereo_cache,
+        );
     }
 
     let next_query_atom = select_next_query_atom(context.query_neighbors, context.query_to_target);
@@ -737,6 +962,7 @@ fn search_mapping(
     let candidate_target_atoms = candidate_target_atoms(
         next_query_atom,
         query,
+        context.stereo_plan,
         target,
         context.query_neighbors,
         context.query_to_target,
@@ -775,6 +1001,7 @@ fn search_mapping(
             next_query_atom,
             target_atom,
             query,
+            context.stereo_plan,
             target,
             context.query_neighbors,
             context.query_to_target,
@@ -872,6 +1099,7 @@ fn select_next_query_atom(
 fn candidate_target_atoms(
     query_atom: QueryAtomId,
     query: &QueryMol,
+    stereo_plan: &QueryStereoPlan,
     target: &PreparedTarget,
     query_neighbors: &[alloc::vec::Vec<(QueryAtomId, usize)>],
     query_to_target: &[Option<usize>],
@@ -879,7 +1107,11 @@ fn candidate_target_atoms(
     let mapped_neighbors = query_neighbors[query_atom]
         .iter()
         .filter_map(|(neighbor, bond_index)| {
-            Some((query_to_target[*neighbor]?, &query.bonds()[*bond_index]))
+            Some((
+                query_to_target[*neighbor]?,
+                *bond_index,
+                &query.bonds()[*bond_index],
+            ))
         })
         .collect::<alloc::vec::Vec<_>>();
 
@@ -887,12 +1119,14 @@ fn candidate_target_atoms(
         return (0..target.atom_count()).collect();
     }
 
-    let (seed_target_atom, seed_query_bond) = mapped_neighbors[0];
+    let (seed_target_atom, seed_bond_id, seed_query_bond) = mapped_neighbors[0];
     let mut candidates = target
         .neighbors(seed_target_atom)
         .filter_map(|(neighbor_atom, bond_label)| {
-            bond_expr_matches(
+            query_bond_matches(
+                seed_bond_id,
                 &seed_query_bond.expr,
+                stereo_plan,
                 target,
                 seed_target_atom,
                 neighbor_atom,
@@ -911,6 +1145,7 @@ fn mapped_bonds_match(
     query_atom: QueryAtomId,
     target_atom: usize,
     query: &QueryMol,
+    stereo_plan: &QueryStereoPlan,
     target: &PreparedTarget,
     query_neighbors: &[alloc::vec::Vec<(QueryAtomId, usize)>],
     query_to_target: &[Option<usize>],
@@ -920,15 +1155,18 @@ fn mapped_bonds_match(
         .filter_map(|(neighbor_atom, bond_index)| {
             Some((
                 query_to_target[*neighbor_atom]?,
+                *bond_index,
                 &query.bonds()[*bond_index],
             ))
         })
-        .all(|(mapped_target_atom, query_bond)| {
+        .all(|(mapped_target_atom, query_bond_id, query_bond)| {
             target
                 .bond(target_atom, mapped_target_atom)
                 .is_some_and(|bond| {
-                    bond_expr_matches(
+                    query_bond_matches(
+                        query_bond_id,
                         &query_bond.expr,
+                        stereo_plan,
                         target,
                         target_atom,
                         mapped_target_atom,
@@ -936,6 +1174,27 @@ fn mapped_bonds_match(
                     )
                 })
         })
+}
+
+fn query_bond_matches(
+    bond_id: usize,
+    expr: &BondExpr,
+    stereo_plan: &QueryStereoPlan,
+    target: &PreparedTarget,
+    left_atom: usize,
+    right_atom: usize,
+    target_bond: BondLabel,
+) -> bool {
+    if bond_expr_contains_negated_directional_primitive(expr) {
+        return false;
+    }
+    if query_bond_is_directional(stereo_plan, bond_id) {
+        return matches!(
+            target_bond,
+            BondLabel::Single | BondLabel::Up | BondLabel::Down
+        );
+    }
+    bond_expr_matches(expr, target, left_atom, right_atom, target_bond)
 }
 
 fn bond_expr_matches(
@@ -1089,8 +1348,8 @@ fn bracket_tree_matches(
 
 fn atom_primitive_matches(
     primitive: &AtomPrimitive,
-    query_atom_id: QueryAtomId,
-    stereo_plan: &QueryStereoPlan,
+    _query_atom_id: QueryAtomId,
+    _stereo_plan: &QueryStereoPlan,
     target: &PreparedTarget,
     atom_id: usize,
     recursive_cache: &mut RecursiveMatchCache,
@@ -1099,7 +1358,7 @@ fn atom_primitive_matches(
     let aromatic = target.is_aromatic(atom_id);
 
     match primitive {
-        AtomPrimitive::Wildcard => true,
+        AtomPrimitive::Wildcard | AtomPrimitive::Chirality(_) => true,
         AtomPrimitive::AliphaticAny => atom.and_then(Atom::element).is_some() && !aromatic,
         AtomPrimitive::AromaticAny => atom.and_then(Atom::element).is_some() && aromatic,
         AtomPrimitive::Symbol { element, aromatic } => atom_matches_symbol(
@@ -1159,34 +1418,80 @@ fn atom_primitive_matches(
         AtomPrimitive::RecursiveQuery(query) => {
             recursive_query_matches(query, target, atom_id, recursive_cache)
         }
-        AtomPrimitive::Chirality(chirality) => {
-            atom_chirality_matches(*chirality, query_atom_id, stereo_plan, target, atom_id)
-        }
     }
 }
 
 fn atom_chirality_matches(
-    query_chirality: Chirality,
+    query: &QueryMol,
+    query_neighbors: &[alloc::vec::Vec<(QueryAtomId, usize)>],
     query_atom_id: QueryAtomId,
-    stereo_plan: &QueryStereoPlan,
     target: &PreparedTarget,
-    atom_id: usize,
+    query_to_target: &[Option<usize>],
+    atom_stereo_cache: &RefCell<AtomStereoCache>,
 ) -> bool {
-    match query_chirality {
-        Chirality::At | Chirality::AtAt | Chirality::TH(1 | 2) => stereo_plan
-            .atom_chiralities
-            .get(query_atom_id)
-            .copied()
-            .flatten()
-            .is_none_or(|expected| target.tetrahedral_chirality(atom_id) == Some(expected)),
-        _ => false,
+    let Some(query_chirality) = extract_query_chirality(&query.atoms()[query_atom_id].expr) else {
+        return true;
+    };
+    if !is_supported_query_chirality(query_chirality) {
+        return false;
     }
+    if !query_chirality_requires_tetrahedral_match(query_chirality) {
+        return true;
+    }
+
+    let incident = &query_neighbors[query_atom_id];
+    if incident.len() < 3 || incident.len() > 4 {
+        return true;
+    }
+
+    let Some(target_atom_id) = query_to_target[query_atom_id] else {
+        return false;
+    };
+    let Some(actual_target_chirality) = target.tetrahedral_chirality(target_atom_id) else {
+        return false;
+    };
+    let Ok(neighbor_tokens) =
+        local_neighbor_tokens_for_mapping(incident, query_to_target, target)
+    else {
+        return false;
+    };
+    let cache_key = AtomStereoCacheKey {
+        query_atom_id,
+        neighbor_tokens,
+    };
+    let expected_chirality = {
+        let cache = atom_stereo_cache.borrow();
+        cache.get(&cache_key).copied()
+    };
+    let expected_chirality = expected_chirality.unwrap_or_else(|| {
+        let computed = build_local_stereo_fragment(
+            query,
+            query_neighbors,
+            query_atom_id,
+            &cache_key.neighbor_tokens,
+        )
+        .ok()
+        .and_then(|(local_fragment, local_center_atom_id)| {
+            local_fragment
+                .parse::<Smiles>()
+                .ok()
+                .and_then(|local_smiles| local_smiles.smarts_tetrahedral_chirality(local_center_atom_id))
+        });
+        atom_stereo_cache
+            .borrow_mut()
+            .insert(cache_key.clone(), computed);
+        computed
+    });
+    expected_chirality == Some(actual_target_chirality)
 }
 
 fn stereo_constraints_match(
+    query: &QueryMol,
     stereo_plan: &QueryStereoPlan,
+    query_neighbors: &[alloc::vec::Vec<(QueryAtomId, usize)>],
     target: &PreparedTarget,
     query_to_target: &[Option<usize>],
+    atom_stereo_cache: &RefCell<AtomStereoCache>,
 ) -> bool {
     stereo_plan
         .double_bond_constraints
@@ -1199,6 +1504,16 @@ fn stereo_constraints_match(
                 return false;
             };
             target.double_bond_stereo_config(left_target, right_target) == Some(constraint.config)
+        })
+        && query.atoms().iter().all(|atom| {
+            atom_chirality_matches(
+                query,
+                query_neighbors,
+                atom.id,
+                target,
+                query_to_target,
+                atom_stereo_cache,
+            )
         })
 }
 
@@ -1218,8 +1533,12 @@ fn recursive_query_matches(
         return false;
     }
 
+    let Ok(compiled) = CompiledQuery::new(query.clone()) else {
+        recursive_cache.insert(cache_key, false);
+        return false;
+    };
     let anchored =
-        query_matches_with_mapping(query, target, recursive_cache, Some(0), Some(atom_id));
+        query_matches_with_mapping(&compiled, target, recursive_cache, Some(0), Some(atom_id));
     recursive_cache.insert(cache_key, anchored);
     anchored
 }
@@ -1290,7 +1609,7 @@ mod tests {
 
     use smiles_parser::Smiles;
 
-    use super::{component_constraints_match, matches, query_matches};
+    use super::{component_constraints_match, matches, matches_compiled, query_matches, CompiledQuery};
     use crate::error::SmartsMatchError;
     use crate::prepared::PreparedTarget;
     use smarts_parser::QueryMol;
@@ -1313,29 +1632,25 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unsupported_atom_primitives_explicitly() {
-        let query = QueryMol::from_str("[C@AL1](F)(Cl)Br").unwrap();
-        let error = matches(&query, "C1CC1").unwrap_err();
-        assert!(matches!(
-            error,
-            SmartsMatchError::UnsupportedAtomPrimitive { primitive: "@" }
-        ));
-    }
-
-    #[test]
-    fn rejects_unsupported_bond_primitives_explicitly() {
-        let query = QueryMol::from_str("F/C=C(/F)\\Cl").unwrap();
-        let error = matches(&query, "C1CC1").unwrap_err();
-        assert!(matches!(
-            error,
-            SmartsMatchError::UnsupportedBondPrimitive { primitive: "/" }
-        ));
+    fn negated_directional_bond_forms_match_nothing_in_current_rdkit_slice() {
+        assert!(!matches(&QueryMol::from_str("F/!\\C=C/F").unwrap(), "F/C=C/F").unwrap());
+        assert!(!matches(&QueryMol::from_str("F/!\\C=C/F").unwrap(), "F\\C=C\\F").unwrap());
+        assert!(!matches(&QueryMol::from_str("F\\!/C=C/F").unwrap(), "F/C=C\\F").unwrap());
+        assert!(!matches(&QueryMol::from_str("F\\!/C=C/F").unwrap(), "FC=CF").unwrap());
     }
 
     #[test]
     fn single_atom_supported_query_matches() {
         let query = QueryMol::from_str("[O;H1]").unwrap();
         assert!(matches(&query, "CCO").unwrap());
+    }
+
+    #[test]
+    fn compiled_query_matches_existing_prepared_path() {
+        let compiled = CompiledQuery::new(QueryMol::from_str("F/C=C/F").unwrap()).unwrap();
+        let prepared = PreparedTarget::new(Smiles::from_str("F/C=C/F").unwrap());
+        assert!(matches_compiled(&compiled, &prepared));
+        assert!(matches(compiled.query(), "F/C=C/F").unwrap());
     }
 
     #[test]
@@ -1380,16 +1695,6 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_primitive_inside_boolean_tree_is_rejected() {
-        let query = QueryMol::from_str("[O,@AL1]").unwrap();
-        let error = matches(&query, "O").unwrap_err();
-        assert!(matches!(
-            error,
-            SmartsMatchError::UnsupportedAtomPrimitive { primitive: "@" }
-        ));
-    }
-
-    #[test]
     fn connectivity_and_valence_primitives_are_respected() {
         assert!(matches(&QueryMol::from_str("[X4]").unwrap(), "C").unwrap());
         assert!(!matches(&QueryMol::from_str("[X3]").unwrap(), "C").unwrap());
@@ -1430,12 +1735,13 @@ mod tests {
     fn zero_level_grouping_requires_same_target_component() {
         let query = QueryMol::from_str("(C.C)").unwrap();
         let target = PreparedTarget::new(Smiles::from_str("CC").unwrap());
+        let compiled = CompiledQuery::new(query.clone()).unwrap();
         let mapping = [Some(0), None];
         assert_eq!(query.component_groups(), &[Some(0), Some(0)]);
         assert_eq!(target.connected_component(0), Some(0));
         assert_eq!(target.connected_component(1), Some(0));
         assert!(component_constraints_match(1, 1, &query, &target, &mapping));
-        assert!(query_matches(&query, &target));
+        assert!(query_matches(&compiled, &target));
         assert!(matches(&query, "CC").unwrap());
         assert!(matches(&QueryMol::from_str("(C.C)").unwrap(), "CC.C").unwrap());
         assert!(!matches(&QueryMol::from_str("(C.C)").unwrap(), "C.C").unwrap());
@@ -1569,6 +1875,47 @@ mod tests {
         assert!(matches(&QueryMol::from_str("[C@H](F)Cl").unwrap(), "F[C@@H](Cl)Br").unwrap());
         assert!(matches(&QueryMol::from_str("[C@@H](F)Cl").unwrap(), "F[C@H](Cl)Br").unwrap());
         assert!(matches(&QueryMol::from_str("[C@@H](F)Cl").unwrap(), "F[C@@H](Cl)Br").unwrap());
+    }
+
+    #[test]
+    fn supported_nontetrahedral_query_classes_do_not_constrain_matches() {
+        for smarts in [
+            "[C@AL1](F)(Cl)Br",
+            "[C@AL2](F)(Cl)Br",
+            "[C@SP1](F)(Cl)Br",
+            "[C@SP2](F)(Cl)Br",
+            "[C@SP3](F)(Cl)Br",
+            "[C@TB1](F)(Cl)Br",
+            "[C@TB20](F)(Cl)Br",
+            "[C@OH1](F)(Cl)Br",
+            "[C@OH30](F)(Cl)Br",
+        ] {
+            let query = QueryMol::from_str(smarts).unwrap();
+            assert!(matches(&query, "F[C@H](Cl)Br").unwrap(), "{smarts}");
+            assert!(matches(&query, "F[C@@H](Cl)Br").unwrap(), "{smarts}");
+            assert!(matches(&query, "FC(Cl)Br").unwrap(), "{smarts}");
+        }
+    }
+
+    #[test]
+    fn multidirectional_endpoint_queries_are_respected() {
+        assert!(matches(
+            &QueryMol::from_str("F/C=C(/Cl)\\Br").unwrap(),
+            "F/C=C(/Cl)Br"
+        )
+        .unwrap());
+        assert!(!matches(
+            &QueryMol::from_str("F/C=C(/Cl)\\Br").unwrap(),
+            "F/C=C(\\Cl)Br"
+        )
+        .unwrap());
+        assert!(matches(&QueryMol::from_str("F/,\\C=C/F").unwrap(), "F/C=C/F").unwrap());
+        assert!(matches(&QueryMol::from_str("F/,\\C=C/F").unwrap(), "F\\C=C\\F").unwrap());
+        assert!(!matches(&QueryMol::from_str("F/,\\C=C/F").unwrap(), "F/C=C\\F").unwrap());
+        assert!(matches(&QueryMol::from_str("F/;\\C=C/F").unwrap(), "F/C=C/F").unwrap());
+        assert!(matches(&QueryMol::from_str("F\\,/C=C/F").unwrap(), "F/C=C\\F").unwrap());
+        assert!(matches(&QueryMol::from_str("F/&\\C=C/F").unwrap(), "F/C=C/F").unwrap());
+        assert!(matches(&QueryMol::from_str("F\\&/C=C/F").unwrap(), "F/C=C\\F").unwrap());
     }
 
     #[test]

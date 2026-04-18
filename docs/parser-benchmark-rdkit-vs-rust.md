@@ -33,19 +33,17 @@ excluded from the comparison suite because RDKit does not parse them, even thoug
 Each workload repeats its unique SMARTS enough times to reach roughly the same batch
 size, so the comparison is not distorted by tiny category-specific batches.
 
-## Commands
+## Reproduction
 
-Rust benchmark:
+The Rust side is still reproducible from the repository with:
 
 ```bash
 cargo bench -p smarts-parser --bench parse_corpus
 ```
 
-RDKit benchmark:
-
-```bash
-uv run --with rdkit python scripts/benchmark_rdkit_parse.py
-```
+The RDKit side was measured with a now-removed local helper script, so the
+numbers below should be treated as a historical comparison snapshot unless that
+helper is reintroduced.
 
 ## Results
 

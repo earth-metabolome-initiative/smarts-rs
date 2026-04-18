@@ -1,0 +1,92 @@
+[
+  {
+    "name": "branch-right-e-forward",
+    "smarts": "F/C(=C(/Cl)Br)I",
+    "smiles": "F/C(=C(/Cl)Br)I",
+    "use_chirality": true
+  },
+  {
+    "name": "branch-right-e-rejects-left-z",
+    "smarts": "F/C(=C(/Cl)Br)I",
+    "smiles": "F/C(=C(\\Cl)Br)I",
+    "use_chirality": true
+  },
+  {
+    "name": "branch-right-e-also-matches-right-z",
+    "smarts": "F/C(=C(/Cl)Br)I",
+    "smiles": "F/C(=C(/Cl)\\Br)I",
+    "use_chirality": true
+  },
+  {
+    "name": "branch-right-e-rejects-left-z-right-e",
+    "smarts": "F/C(=C(/Cl)Br)I",
+    "smiles": "F/C(=C(\\Cl)/Br)I",
+    "use_chirality": true
+  },
+  {
+    "name": "branch-right-e-rejects-unspecified",
+    "smarts": "F/C(=C(/Cl)Br)I",
+    "smiles": "FC(=C(Cl)Br)I",
+    "use_chirality": true
+  },
+  {
+    "name": "branch-right-mixed-forward",
+    "smarts": "F/C(=C(/Cl)\\Br)I",
+    "smiles": "F/C(=C(/Cl)Br)I",
+    "use_chirality": true
+  },
+  {
+    "name": "branch-right-mixed-rejects-left-z",
+    "smarts": "F/C(=C(/Cl)\\Br)I",
+    "smiles": "F/C(=C(\\Cl)Br)I",
+    "use_chirality": true
+  },
+  {
+    "name": "branch-right-mixed-matches-identical",
+    "smarts": "F/C(=C(/Cl)\\Br)I",
+    "smiles": "F/C(=C(/Cl)\\Br)I",
+    "use_chirality": true
+  },
+  {
+    "name": "branch-right-mixed-rejects-left-z-right-e",
+    "smarts": "F/C(=C(/Cl)\\Br)I",
+    "smiles": "F/C(=C(\\Cl)/Br)I",
+    "use_chirality": true
+  },
+  {
+    "name": "branch-right-mixed-rejects-unspecified",
+    "smarts": "F/C(=C(/Cl)\\Br)I",
+    "smiles": "FC(=C(Cl)Br)I",
+    "use_chirality": true
+  },
+  {
+    "name": "branch-right-negated-direction-rejects-forward",
+    "smarts": "F/C(=C(!/Cl)Br)I",
+    "smiles": "F/C(=C(/Cl)Br)I",
+    "use_chirality": true
+  },
+  {
+    "name": "branch-right-negated-direction-rejects-left-z",
+    "smarts": "F/C(=C(!/Cl)Br)I",
+    "smiles": "F/C(=C(\\Cl)Br)I",
+    "use_chirality": true
+  },
+  {
+    "name": "branch-right-negated-direction-rejects-right-z",
+    "smarts": "F/C(=C(!/Cl)Br)I",
+    "smiles": "F/C(=C(/Cl)\\Br)I",
+    "use_chirality": true
+  },
+  {
+    "name": "branch-right-negated-direction-rejects-left-z-right-e",
+    "smarts": "F/C(=C(!/Cl)Br)I",
+    "smiles": "F/C(=C(\\Cl)/Br)I",
+    "use_chirality": true
+  },
+  {
+    "name": "branch-right-negated-direction-rejects-unspecified",
+    "smarts": "F/C(=C(!/Cl)Br)I",
+    "smiles": "FC(=C(Cl)Br)I",
+    "use_chirality": true
+  }
+]

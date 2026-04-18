@@ -2,12 +2,14 @@
 
 //! SMARTS validation against target molecules.
 //!
-//! This crate is the future matching layer for compiled SMARTS queries.
-//! The current implementation supports the first real validator slice:
+//! This crate is the matching layer for compiled SMARTS queries.
+//! The current implementation supports a broad molecule-SMARTS slice:
 //!
 //! - a match entrypoint
+//! - reusable compiled SMARTS queries
 //! - `smiles-parser` backed target preparation
-//! - single-atom SMARTS evaluation against frozen `RDKit` fixtures
+//! - disconnected and recursive SMARTS matching
+//! - ring/count/stereo-aware matching against frozen `RDKit` fixtures
 //! - a structured error type
 //!
 //! The parser crate owns syntax and query IR. This crate will own target
@@ -30,7 +32,7 @@ pub mod screening;
 pub mod target;
 
 pub use error::SmartsMatchError;
-pub use matching::matches;
+pub use matching::{matches, matches_compiled, matches_prepared, CompiledQuery};
 pub use prepared::{EdgeProps, NodeProps, PreparedMolecule, PreparedTarget};
 pub use screening::{QueryScreen, TargetScreen};
 pub use target::{AtomId, AtomLabel, BondLabel, MoleculeTarget, Neighbor};

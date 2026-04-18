@@ -253,6 +253,7 @@ checksum = "e6d5a32815ae3f33302d95fdcb2ce17862f8c65363dcfd29360480ba1001fc9c"
 [[package]]
 name = "geometric-traits"
 version = "0.1.0"
+source = "git+https://github.com/earth-metabolome-initiative/geometric-traits?branch=main#eec1488c592e8299a30096208ed9c439a1dd40de"
 dependencies = [
  "bitvec",
  "hashbrown",
@@ -589,6 +590,7 @@ dependencies = [
 name = "smarts-validator"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "elements_rs",
  "geometric-traits",
  "serde",
@@ -601,6 +603,7 @@ dependencies = [
 [[package]]
 name = "smiles-parser"
 version = "0.1.0"
+source = "git+https://github.com/earth-metabolome-initiative/smiles-parser?branch=main#7ff01a959320ab1caba5149165dc03a210c3d755"
 dependencies = [
  "elements_rs",
  "geometric-traits",

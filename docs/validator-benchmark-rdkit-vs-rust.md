@@ -45,19 +45,17 @@ cross-tool benchmark because RDKit does not support them.
 Each workload repeats its unique case set enough times to reach about
 `30,000` query-target pairs.
 
-## Commands
+## Reproduction
 
-Rust benchmark:
+The Rust side is still reproducible from the repository with:
 
 ```bash
 cargo bench -p smarts-validator --bench match_corpus
 ```
 
-RDKit benchmark:
-
-```bash
-uv run --with rdkit python scripts/benchmark_rdkit_match.py
-```
+The RDKit side was measured with a now-removed local helper script, so the
+numbers below should be treated as a historical comparison snapshot unless that
+helper is reintroduced.
 
 ## Method
 

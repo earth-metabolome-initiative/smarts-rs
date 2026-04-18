@@ -1,0 +1,66 @@
+[
+  {
+    "id": "single_atom",
+    "description": "Single-atom SMARTS predicates over prepared targets",
+    "case_files": ["single-atom-v0.rdkit.json"]
+  },
+  {
+    "id": "connected",
+    "description": "Connected SMARTS topology and bond-expression matching",
+    "case_files": ["connected-v0.rdkit.json"]
+  },
+  {
+    "id": "counts",
+    "description": "Connectivity, valence, and count-range SMARTS predicates",
+    "case_files": ["counts-v0.rdkit.json"]
+  },
+  {
+    "id": "ring",
+    "description": "Ring-aware SMARTS predicates and ring bonds",
+    "case_files": ["ring-v0.rdkit.json"]
+  },
+  {
+    "id": "recursive",
+    "description": "Recursive SMARTS queries and anchored nested matching",
+    "case_files": ["recursive-v0.rdkit.json"]
+  },
+  {
+    "id": "disconnected",
+    "description": "Disconnected SMARTS components without zero-level local-only grouping",
+    "case_files": ["disconnected-v0.rdkit.json"]
+  },
+  {
+    "id": "stereo",
+    "description": "SMARTS stereo matching against prepared semantic stereo caches",
+    "case_files": [
+      "stereo-v0.rdkit.json",
+      "stereo-gap-v1.rdkit.json",
+      "stereo-gap-v2.rdkit.json",
+      "stereo-gap-v3.rdkit.json",
+      "stereo-gap-v4.rdkit.json",
+      "stereo-gap-v5.rdkit.json",
+      "stereo-gap-v6.rdkit.json",
+      "stereo-gap-v7.rdkit.json"
+    ]
+  },
+  {
+    "id": "full_validator_corpus",
+    "description": "All RDKit-backed validator fixtures combined into one shared workload",
+    "case_files": [
+      "single-atom-v0.rdkit.json",
+      "connected-v0.rdkit.json",
+      "counts-v0.rdkit.json",
+      "ring-v0.rdkit.json",
+      "recursive-v0.rdkit.json",
+      "disconnected-v0.rdkit.json",
+      "stereo-v0.rdkit.json",
+      "stereo-gap-v1.rdkit.json",
+      "stereo-gap-v2.rdkit.json",
+      "stereo-gap-v3.rdkit.json",
+      "stereo-gap-v4.rdkit.json",
+      "stereo-gap-v5.rdkit.json",
+      "stereo-gap-v6.rdkit.json",
+      "stereo-gap-v7.rdkit.json"
+    ]
+  }
+]

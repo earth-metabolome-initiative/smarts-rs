@@ -1,0 +1,122 @@
+[
+  {
+    "name": "directional-or-left-e-forward",
+    "smarts": "F/,\\C=C/F",
+    "smiles": "F/C=C/F",
+    "use_chirality": true
+  },
+  {
+    "name": "directional-or-left-e-reversed-forward",
+    "smarts": "F/,\\C=C/F",
+    "smiles": "F\\C=C\\F",
+    "use_chirality": true
+  },
+  {
+    "name": "directional-or-left-e-rejects-z-forward",
+    "smarts": "F/,\\C=C/F",
+    "smiles": "F/C=C\\F",
+    "use_chirality": true
+  },
+  {
+    "name": "directional-or-left-e-rejects-z-reversed-forward",
+    "smarts": "F/,\\C=C/F",
+    "smiles": "F\\C=C/F",
+    "use_chirality": true
+  },
+  {
+    "name": "directional-or-left-e-rejects-unspecified",
+    "smarts": "F/,\\C=C/F",
+    "smiles": "FC=CF",
+    "use_chirality": true
+  },
+  {
+    "name": "directional-or-left-z-forward",
+    "smarts": "F\\,/C=C/F",
+    "smiles": "F/C=C\\F",
+    "use_chirality": true
+  },
+  {
+    "name": "directional-or-left-z-reversed-forward",
+    "smarts": "F\\,/C=C/F",
+    "smiles": "F\\C=C/F",
+    "use_chirality": true
+  },
+  {
+    "name": "directional-or-left-z-rejects-e-forward",
+    "smarts": "F\\,/C=C/F",
+    "smiles": "F/C=C/F",
+    "use_chirality": true
+  },
+  {
+    "name": "directional-or-left-z-rejects-e-reversed-forward",
+    "smarts": "F\\,/C=C/F",
+    "smiles": "F\\C=C\\F",
+    "use_chirality": true
+  },
+  {
+    "name": "directional-or-left-z-rejects-unspecified",
+    "smarts": "F\\,/C=C/F",
+    "smiles": "FC=CF",
+    "use_chirality": true
+  },
+  {
+    "name": "directional-lowand-left-e-forward",
+    "smarts": "F/;\\C=C/F",
+    "smiles": "F/C=C/F",
+    "use_chirality": true
+  },
+  {
+    "name": "directional-lowand-left-e-reversed-forward",
+    "smarts": "F/;\\C=C/F",
+    "smiles": "F\\C=C\\F",
+    "use_chirality": true
+  },
+  {
+    "name": "directional-lowand-left-e-rejects-z-forward",
+    "smarts": "F/;\\C=C/F",
+    "smiles": "F/C=C\\F",
+    "use_chirality": true
+  },
+  {
+    "name": "directional-lowand-left-e-rejects-z-reversed-forward",
+    "smarts": "F/;\\C=C/F",
+    "smiles": "F\\C=C/F",
+    "use_chirality": true
+  },
+  {
+    "name": "directional-lowand-left-e-rejects-unspecified",
+    "smarts": "F/;\\C=C/F",
+    "smiles": "FC=CF",
+    "use_chirality": true
+  },
+  {
+    "name": "directional-lowand-left-z-forward",
+    "smarts": "F\\;/C=C/F",
+    "smiles": "F/C=C\\F",
+    "use_chirality": true
+  },
+  {
+    "name": "directional-lowand-left-z-reversed-forward",
+    "smarts": "F\\;/C=C/F",
+    "smiles": "F\\C=C/F",
+    "use_chirality": true
+  },
+  {
+    "name": "directional-lowand-left-z-rejects-e-forward",
+    "smarts": "F\\;/C=C/F",
+    "smiles": "F/C=C/F",
+    "use_chirality": true
+  },
+  {
+    "name": "directional-lowand-left-z-rejects-e-reversed-forward",
+    "smarts": "F\\;/C=C/F",
+    "smiles": "F\\C=C\\F",
+    "use_chirality": true
+  },
+  {
+    "name": "directional-lowand-left-z-rejects-unspecified",
+    "smarts": "F\\;/C=C/F",
+    "smiles": "FC=CF",
+    "use_chirality": true
+  }
+]
