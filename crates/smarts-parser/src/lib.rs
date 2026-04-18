@@ -313,8 +313,7 @@ mod tests {
 
     #[test]
     fn parses_multiletter_bracket_elements_that_overlap_primitives() {
-        let query =
-            parse_smarts("[La,Ce,Pr,Nd,Pm,Sm,Eu,Gd,Tb,Dy,Ho,Er,Tm,Yb,Lu]").unwrap();
+        let query = parse_smarts("[La,Ce,Pr,Nd,Pm,Sm,Eu,Gd,Tb,Dy,Ho,Er,Tm,Yb,Lu]").unwrap();
         assert_eq!(
             query.to_string(),
             "[La,Ce,Pr,Nd,Pm,Sm,Eu,Gd,Tb,Dy,Ho,Er,Tm,Yb,Lu]"

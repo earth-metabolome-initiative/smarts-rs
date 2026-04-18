@@ -602,10 +602,7 @@ fn local_neighbor_tokens_for_mapping(
         let Some(placeholder_atom) = PLACEHOLDER_ATOMS.get(placeholder_index) else {
             return Err(unsupported_atom_primitive("@"));
         };
-        assigned_tokens.push((
-            target_atom_id,
-            String::from(*placeholder_atom),
-        ));
+        assigned_tokens.push((target_atom_id, String::from(*placeholder_atom)));
         placeholder_index += 1;
     }
 
@@ -622,10 +619,7 @@ fn local_neighbor_tokens_for_mapping(
         .collect()
 }
 
-fn render_target_stereo_atom(
-    target: &PreparedTarget,
-    atom_id: usize,
-) -> Option<String> {
+fn render_target_stereo_atom(target: &PreparedTarget, atom_id: usize) -> Option<String> {
     let atom = target.atom(atom_id)?;
     let mut symbol = atom.element()?.to_string();
     if target.is_aromatic(atom_id) {
@@ -1450,8 +1444,7 @@ fn atom_chirality_matches(
     let Some(actual_target_chirality) = target.tetrahedral_chirality(target_atom_id) else {
         return false;
     };
-    let Ok(neighbor_tokens) =
-        local_neighbor_tokens_for_mapping(incident, query_to_target, target)
+    let Ok(neighbor_tokens) = local_neighbor_tokens_for_mapping(incident, query_to_target, target)
     else {
         return false;
     };
@@ -1475,7 +1468,9 @@ fn atom_chirality_matches(
             local_fragment
                 .parse::<Smiles>()
                 .ok()
-                .and_then(|local_smiles| local_smiles.smarts_tetrahedral_chirality(local_center_atom_id))
+                .and_then(|local_smiles| {
+                    local_smiles.smarts_tetrahedral_chirality(local_center_atom_id)
+                })
         });
         atom_stereo_cache
             .borrow_mut()
@@ -1609,7 +1604,9 @@ mod tests {
 
     use smiles_parser::Smiles;
 
-    use super::{component_constraints_match, matches, matches_compiled, query_matches, CompiledQuery};
+    use super::{
+        component_constraints_match, matches, matches_compiled, query_matches, CompiledQuery,
+    };
     use crate::error::SmartsMatchError;
     use crate::prepared::PreparedTarget;
     use smarts_parser::QueryMol;
