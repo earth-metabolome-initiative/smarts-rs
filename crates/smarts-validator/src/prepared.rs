@@ -137,6 +137,7 @@ impl<T: MoleculeTarget> PreparedMolecule<T> {
 pub struct PreparedTarget {
     target: Smiles,
     aromaticity: AromaticityAssignment,
+    aromatic_atoms: NodeProps<bool>,
     ring_membership: RingMembership,
     tetrahedral_chiralities: NodeProps<Option<Chirality>>,
     double_bond_stereo: BTreeMap<(AtomId, AtomId), DoubleBondStereoConfig>,
@@ -156,6 +157,14 @@ impl PreparedTarget {
     #[must_use]
     pub fn new(target: Smiles) -> Self {
         let aromaticity = target.aromaticity_assignment_for(AromaticityPolicy::RdkitDefault);
+        let aromatic_atoms = NodeProps::new(
+            target
+                .nodes()
+                .iter()
+                .enumerate()
+                .map(|(atom_id, atom)| aromaticity.contains_atom(atom_id) || atom.aromatic())
+                .collect(),
+        );
         let ring_membership = target.ring_membership();
         let symm_sssr = target.symm_sssr_result();
         let tetrahedral_chiralities = NodeProps::new(
@@ -209,6 +218,7 @@ impl PreparedTarget {
         Self {
             target,
             aromaticity,
+            aromatic_atoms,
             ring_membership,
             tetrahedral_chiralities,
             double_bond_stereo,
@@ -279,7 +289,7 @@ impl PreparedTarget {
     #[inline]
     #[must_use]
     pub fn is_aromatic(&self, atom_id: AtomId) -> bool {
-        self.aromaticity.contains_atom(atom_id)
+        self.aromatic_atoms.get(atom_id).copied().unwrap_or(false)
     }
 
     /// Returns whether the provided atom belongs to at least one ring.
@@ -630,6 +640,42 @@ mod tests {
         assert_eq!(prepared.tetrahedral_chirality(0), None);
         assert_eq!(prepared.double_bond_stereo_config(0, 1), None);
         assert_eq!(prepared.connected_component(9), None);
+    }
+
+    #[test]
+    fn prepared_target_preserves_rdkit_like_aromaticity_for_charged_thiophene() {
+        let smiles = Smiles::from_str("Cc1cc(C)[s+]s1").unwrap();
+        let raw_aromatic_atoms = smiles
+            .nodes()
+            .iter()
+            .enumerate()
+            .filter_map(|(atom_id, atom)| atom.aromatic().then_some(atom_id))
+            .collect::<Vec<_>>();
+        let prepared = PreparedTarget::new(smiles);
+        let prepared_aromatic_atoms = (0..prepared.atom_count())
+            .filter(|&atom_id| prepared.is_aromatic(atom_id))
+            .collect::<Vec<_>>();
+
+        assert_eq!(raw_aromatic_atoms, vec![1, 2, 3, 5, 6]);
+        assert_eq!(prepared_aromatic_atoms, vec![1, 2, 3, 5, 6]);
+    }
+
+    #[test]
+    fn prepared_target_preserves_rdkit_like_aromaticity_for_pyridinium() {
+        let smiles = Smiles::from_str("C[n+]1ccccc1C=NO").unwrap();
+        let raw_aromatic_atoms = smiles
+            .nodes()
+            .iter()
+            .enumerate()
+            .filter_map(|(atom_id, atom)| atom.aromatic().then_some(atom_id))
+            .collect::<Vec<_>>();
+        let prepared = PreparedTarget::new(smiles);
+        let prepared_aromatic_atoms = (0..prepared.atom_count())
+            .filter(|&atom_id| prepared.is_aromatic(atom_id))
+            .collect::<Vec<_>>();
+
+        assert_eq!(raw_aromatic_atoms, vec![1, 2, 3, 4, 5, 6]);
+        assert_eq!(prepared_aromatic_atoms, vec![1, 2, 3, 4, 5, 6]);
     }
 
     #[test]
