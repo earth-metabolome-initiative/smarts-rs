@@ -1219,6 +1219,11 @@ fn collect_mappings(
             let mapping = current_query_order_mapping(context.query_to_target);
             matches
                 .entry(canonical_match_key(&mapping))
+                .and_modify(|existing| {
+                    if mapping < *existing {
+                        existing.clone_from(&mapping);
+                    }
+                })
                 .or_insert(mapping);
         }
         return;
@@ -1954,6 +1959,16 @@ mod tests {
                 alloc::boxed::Box::<[usize]>::from([0, 1]),
                 alloc::boxed::Box::<[usize]>::from([1, 2]),
             ]
+        );
+    }
+
+    #[test]
+    fn counted_matches_choose_a_canonical_query_order_representative() {
+        let query = QueryMol::from_str("C~C~C~C").unwrap();
+        assert_eq!(match_count(&query, "C1CCC=1").unwrap(), 1);
+        assert_eq!(
+            substructure_matches(&query, "C1CCC=1").unwrap().as_ref(),
+            &[alloc::boxed::Box::<[usize]>::from([0, 1, 2, 3])]
         );
     }
 
