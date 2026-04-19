@@ -218,7 +218,10 @@ fn forced_primitive_requirement(primitive: &AtomPrimitive) -> AtomRequirement {
             requires_aromatic: false,
             requires_ring: numeric_query_requires_positive(*expected),
         },
-        AtomPrimitive::IsotopeWildcard(_)
+        AtomPrimitive::Hybridization(_)
+        | AtomPrimitive::HeteroNeighbor(_)
+        | AtomPrimitive::AliphaticHeteroNeighbor(_)
+        | AtomPrimitive::IsotopeWildcard(_)
         | AtomPrimitive::Hydrogen(
             HydrogenKind::Total | HydrogenKind::Implicit,
             Some(NumericQuery::Exact(0)),

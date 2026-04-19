@@ -118,6 +118,12 @@ pub enum AtomPrimitive {
     RingSize(Option<NumericQuery>),
     /// Ring-connectivity predicate such as `x2` or `x{2-}`.
     RingConnectivity(Option<NumericQuery>),
+    /// Hybridization predicate such as `^2`.
+    Hybridization(NumericQuery),
+    /// Hetero-neighbor count predicate such as `z2` or `z{1-}`.
+    HeteroNeighbor(Option<NumericQuery>),
+    /// Aliphatic-hetero-neighbor count predicate such as `Z2` or `Z{1-}`.
+    AliphaticHeteroNeighbor(Option<NumericQuery>),
     /// Atom chirality predicate such as `@`, `@@`, or `@TH1`.
     Chirality(Chirality),
     /// Formal charge predicate such as `+`, `-`, or `+2`.
@@ -353,6 +359,9 @@ impl fmt::Display for AtomPrimitive {
             Self::RingMembership(query) => write_numeric_query_suffix(f, "R", *query),
             Self::RingSize(query) => write_numeric_query_suffix(f, "r", *query),
             Self::RingConnectivity(query) => write_numeric_query_suffix(f, "x", *query),
+            Self::Hybridization(query) => write_required_numeric_query_suffix(f, "^", *query),
+            Self::HeteroNeighbor(query) => write_numeric_query_suffix(f, "z", *query),
+            Self::AliphaticHeteroNeighbor(query) => write_numeric_query_suffix(f, "Z", *query),
             Self::Chirality(chirality) => chirality.fmt(f),
             Self::Charge(charge) => write_charge(f, *charge),
         }
@@ -439,6 +448,18 @@ fn write_numeric_query_suffix(
         None => Ok(()),
         Some(NumericQuery::Exact(value)) => write!(f, "{value}"),
         Some(NumericQuery::Range(range)) => write_numeric_range(f, range),
+    }
+}
+
+fn write_required_numeric_query_suffix(
+    f: &mut fmt::Formatter<'_>,
+    prefix: &str,
+    query: NumericQuery,
+) -> fmt::Result {
+    f.write_str(prefix)?;
+    match query {
+        NumericQuery::Exact(value) => write!(f, "{value}"),
+        NumericQuery::Range(range) => write_numeric_range(f, range),
     }
 }
 
@@ -996,6 +1017,15 @@ mod tests {
             (AtomPrimitive::RingMembership(None).to_string(), "R"),
             (AtomPrimitive::RingSize(None).to_string(), "r"),
             (AtomPrimitive::RingConnectivity(None).to_string(), "x"),
+            (
+                AtomPrimitive::Hybridization(NumericQuery::Exact(2)).to_string(),
+                "^2",
+            ),
+            (AtomPrimitive::HeteroNeighbor(None).to_string(), "z"),
+            (
+                AtomPrimitive::AliphaticHeteroNeighbor(None).to_string(),
+                "Z",
+            ),
             (AtomPrimitive::Charge(0).to_string(), "+0"),
             (AtomPrimitive::Charge(-1).to_string(), "-"),
             (
@@ -1287,6 +1317,18 @@ mod tests {
         assert_eq!(
             AtomPrimitive::RingConnectivity(Some(NumericQuery::Exact(2))).to_string(),
             "x2"
+        );
+        assert_eq!(
+            AtomPrimitive::Hybridization(NumericQuery::Exact(3)).to_string(),
+            "^3"
+        );
+        assert_eq!(
+            AtomPrimitive::HeteroNeighbor(Some(NumericQuery::Exact(2))).to_string(),
+            "z2"
+        );
+        assert_eq!(
+            AtomPrimitive::AliphaticHeteroNeighbor(Some(NumericQuery::Exact(2))).to_string(),
+            "Z2"
         );
         assert_eq!(
             AtomPrimitive::Hydrogen(

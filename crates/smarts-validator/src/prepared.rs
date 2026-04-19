@@ -4,7 +4,7 @@ use alloc::{collections::BTreeMap, vec, vec::Vec};
 use elements_rs::Element;
 use smiles_parser::{
     atom::{bracketed::chirality::Chirality, Atom},
-    bond::bond_edge::bond_edge_other,
+    bond::{bond_edge::bond_edge_other, Bond},
     AromaticityAssignment, AromaticityPolicy, DoubleBondStereoConfig, RingMembership, Smiles,
 };
 
@@ -147,6 +147,9 @@ pub struct PreparedTarget {
     implicit_hydrogens: NodeProps<u8>,
     total_hydrogens: NodeProps<u8>,
     total_valences: NodeProps<u8>,
+    hybridizations: NodeProps<u8>,
+    hetero_neighbor_counts: NodeProps<u8>,
+    aliphatic_hetero_neighbor_counts: NodeProps<u8>,
     ring_membership_counts: NodeProps<u8>,
     ring_bond_counts: NodeProps<u8>,
     smallest_ring_sizes: NodeProps<u8>,
@@ -208,6 +211,21 @@ impl PreparedTarget {
                 .map(|atom_id| target.smarts_total_valence(atom_id, &aromaticity))
                 .collect(),
         );
+        let hybridizations = NodeProps::new(
+            (0..target.nodes().len())
+                .map(|atom_id| hybridization_code(&target, &aromaticity, atom_id))
+                .collect(),
+        );
+        let hetero_neighbor_counts = NodeProps::new(
+            (0..target.nodes().len())
+                .map(|atom_id| hetero_neighbor_count(&target, &aromaticity, atom_id))
+                .collect(),
+        );
+        let aliphatic_hetero_neighbor_counts = NodeProps::new(
+            (0..target.nodes().len())
+                .map(|atom_id| aliphatic_hetero_neighbor_count(&target, &aromaticity, atom_id))
+                .collect(),
+        );
         let ring_bond_counts = NodeProps::new(
             (0..target.nodes().len())
                 .map(|atom_id| ring_bond_count(&ring_membership, atom_id))
@@ -228,6 +246,9 @@ impl PreparedTarget {
             implicit_hydrogens,
             total_hydrogens,
             total_valences,
+            hybridizations,
+            hetero_neighbor_counts,
+            aliphatic_hetero_neighbor_counts,
             ring_membership_counts,
             ring_bond_counts,
             smallest_ring_sizes,
@@ -373,6 +394,27 @@ impl PreparedTarget {
         self.total_valences.get(atom_id).copied()
     }
 
+    /// Returns the RDKit-style SMARTS hybridization code for the atom.
+    #[inline]
+    #[must_use]
+    pub fn hybridization(&self, atom_id: AtomId) -> Option<u8> {
+        self.hybridizations.get(atom_id).copied()
+    }
+
+    /// Returns the number of non-carbon, non-hydrogen neighbors.
+    #[inline]
+    #[must_use]
+    pub fn hetero_neighbor_count(&self, atom_id: AtomId) -> Option<u8> {
+        self.hetero_neighbor_counts.get(atom_id).copied()
+    }
+
+    /// Returns the number of aliphatic non-carbon, non-hydrogen neighbors.
+    #[inline]
+    #[must_use]
+    pub fn aliphatic_hetero_neighbor_count(&self, atom_id: AtomId) -> Option<u8> {
+        self.aliphatic_hetero_neighbor_counts.get(atom_id).copied()
+    }
+
     /// Returns the number of symmetrized-SSSR rings containing the atom.
     #[inline]
     #[must_use]
@@ -404,6 +446,130 @@ fn explicit_hydrogen_neighbor_count(target: &Smiles, atom_id: usize) -> u8 {
                 .node_by_id(neighbor_id)
                 .and_then(Atom::element)
                 .is_some_and(|element| element == Element::H)
+        })
+        .count()
+        .try_into()
+        .unwrap_or(u8::MAX)
+}
+
+fn hybridization_code(target: &Smiles, aromaticity: &AromaticityAssignment, atom_id: usize) -> u8 {
+    let Some(atom) = target.node_by_id(atom_id) else {
+        return 0;
+    };
+    if atom.element().is_none() {
+        return 0;
+    }
+    if atom_is_aromatic_for_prepared_view(target, aromaticity, atom_id) {
+        return 2;
+    }
+
+    let mut double_bonds = 0u8;
+    let mut has_triple = false;
+    for edge in target.edges_for_node(atom_id) {
+        match normalized_bond(edge.2) {
+            Bond::Double => double_bonds = double_bonds.saturating_add(1),
+            Bond::Triple | Bond::Quadruple => has_triple = true,
+            Bond::Single | Bond::Up | Bond::Down | Bond::Aromatic => {}
+        }
+    }
+
+    if has_triple || double_bonds >= 2 {
+        return 1;
+    }
+    if double_bonds == 1 {
+        return 2;
+    }
+    if atom_has_conjugated_lone_pair(target, aromaticity, atom_id) {
+        return 2;
+    }
+    3
+}
+
+fn atom_has_conjugated_lone_pair(
+    target: &Smiles,
+    aromaticity: &AromaticityAssignment,
+    atom_id: usize,
+) -> bool {
+    let Some(element) = target.node_by_id(atom_id).and_then(Atom::element) else {
+        return false;
+    };
+    if !matches!(element, Element::N | Element::O | Element::P | Element::S) {
+        return false;
+    }
+
+    target.edges_for_node(atom_id).any(|edge| {
+        normalized_bond(edge.2) == Bond::Single
+            && bond_edge_other(edge, atom_id).is_some_and(|neighbor_id| {
+                neighbor_supports_conjugation(target, aromaticity, atom_id, neighbor_id)
+            })
+    })
+}
+
+fn neighbor_supports_conjugation(
+    target: &Smiles,
+    aromaticity: &AromaticityAssignment,
+    atom_id: usize,
+    neighbor_id: usize,
+) -> bool {
+    atom_is_aromatic_for_prepared_view(target, aromaticity, neighbor_id)
+        || target.edges_for_node(neighbor_id).any(|edge| {
+            bond_edge_other(edge, neighbor_id).is_some_and(|other_id| other_id != atom_id)
+                && matches!(
+                    normalized_bond(edge.2),
+                    Bond::Double | Bond::Triple | Bond::Quadruple
+                )
+        })
+}
+
+const fn normalized_bond(bond: Bond) -> Bond {
+    match bond {
+        Bond::Up | Bond::Down => Bond::Single,
+        Bond::Single | Bond::Double | Bond::Triple | Bond::Quadruple | Bond::Aromatic => bond,
+    }
+}
+
+fn atom_is_aromatic_for_prepared_view(
+    target: &Smiles,
+    aromaticity: &AromaticityAssignment,
+    atom_id: usize,
+) -> bool {
+    aromaticity.contains_atom(atom_id) || target.node_by_id(atom_id).is_some_and(Atom::aromatic)
+}
+
+fn hetero_neighbor_count(
+    target: &Smiles,
+    aromaticity: &AromaticityAssignment,
+    atom_id: usize,
+) -> u8 {
+    let _ = aromaticity;
+    target
+        .edges_for_node(atom_id)
+        .filter_map(|edge| bond_edge_other(edge, atom_id))
+        .filter(|&neighbor_id| {
+            target
+                .node_by_id(neighbor_id)
+                .and_then(Atom::element)
+                .is_some_and(|element| !matches!(element, Element::C | Element::H))
+        })
+        .count()
+        .try_into()
+        .unwrap_or(u8::MAX)
+}
+
+fn aliphatic_hetero_neighbor_count(
+    target: &Smiles,
+    aromaticity: &AromaticityAssignment,
+    atom_id: usize,
+) -> u8 {
+    target
+        .edges_for_node(atom_id)
+        .filter_map(|edge| bond_edge_other(edge, atom_id))
+        .filter(|&neighbor_id| {
+            target
+                .node_by_id(neighbor_id)
+                .and_then(Atom::element)
+                .is_some_and(|element| !matches!(element, Element::C | Element::H))
+                && !atom_is_aromatic_for_prepared_view(target, aromaticity, neighbor_id)
         })
         .count()
         .try_into()
@@ -599,6 +765,70 @@ mod tests {
         let phosphoric = PreparedTarget::new(Smiles::from_str("P(=O)(O)(O)O").unwrap());
         assert_eq!(phosphoric.connectivity(0), Some(4));
         assert_eq!(phosphoric.total_valence(0), Some(5));
+    }
+
+    #[test]
+    fn prepared_target_caches_common_hybridization_codes() {
+        let alkene = PreparedTarget::new(Smiles::from_str("CC=CF").unwrap());
+        assert_eq!(alkene.hybridization(0), Some(3));
+        assert_eq!(alkene.hybridization(1), Some(2));
+        assert_eq!(alkene.hybridization(2), Some(2));
+        assert_eq!(alkene.hybridization(3), Some(3));
+
+        let nitrile = PreparedTarget::new(Smiles::from_str("CC#N").unwrap());
+        assert_eq!(nitrile.hybridization(0), Some(3));
+        assert_eq!(nitrile.hybridization(1), Some(1));
+        assert_eq!(nitrile.hybridization(2), Some(1));
+
+        let amide = PreparedTarget::new(Smiles::from_str("CC(=O)NC").unwrap());
+        assert_eq!(amide.hybridization(0), Some(3));
+        assert_eq!(amide.hybridization(1), Some(2));
+        assert_eq!(amide.hybridization(2), Some(2));
+        assert_eq!(amide.hybridization(3), Some(2));
+        assert_eq!(amide.hybridization(4), Some(3));
+    }
+
+    #[test]
+    fn prepared_target_caches_rdkit_like_hetero_neighbor_counts() {
+        let aza_phenol = PreparedTarget::new(Smiles::from_str("O=C(O)c1nc(O)ccn1").unwrap());
+        let expected_hetero_counts = [0_u8, 2, 0, 2, 0, 2, 0, 0, 1, 0];
+        let expected_aliphatic_hetero_counts = [0_u8, 2, 0, 0, 0, 1, 0, 0, 0, 0];
+
+        for (atom_id, expected) in expected_hetero_counts.into_iter().enumerate() {
+            assert_eq!(aza_phenol.hetero_neighbor_count(atom_id), Some(expected));
+        }
+        for (atom_id, expected) in expected_aliphatic_hetero_counts.into_iter().enumerate() {
+            assert_eq!(
+                aza_phenol.aliphatic_hetero_neighbor_count(atom_id),
+                Some(expected)
+            );
+        }
+
+        let sulfoxide = PreparedTarget::new(Smiles::from_str("CS(=O)C").unwrap());
+        for atom_id in 0..sulfoxide.atom_count() {
+            assert_eq!(sulfoxide.hetero_neighbor_count(atom_id), Some(1));
+            assert_eq!(sulfoxide.aliphatic_hetero_neighbor_count(atom_id), Some(1));
+        }
+
+        let sulfone = PreparedTarget::new(Smiles::from_str("CS(=O)(=O)C").unwrap());
+        let expected_sulfone_hetero_counts = [1_u8, 2, 1, 1, 1];
+        for (atom_id, expected) in expected_sulfone_hetero_counts.into_iter().enumerate() {
+            assert_eq!(sulfone.hetero_neighbor_count(atom_id), Some(expected));
+            assert_eq!(
+                sulfone.aliphatic_hetero_neighbor_count(atom_id),
+                Some(expected)
+            );
+        }
+
+        let nitrobenzene = PreparedTarget::new(Smiles::from_str("c1cc([N+](=O)[O-])ccc1").unwrap());
+        let expected_nitro_hetero_counts = [0_u8, 0, 1, 2, 1, 1, 0, 0, 0];
+        for (atom_id, expected) in expected_nitro_hetero_counts.into_iter().enumerate() {
+            assert_eq!(nitrobenzene.hetero_neighbor_count(atom_id), Some(expected));
+            assert_eq!(
+                nitrobenzene.aliphatic_hetero_neighbor_count(atom_id),
+                Some(expected)
+            );
+        }
     }
 
     #[test]

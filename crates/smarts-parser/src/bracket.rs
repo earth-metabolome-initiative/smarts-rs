@@ -286,6 +286,18 @@ impl<'a> BracketParser<'a> {
                 self.pos += 1;
                 AtomPrimitive::RingConnectivity(self.parse_optional_numeric_query()?)
             }
+            '^' => {
+                self.pos += 1;
+                AtomPrimitive::Hybridization(self.parse_required_numeric_query()?)
+            }
+            'z' => {
+                self.pos += 1;
+                AtomPrimitive::HeteroNeighbor(self.parse_optional_numeric_query()?)
+            }
+            'Z' => {
+                self.pos += 1;
+                AtomPrimitive::AliphaticHeteroNeighbor(self.parse_optional_numeric_query()?)
+            }
             '@' => AtomPrimitive::Chirality(self.parse_chirality()?),
             '+' | '-' => self.parse_charge()?,
             _ if self.peek().is_ascii_alphabetic() => {
@@ -496,6 +508,11 @@ impl<'a> BracketParser<'a> {
         Ok(Some(NumericQuery::Range(NumericRange { min, max })))
     }
 
+    fn parse_required_numeric_query(&mut self) -> Result<NumericQuery, BracketParseError> {
+        self.parse_optional_numeric_query()?
+            .ok_or_else(|| self.error(BracketParseErrorKind::UnexpectedEnd))
+    }
+
     fn parse_required_u16(&mut self) -> Result<u16, BracketParseError> {
         let start = self.pos;
         while !self.is_eof() && self.peek().is_ascii_digit() {
@@ -599,6 +616,8 @@ const fn starts_implicit_and(ch: char) -> bool {
             | 's'
             | 'v'
             | 'x'
+            | '^'
+            | 'z'
             | 'B'
             | 'C'
             | 'F'
@@ -607,6 +626,7 @@ const fn starts_implicit_and(ch: char) -> bool {
             | 'O'
             | 'P'
             | 'S'
+            | 'Z'
             | '+'
             | '-'
             | '0'..='9'
@@ -1041,6 +1061,7 @@ mod tests {
         assert_eq!(parse_bracket_text("R").unwrap().to_string(), "R");
         assert_eq!(parse_bracket_text("r4").unwrap().to_string(), "r4");
         assert_eq!(parse_bracket_text("x").unwrap().to_string(), "x");
+        assert_eq!(parse_bracket_text("^2").unwrap().to_string(), "^2");
         assert_eq!(parse_bracket_text("Na").unwrap().to_string(), "Na");
         assert_eq!(parse_bracket_text("80se").unwrap().to_string(), "80se");
         assert_eq!(parse_bracket_text("@AL1").unwrap().to_string(), "@AL1");
@@ -1129,6 +1150,7 @@ mod tests {
             ("R2", "R2"),
             ("r", "r"),
             ("x2", "x2"),
+            ("^2", "^2"),
         ] {
             let mut parser = BracketParser::new(text);
             assert_eq!(parser.parse_primitive(true).unwrap().to_string(), expected);
@@ -1158,6 +1180,12 @@ mod tests {
         let mut parser = BracketParser::new("x");
         assert_eq!(
             parser.parse_required_u16().unwrap_err().kind(),
+            &BracketParseErrorKind::UnexpectedEnd
+        );
+
+        let mut parser = BracketParser::new("^");
+        assert_eq!(
+            parser.parse_required_numeric_query().unwrap_err().kind(),
             &BracketParseErrorKind::UnexpectedEnd
         );
     }

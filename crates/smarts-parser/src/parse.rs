@@ -839,7 +839,7 @@ mod tests {
             SmartsParseErrorKind::UnexpectedCharacter('1')
         );
 
-        let mapped_unsupported = parser.map_bracket_error(&parse_bracket_text("z").unwrap_err());
+        let mapped_unsupported = parser.map_bracket_error(&parse_bracket_text("q").unwrap_err());
         assert_eq!(
             mapped_unsupported.kind(),
             SmartsParseErrorKind::UnsupportedFeature(UnsupportedFeature::AtomPrimitive)
@@ -967,7 +967,7 @@ mod tests {
         );
 
         let mapped_unsupported =
-            Parser::new("").map_bracket_error(&parse_bracket_text("z").unwrap_err());
+            Parser::new("").map_bracket_error(&parse_bracket_text("q").unwrap_err());
         assert_eq!(
             mapped_unsupported.kind(),
             SmartsParseErrorKind::UnsupportedFeature(UnsupportedFeature::AtomPrimitive)

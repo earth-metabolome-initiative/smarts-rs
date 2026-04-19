@@ -396,10 +396,13 @@ fn ensure_supported_atom_primitive(
         | AtomPrimitive::Degree(_)
         | AtomPrimitive::Connectivity(_)
         | AtomPrimitive::Valence(_)
+        | AtomPrimitive::Hybridization(_)
         | AtomPrimitive::Hydrogen(_, _)
         | AtomPrimitive::RingMembership(_)
         | AtomPrimitive::RingSize(_)
         | AtomPrimitive::RingConnectivity(_)
+        | AtomPrimitive::HeteroNeighbor(_)
+        | AtomPrimitive::AliphaticHeteroNeighbor(_)
         | AtomPrimitive::AtomicNumber(_)
         | AtomPrimitive::Charge(_)
         | AtomPrimitive::Chirality(
@@ -1679,6 +1682,9 @@ fn atom_primitive_matches(
         AtomPrimitive::Valence(expected) => target
             .total_valence(atom_id)
             .is_some_and(|count| count_query_matches_u16(*expected, u16::from(count), 1)),
+        AtomPrimitive::Hybridization(expected) => target
+            .hybridization(atom_id)
+            .is_some_and(|code| numeric_query_matches_u16(*expected, u16::from(code))),
         AtomPrimitive::Hydrogen(HydrogenKind::Total, expected) => target
             .total_hydrogen_count(atom_id)
             .is_some_and(|count| count_query_matches_u16(*expected, u16::from(count), 1)),
@@ -1694,6 +1700,12 @@ fn atom_primitive_matches(
         AtomPrimitive::RingConnectivity(expected) => target
             .ring_bond_count(atom_id)
             .is_some_and(|count| ring_query_matches_u16(*expected, u16::from(count))),
+        AtomPrimitive::HeteroNeighbor(expected) => target
+            .hetero_neighbor_count(atom_id)
+            .is_some_and(|count| count_query_matches_u16(*expected, u16::from(count), 1)),
+        AtomPrimitive::AliphaticHeteroNeighbor(expected) => target
+            .aliphatic_hetero_neighbor_count(atom_id)
+            .is_some_and(|count| count_query_matches_u16(*expected, u16::from(count), 1)),
         AtomPrimitive::Charge(expected) => {
             atom.is_some_and(|atom| atom.charge_value() == *expected)
         }
@@ -2049,6 +2061,34 @@ mod tests {
         assert!(matches(&QueryMol::from_str("[v4]").unwrap(), "c1ccccc1").unwrap());
         assert!(!matches(&QueryMol::from_str("[v3]").unwrap(), "c1ccccc1").unwrap());
         assert!(matches(&QueryMol::from_str("[Cl&v]").unwrap(), "CCCl").unwrap());
+    }
+
+    #[test]
+    fn hybridization_primitives_are_respected() {
+        assert_eq!(
+            match_count(&QueryMol::from_str("[^1]").unwrap(), "CC#N").unwrap(),
+            2
+        );
+        assert_eq!(
+            match_count(&QueryMol::from_str("[^2]").unwrap(), "CC=CF").unwrap(),
+            2
+        );
+        assert_eq!(
+            match_count(&QueryMol::from_str("[^2]").unwrap(), "c1ccccc1").unwrap(),
+            6
+        );
+        assert_eq!(
+            match_count(&QueryMol::from_str("[^2]").unwrap(), "CC(=O)NC").unwrap(),
+            3
+        );
+        assert_eq!(
+            match_count(&QueryMol::from_str("[^3]").unwrap(), "CC").unwrap(),
+            2
+        );
+        assert_eq!(
+            match_count(&QueryMol::from_str("[^3]").unwrap(), "CC=CF").unwrap(),
+            2
+        );
     }
 
     #[test]
