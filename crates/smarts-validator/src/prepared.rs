@@ -525,7 +525,10 @@ fn effective_bond_label(
     raw_bond: Bond,
 ) -> BondLabel {
     if aromaticity.contains_edge(left_atom, right_atom)
-        && matches!(raw_bond, Bond::Single | Bond::Double | Bond::Aromatic)
+        && matches!(
+            normalized_bond(raw_bond),
+            Bond::Single | Bond::Double | Bond::Aromatic
+        )
     {
         BondLabel::Aromatic
     } else {
