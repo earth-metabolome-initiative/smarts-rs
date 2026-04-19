@@ -282,13 +282,7 @@ impl PreparedTarget {
     pub fn bond(&self, left_atom: AtomId, right_atom: AtomId) -> Option<BondLabel> {
         self.target
             .edge_for_node_pair((left_atom, right_atom))
-            .map(|edge| {
-                if self.aromaticity.contains_edge(left_atom, right_atom) {
-                    BondLabel::Aromatic
-                } else {
-                    BondLabel::from(edge.2)
-                }
-            })
+            .map(|edge| effective_bond_label(&self.aromaticity, left_atom, right_atom, edge.2))
     }
 
     /// Returns a zero-allocation iterator over neighbors of one atom together
@@ -296,11 +290,7 @@ impl PreparedTarget {
     pub fn neighbors(&self, atom_id: AtomId) -> impl Iterator<Item = (AtomId, BondLabel)> + '_ {
         self.target.edges_for_node(atom_id).filter_map(move |edge| {
             let other = bond_edge_other(edge, atom_id)?;
-            let label = if self.aromaticity.contains_edge(atom_id, other) {
-                BondLabel::Aromatic
-            } else {
-                BondLabel::from(edge.2)
-            };
+            let label = effective_bond_label(&self.aromaticity, atom_id, other, edge.2);
             Some((other, label))
         })
     }
@@ -528,6 +518,21 @@ const fn normalized_bond(bond: Bond) -> Bond {
     }
 }
 
+fn effective_bond_label(
+    aromaticity: &AromaticityAssignment,
+    left_atom: AtomId,
+    right_atom: AtomId,
+    raw_bond: Bond,
+) -> BondLabel {
+    if aromaticity.contains_edge(left_atom, right_atom)
+        && matches!(raw_bond, Bond::Single | Bond::Double | Bond::Aromatic)
+    {
+        BondLabel::Aromatic
+    } else {
+        BondLabel::from(raw_bond)
+    }
+}
+
 fn atom_is_aromatic_for_prepared_view(
     target: &Smiles,
     aromaticity: &AromaticityAssignment,
@@ -674,13 +679,18 @@ mod tests {
     use alloc::{vec, vec::Vec};
     use core::str::FromStr;
     use elements_rs::Element;
-    use smiles_parser::Smiles;
+    use smiles_parser::{atom::Atom, Smiles};
 
     use super::{EdgeProps, NodeProps, PreparedMolecule, PreparedTarget};
     use crate::{
         geometric_target::{MoleculeGraph, UndirectedBond},
         target::{AtomLabel, BondLabel, MoleculeTarget},
     };
+
+    const MACCS_KEY_17_COUNTEREXAMPLE: &str = concat!(
+        "CC[C@@H]1[C@@H](N1)C(=O)N(C)CC(=O)N(C)C(=C(C)C)C(=O)N[C@H]2CC3=CC(=CC(=C3)O)",
+        "C4=CC5=C(C=C4)N(C(=C5CC(COC(=O)[C@@H]6CCCN(C2=O)N6)(C)C)C7=C(N=CC#C7)[C@H](C)OC)CC"
+    );
 
     #[test]
     fn prepared_target_keeps_smiles_and_basic_caches() {
@@ -906,6 +916,21 @@ mod tests {
 
         assert_eq!(raw_aromatic_atoms, vec![1, 2, 3, 4, 5, 6]);
         assert_eq!(prepared_aromatic_atoms, vec![1, 2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn prepared_target_keeps_the_maccs_key_17_counterexample_triple_bond() {
+        let prepared = PreparedTarget::new(Smiles::from_str(MACCS_KEY_17_COUNTEREXAMPLE).unwrap());
+
+        assert_eq!(prepared.atom(59).and_then(Atom::element), Some(Element::C));
+        assert_eq!(prepared.atom(60).and_then(Atom::element), Some(Element::C));
+        assert_eq!(prepared.bond(59, 60), Some(BondLabel::Triple));
+        assert!(prepared
+            .neighbors(59)
+            .any(|(other_atom, bond_label)| other_atom == 60 && bond_label == BondLabel::Triple));
+        assert!(prepared
+            .neighbors(60)
+            .any(|(other_atom, bond_label)| other_atom == 59 && bond_label == BondLabel::Triple));
     }
 
     #[test]
