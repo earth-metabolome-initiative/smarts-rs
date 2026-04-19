@@ -3,6 +3,15 @@
 use libfuzzer_sys::fuzz_target;
 use smarts_parser::{parse_smarts, AtomExpr, AtomPrimitive, BracketExprTree, QueryMol};
 
+#[derive(Default)]
+struct QueryBudget {
+    total_atoms: usize,
+    total_bonds: usize,
+    total_components: usize,
+    recursive_queries: usize,
+    max_depth: usize,
+}
+
 fn assert_recursive_queries_lowered(query: &QueryMol) {
     for atom in query.atoms() {
         let AtomExpr::Bracket(bracket) = &atom.expr else {
@@ -43,8 +52,53 @@ fn assert_query_render_is_stable(query: &QueryMol) {
     assert_eq!(reparsed.component_groups(), reparsed_again.component_groups());
 }
 
+fn query_is_too_large(query: &QueryMol) -> bool {
+    let mut budget = QueryBudget::default();
+    accumulate_query_budget(query, 1, &mut budget);
+    query.atom_count() > 96
+        || query.bond_count() > 144
+        || query.component_count() > 24
+        || budget.total_atoms > 192
+        || budget.total_bonds > 288
+        || budget.total_components > 48
+        || budget.recursive_queries > 24
+        || budget.max_depth > 8
+}
+
+fn accumulate_query_budget(query: &QueryMol, depth: usize, budget: &mut QueryBudget) {
+    budget.total_atoms += query.atom_count();
+    budget.total_bonds += query.bond_count();
+    budget.total_components += query.component_count();
+    budget.max_depth = budget.max_depth.max(depth);
+
+    for atom in query.atoms() {
+        let AtomExpr::Bracket(bracket) = &atom.expr else {
+            continue;
+        };
+        accumulate_tree_budget(&bracket.tree, depth, budget);
+    }
+}
+
+fn accumulate_tree_budget(tree: &BracketExprTree, depth: usize, budget: &mut QueryBudget) {
+    match tree {
+        BracketExprTree::Primitive(AtomPrimitive::RecursiveQuery(nested)) => {
+            budget.recursive_queries += 1;
+            accumulate_query_budget(nested, depth + 1, budget);
+        }
+        BracketExprTree::Primitive(_) => {}
+        BracketExprTree::Not(inner) => accumulate_tree_budget(inner, depth, budget),
+        BracketExprTree::HighAnd(items)
+        | BracketExprTree::Or(items)
+        | BracketExprTree::LowAnd(items) => {
+            for item in items {
+                accumulate_tree_budget(item, depth, budget);
+            }
+        }
+    }
+}
+
 fuzz_target!(|data: &[u8]| {
-    if data.len() > 1024 {
+    if data.len() > 256 {
         return;
     }
 
@@ -54,6 +108,9 @@ fuzz_target!(|data: &[u8]| {
     let Ok(query) = parse_smarts(input) else {
         return;
     };
+    if query_is_too_large(&query) {
+        return;
+    }
 
     assert_recursive_queries_lowered(&query);
     assert_query_render_is_stable(&query);

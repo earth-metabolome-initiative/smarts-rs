@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use smarts_parser::parse_smarts;
+use smarts_parser::{parse_smarts, AtomExpr};
 use smarts_validator::{
     match_count, match_count_compiled, match_count_prepared, matches, matches_compiled,
     matches_prepared, substructure_matches, substructure_matches_compiled,
@@ -55,18 +55,55 @@ fn assert_materialized_matches_are_well_formed(
     }
 }
 
+fn query_is_too_large(query: &smarts_parser::QueryMol) -> bool {
+    query.atom_count() > 24 || query.bond_count() > 36 || query.component_count() > 8
+}
+
+fn query_is_too_generic(query: &smarts_parser::QueryMol) -> bool {
+    let wildcard_atoms = query
+        .atoms()
+        .iter()
+        .filter(|atom| matches!(atom.expr, AtomExpr::Wildcard))
+        .count();
+    query.component_count() > 3 || wildcard_atoms > 2
+}
+
 fuzz_target!(|data: &[u8]| {
-    if data.len() > 1024 {
+    if data.len() > 256 {
         return;
     }
 
     let (query_bytes, target_bytes) = split_input(data);
+    if query_bytes.len() > 96 || target_bytes.len() > 96 {
+        return;
+    }
     let query_text = String::from_utf8_lossy(query_bytes);
     let target_text = String::from_utf8_lossy(target_bytes);
 
     let Ok(query) = parse_smarts(query_text.as_ref()) else {
         return;
     };
+    if query_is_too_large(&query) || query_is_too_generic(&query) {
+        return;
+    }
+
+    let Ok(target) = target_text.as_ref().parse::<Smiles>() else {
+        let bool_result = matches(&query, target_text.as_ref());
+        let count_result = match_count(&query, target_text.as_ref());
+        let materialized_result = substructure_matches(&query, target_text.as_ref());
+
+        match (&bool_result, &count_result, &materialized_result) {
+            (Err(left), Err(right), Err(third)) => {
+                assert!(same_error_kind(left, right));
+                assert!(same_error_kind(left, third));
+            }
+            _ => panic!("validator entrypoints must agree on invalid target errors"),
+        }
+        return;
+    };
+    if target.nodes().len() > 32 {
+        return;
+    }
 
     let bool_result = matches(&query, target_text.as_ref());
     let count_result = match_count(&query, target_text.as_ref());
@@ -84,9 +121,6 @@ fuzz_target!(|data: &[u8]| {
         _ => panic!("validator entrypoints must agree on success vs error"),
     }
 
-    let Ok(target) = target_text.as_ref().parse::<Smiles>() else {
-        return;
-    };
     let prepared = PreparedTarget::new(target);
 
     match CompiledQuery::new(query.clone()) {

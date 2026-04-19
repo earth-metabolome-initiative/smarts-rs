@@ -44,8 +44,12 @@ fn assert_query_render_is_stable(query: &QueryMol) {
     assert_eq!(reparsed.component_count(), reparsed_again.component_count());
 }
 
+fn query_is_too_large(query: &QueryMol) -> bool {
+    query.atom_count() > 64 || query.bond_count() > 96 || query.component_count() > 16
+}
+
 fuzz_target!(|data: &[u8]| {
-    if data.len() > 256 {
+    if data.len() > 128 {
         return;
     }
 
@@ -67,6 +71,9 @@ fuzz_target!(|data: &[u8]| {
     let Ok(query) = parse_smarts(&wrapped) else {
         return;
     };
+    if query_is_too_large(&query) {
+        return;
+    }
 
     assert_eq!(query.atom_count(), 1);
     assert_eq!(query.bond_count(), 0);

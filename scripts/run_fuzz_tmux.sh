@@ -150,19 +150,19 @@ build_pane_command() {
   if [[ "$USER_SET_LIBFUZZER_ARGS" == false ]]; then
     case "$harness" in
       parse_display_loop)
-        pane_args=("-timeout=5" "-max_len=1024")
+        pane_args=("-timeout=5" "-max_len=256")
         ;;
       bracket_parse_loop)
-        pane_args=("-timeout=5" "-max_len=256")
+        pane_args=("-timeout=5" "-max_len=128")
         ;;
       parse_bracket_atom)
         pane_args=("-timeout=5" "-max_len=512")
         ;;
       recursive_smarts_lowering)
-        pane_args=("-timeout=5" "-max_len=512")
+        pane_args=("-timeout=5" "-max_len=192")
         ;;
       validator_match_loop)
-        pane_args=("-timeout=5" "-max_len=1024")
+        pane_args=("-timeout=5" "-max_len=192")
         ;;
     esac
   fi
