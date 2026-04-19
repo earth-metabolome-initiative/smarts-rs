@@ -44,7 +44,8 @@ const CASES: &[PrecedenceCase] = &[
         expected_matches: &[],
     },
     PrecedenceCase {
-        name: "low_precedence_and_or_requires_hydrogen_on_both_branches_and_matches_hydroxyl_oxygen",
+        name:
+            "low_precedence_and_or_requires_hydrogen_on_both_branches_and_matches_hydroxyl_oxygen",
         smarts: "[N,O;H1]",
         smiles: "CO",
         expected_count: 1,

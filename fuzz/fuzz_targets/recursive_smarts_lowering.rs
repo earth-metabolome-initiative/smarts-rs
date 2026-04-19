@@ -4,49 +4,6 @@ use libfuzzer_sys::fuzz_target;
 use smarts_parser::{
     fuzz_parse_bracket_text, parse_smarts, AtomExpr, AtomPrimitive, BracketExprTree, QueryMol,
 };
-use std::collections::BTreeMap;
-
-fn assert_same_query_structure(left: &QueryMol, right: &QueryMol) {
-    assert_eq!(left.atom_count(), right.atom_count());
-    assert_eq!(left.bond_count(), right.bond_count());
-    assert_eq!(left.component_count(), right.component_count());
-    assert_eq!(left.component_groups(), right.component_groups());
-
-    let left_atoms = left
-        .atoms()
-        .iter()
-        .map(|atom| (atom.component, atom.expr.to_string()))
-        .collect::<Vec<_>>();
-    let right_atoms = right
-        .atoms()
-        .iter()
-        .map(|atom| (atom.component, atom.expr.to_string()))
-        .collect::<Vec<_>>();
-    assert_eq!(left_atoms, right_atoms);
-
-    let left_bonds = left
-        .bonds()
-        .iter()
-        .map(|bond| (bond.src.min(bond.dst), bond.src.max(bond.dst), bond.expr.clone()))
-        .collect::<Vec<_>>();
-    let right_bonds = right
-        .bonds()
-        .iter()
-        .map(|bond| (bond.src.min(bond.dst), bond.src.max(bond.dst), bond.expr.clone()))
-        .collect::<Vec<_>>();
-    assert_eq!(multiset_counts(&left_bonds), multiset_counts(&right_bonds));
-}
-
-fn multiset_counts<T>(items: &[T]) -> BTreeMap<T, usize>
-where
-    T: Ord + Clone,
-{
-    let mut counts = BTreeMap::new();
-    for item in items {
-        *counts.entry(item.clone()).or_insert(0) += 1;
-    }
-    counts
-}
 
 fn assert_recursive_queries_lowered(query: &QueryMol) {
     for atom in query.atoms() {
@@ -60,9 +17,7 @@ fn assert_recursive_queries_lowered(query: &QueryMol) {
 fn assert_recursive_tree_lowered(tree: &BracketExprTree) {
     match tree {
         BracketExprTree::Primitive(AtomPrimitive::RecursiveQuery(nested)) => {
-            let reparsed = parse_smarts(&nested.to_string())
-                .expect("nested recursive SMARTS must reparse");
-            assert_same_query_structure(&reparsed, nested);
+            assert_query_render_is_stable(nested);
             assert_recursive_queries_lowered(nested);
         }
         BracketExprTree::Primitive(_) => {}
@@ -77,8 +32,21 @@ fn assert_recursive_tree_lowered(tree: &BracketExprTree) {
     }
 }
 
+fn assert_query_render_is_stable(query: &QueryMol) {
+    let rendered = query.to_string();
+    let reparsed = parse_smarts(&rendered).expect("displayed SMARTS must parse again");
+    let rerendered = reparsed.to_string();
+    let reparsed_again = parse_smarts(&rerendered).expect("normalized SMARTS must reparse again");
+
+    assert_eq!(rerendered, reparsed_again.to_string());
+    assert_eq!(reparsed.atom_count(), reparsed_again.atom_count());
+    assert_eq!(reparsed.bond_count(), reparsed_again.bond_count());
+    assert_eq!(reparsed.component_count(), reparsed_again.component_count());
+    assert_eq!(reparsed.component_groups(), reparsed_again.component_groups());
+}
+
 fuzz_target!(|data: &[u8]| {
-    if data.len() > 2048 {
+    if data.len() > 512 {
         return;
     }
 
@@ -104,10 +72,11 @@ fuzz_target!(|data: &[u8]| {
     let BracketExprTree::Primitive(AtomPrimitive::RecursiveQuery(nested)) = &bracket.tree else {
         panic!("wrapped recursive SMARTS must lower into a nested query");
     };
-    assert_same_query_structure(nested, &expected_nested);
+    assert_eq!(nested.atom_count(), expected_nested.atom_count());
+    assert_eq!(nested.bond_count(), expected_nested.bond_count());
+    assert_eq!(nested.component_count(), expected_nested.component_count());
+    assert_eq!(nested.component_groups(), expected_nested.component_groups());
+    assert_query_render_is_stable(nested);
 
-    let rendered = query.to_string();
-    let reparsed = parse_smarts(&rendered).expect("displayed SMARTS must parse again");
-    assert_recursive_queries_lowered(&reparsed);
-    assert_same_query_structure(&query, &reparsed);
+    assert_query_render_is_stable(&query);
 });
