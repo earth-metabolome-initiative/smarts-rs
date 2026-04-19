@@ -282,7 +282,15 @@ impl PreparedTarget {
     pub fn bond(&self, left_atom: AtomId, right_atom: AtomId) -> Option<BondLabel> {
         self.target
             .edge_for_node_pair((left_atom, right_atom))
-            .map(|edge| effective_bond_label(&self.aromaticity, left_atom, right_atom, edge.2))
+            .map(|edge| {
+                effective_bond_label(
+                    &self.target,
+                    &self.aromaticity,
+                    left_atom,
+                    right_atom,
+                    edge.2,
+                )
+            })
     }
 
     /// Returns a zero-allocation iterator over neighbors of one atom together
@@ -290,7 +298,8 @@ impl PreparedTarget {
     pub fn neighbors(&self, atom_id: AtomId) -> impl Iterator<Item = (AtomId, BondLabel)> + '_ {
         self.target.edges_for_node(atom_id).filter_map(move |edge| {
             let other = bond_edge_other(edge, atom_id)?;
-            let label = effective_bond_label(&self.aromaticity, atom_id, other, edge.2);
+            let label =
+                effective_bond_label(&self.target, &self.aromaticity, atom_id, other, edge.2);
             Some((other, label))
         })
     }
@@ -519,11 +528,15 @@ const fn normalized_bond(bond: Bond) -> Bond {
 }
 
 fn effective_bond_label(
+    target: &Smiles,
     aromaticity: &AromaticityAssignment,
     left_atom: AtomId,
     right_atom: AtomId,
     raw_bond: Bond,
 ) -> BondLabel {
+    if rdkit_like_oxyhalogen_terminal_oxo_bond(target, left_atom, right_atom, raw_bond) {
+        return BondLabel::Single;
+    }
     if aromaticity.contains_edge(left_atom, right_atom)
         && matches!(
             normalized_bond(raw_bond),
@@ -534,6 +547,61 @@ fn effective_bond_label(
     } else {
         BondLabel::from(raw_bond)
     }
+}
+
+fn rdkit_like_oxyhalogen_terminal_oxo_bond(
+    target: &Smiles,
+    left_atom: AtomId,
+    right_atom: AtomId,
+    raw_bond: Bond,
+) -> bool {
+    if normalized_bond(raw_bond) != Bond::Double {
+        return false;
+    }
+
+    let Some((oxygen_atom, halogen_atom)) =
+        identify_terminal_oxyhalogen_pair(target, left_atom, right_atom)
+    else {
+        return false;
+    };
+
+    target
+        .edges_for_node(halogen_atom)
+        .filter_map(|edge| bond_edge_other(edge, halogen_atom))
+        .filter(|&neighbor_atom| neighbor_atom != oxygen_atom)
+        .filter(|&neighbor_atom| {
+            target
+                .node_by_id(neighbor_atom)
+                .and_then(Atom::element)
+                .is_some_and(|element| element == Element::O)
+        })
+        .count()
+        >= 1
+}
+
+fn identify_terminal_oxyhalogen_pair(
+    target: &Smiles,
+    left_atom: AtomId,
+    right_atom: AtomId,
+) -> Option<(AtomId, AtomId)> {
+    let left_element = target.node_by_id(left_atom)?.element()?;
+    let right_element = target.node_by_id(right_atom)?.element()?;
+
+    if left_element == Element::O
+        && target.edges_for_node(left_atom).count() == 1
+        && matches!(right_element, Element::Cl | Element::Br | Element::I)
+    {
+        return Some((left_atom, right_atom));
+    }
+
+    if right_element == Element::O
+        && target.edges_for_node(right_atom).count() == 1
+        && matches!(left_element, Element::Cl | Element::Br | Element::I)
+    {
+        return Some((right_atom, left_atom));
+    }
+
+    None
 }
 
 fn atom_is_aromatic_for_prepared_view(
@@ -694,6 +762,7 @@ mod tests {
         "CC[C@@H]1[C@@H](N1)C(=O)N(C)CC(=O)N(C)C(=C(C)C)C(=O)N[C@H]2CC3=CC(=CC(=C3)O)",
         "C4=CC5=C(C=C4)N(C(=C5CC(COC(=O)[C@@H]6CCCN(C2=O)N6)(C)C)C7=C(N=CC#C7)[C@H](C)OC)CC"
     );
+    const OXYHALOGEN_COUNTEREXAMPLE: &str = "[O-]Cl(=O)(=O)=O";
 
     #[test]
     fn prepared_target_keeps_smiles_and_basic_caches() {
@@ -934,6 +1003,16 @@ mod tests {
         assert!(prepared
             .neighbors(60)
             .any(|(other_atom, bond_label)| other_atom == 59 && bond_label == BondLabel::Triple));
+    }
+
+    #[test]
+    fn prepared_target_normalizes_terminal_oxyhalogen_oxo_bonds_like_rdkit() {
+        let prepared = PreparedTarget::new(Smiles::from_str(OXYHALOGEN_COUNTEREXAMPLE).unwrap());
+
+        assert_eq!(prepared.bond(0, 1), Some(BondLabel::Single));
+        assert_eq!(prepared.bond(1, 2), Some(BondLabel::Single));
+        assert_eq!(prepared.bond(1, 3), Some(BondLabel::Single));
+        assert_eq!(prepared.bond(1, 4), Some(BondLabel::Single));
     }
 
     #[test]
