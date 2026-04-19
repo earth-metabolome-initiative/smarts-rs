@@ -10,6 +10,8 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 smarts-parser = { path = "../crates/smarts-parser" }
+smarts-validator = { path = "../crates/smarts-validator" }
+smiles-parser = { git = "https://github.com/earth-metabolome-initiative/smiles-parser", branch = "main" }
 
 [[bin]]
 name = "parse_display_loop"
@@ -32,5 +34,11 @@ doc = false
 [[bin]]
 name = "recursive_smarts_lowering"
 path = "fuzz_targets/recursive_smarts_lowering.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "validator_match_loop"
+path = "fuzz_targets/validator_match_loop.rs"
 test = false
 doc = false
