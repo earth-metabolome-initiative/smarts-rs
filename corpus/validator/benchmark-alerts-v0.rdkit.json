@@ -1,0 +1,86 @@
+[
+  {
+    "name": "alpha_amino_acid_glycine_positive",
+    "smarts": "[$(C-[C;!$(C=[!#6])]-[N;!H0;!$(N-[!#6;!#1]);!$(N-C=[O,N,S])])](=O)([O;H,-])",
+    "smiles": "NCC(=O)O",
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "alpha_amino_acid_amide_negative",
+    "smarts": "[$(C-[C;!$(C=[!#6])]-[N;!H0;!$(N-[!#6;!#1]);!$(N-C=[O,N,S])])](=O)([O;H,-])",
+    "smiles": "NCC(=O)N",
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "primary_aromatic_amine_aniline_positive",
+    "smarts": "[N;H2;D1;$(N-!@c);!$(N-C=[O,N,S])]",
+    "smiles": "Nc1ccccc1",
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "primary_aromatic_amine_acetanilide_negative",
+    "smarts": "[N;H2;D1;$(N-!@c);!$(N-C=[O,N,S])]",
+    "smiles": "CC(=O)Nc1ccccc1",
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "quinone_alert_positive",
+    "smarts": "[!#6&!#1]=[#6]1[#6]=,:[#6][#6](=[!#6&!#1])[#6]=,:[#6]1",
+    "smiles": "O=C1C=CC(=O)C=C1",
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "quinone_alert_negative",
+    "smarts": "[!#6&!#1]=[#6]1[#6]=,:[#6][#6](=[!#6&!#1])[#6]=,:[#6]1",
+    "smiles": "Oc1ccccc1",
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "nitrosamine_alert_positive",
+    "smarts": "N-[N;X2](=O)",
+    "smiles": "CN(N=O)C",
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "n_oxide_alert_positive",
+    "smarts": "[N+!$(N=O)][O-X1]",
+    "smiles": "C[N+](C)([O-])C",
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "recursive_amine_alert_positive",
+    "smarts": "[$([NX3;H2,H1;!$(NC=O)])]",
+    "smiles": "Nc1ccccc1",
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "recursive_amine_alert_negative",
+    "smarts": "[$([NX3;H2,H1;!$(NC=O)])]",
+    "smiles": "NC=O",
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "rotatable_bond_butane_positive",
+    "smarts": "[!$(*#*)&!D1]-&!@[!$(*#*)&!D1]",
+    "smiles": "CCCC",
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "pcb_alert_positive",
+    "smarts": "[$(c:cCl),$(c:c:cCl),$(c:c:c:cCl)]-[$(c:cCl),$(c:c:cCl),$(c:c:c:cCl)]",
+    "smiles": "Clc1ccc(cc1)-c1ccccc1Cl",
+    "expected_match": true,
+    "expected_count": 1
+  }
+]

@@ -44,6 +44,26 @@
     ]
   },
   {
+    "id": "extensions",
+    "description": "RDKit extension predicates such as hybridization and hetero-neighbor counts",
+    "case_files": ["benchmark-extensions-v0.rdkit.json"]
+  },
+  {
+    "id": "aromaticity",
+    "description": "Charged aromaticity, aromatic bond semantics, and aromatic edge cases",
+    "case_files": ["benchmark-aromaticity-v0.rdkit.json"]
+  },
+  {
+    "id": "alerts",
+    "description": "Recursive alert, functional-group hierarchy, and PAINS-style SMARTS",
+    "case_files": ["benchmark-alerts-v0.rdkit.json"]
+  },
+  {
+    "id": "counted",
+    "description": "Counted-match workloads with recursive anchors and symmetric embeddings",
+    "case_files": ["benchmark-counted-v0.rdkit.json"]
+  },
+  {
     "id": "full_validator_corpus",
     "description": "All RDKit-backed validator fixtures combined into one shared workload",
     "case_files": [
@@ -60,7 +80,11 @@
       "stereo-gap-v4.rdkit.json",
       "stereo-gap-v5.rdkit.json",
       "stereo-gap-v6.rdkit.json",
-      "stereo-gap-v7.rdkit.json"
+      "stereo-gap-v7.rdkit.json",
+      "benchmark-extensions-v0.rdkit.json",
+      "benchmark-aromaticity-v0.rdkit.json",
+      "benchmark-alerts-v0.rdkit.json",
+      "benchmark-counted-v0.rdkit.json"
     ]
   }
 ]

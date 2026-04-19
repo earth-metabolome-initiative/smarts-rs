@@ -1,0 +1,72 @@
+[
+  {
+    "name": "aromatic_atom_matches_charged_thiophene",
+    "smarts": "a",
+    "smiles": "Cc1cc(C)[s+]s1",
+    "expected_match": true,
+    "expected_count": 5
+  },
+  {
+    "name": "aromatic_atom_matches_pyridinium",
+    "smarts": "a",
+    "smiles": "C[n+]1ccccc1C=NO",
+    "expected_match": true,
+    "expected_count": 6
+  },
+  {
+    "name": "aromatic_atom_rejects_neutral_radical_pyrrolyl",
+    "smarts": "a",
+    "smiles": "C1=C[N]C=C1",
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "aromatic_atom_matches_carbon_radical_ring",
+    "smarts": "a",
+    "smiles": "C1=[C]NC=C1",
+    "expected_match": true,
+    "expected_count": 5
+  },
+  {
+    "name": "aromatic_carbon_nitrogen_matches_pyridinium",
+    "smarts": "c:n",
+    "smiles": "C[n+]1ccccc1C=NO",
+    "expected_match": true,
+    "expected_count": 2
+  },
+  {
+    "name": "aromatic_carbon_nitrogen_rejects_charged_thiophene",
+    "smarts": "c:n",
+    "smiles": "Cc1cc(C)[s+]s1",
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "aromatic_bond_matches_naphthalene",
+    "smarts": "c:c",
+    "smiles": "c1ccc2ccccc2c1",
+    "expected_match": true,
+    "expected_count": 11
+  },
+  {
+    "name": "true_aromatic_bond_matches_fused_kekule_system",
+    "smarts": "a:a",
+    "smiles": "C1=CC2=C(C=C1)C1=CC=CC=C21",
+    "expected_match": true,
+    "expected_count": 12
+  },
+  {
+    "name": "single_bond_between_aromatic_atoms_rejects_quinone_like_system",
+    "smarts": "a-a",
+    "smiles": "O=C1C=CC(=O)C2=C1OC=CO2",
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "aromatic_bond_matches_quinone_like_system",
+    "smarts": "a:a",
+    "smiles": "O=C1C=CC(=O)C2=C1OC=CO2",
+    "expected_match": true,
+    "expected_count": 10
+  }
+]

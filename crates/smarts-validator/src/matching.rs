@@ -14,13 +14,14 @@ use smiles_parser::{
 
 use crate::{error::SmartsMatchError, prepared::PreparedTarget, target::BondLabel};
 
-type RecursiveMatchCache = BTreeMap<(usize, usize), bool>;
 type QueryNeighbors = alloc::vec::Vec<alloc::vec::Vec<(QueryAtomId, usize)>>;
 type CompiledQueryParts = (QueryNeighbors, alloc::vec::Vec<usize>, QueryStereoPlan);
 type AtomStereoCache = BTreeMap<AtomStereoCacheKey, Option<Chirality>>;
 type UniqueMatches = BTreeMap<Box<[usize]>, Box<[usize]>>;
+type MatchKeys = alloc::vec::Vec<Box<[usize]>>;
 
 struct SearchContext<'a> {
+    compiled_query: &'a CompiledQuery,
     query_neighbors: &'a [alloc::vec::Vec<(QueryAtomId, usize)>],
     query_degrees: &'a [usize],
     query_to_target: &'a mut [Option<usize>],
@@ -61,6 +62,53 @@ struct AtomStereoCacheKey {
     neighbor_tokens: alloc::vec::Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+struct RecursiveQueryEntry {
+    query_key: usize,
+    cache_slot: usize,
+    compiled: Box<CompiledQuery>,
+}
+
+#[derive(Debug, Clone)]
+struct RecursiveMatchCache {
+    target_atom_count: usize,
+    values: alloc::vec::Vec<Option<bool>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ThreeAtomTreeLayout {
+    center: QueryAtomId,
+    leaf_a: QueryAtomId,
+    leaf_b: QueryAtomId,
+    bond_a: usize,
+    bond_b: usize,
+}
+
+impl RecursiveMatchCache {
+    fn new(slot_count: usize, target_atom_count: usize) -> Self {
+        Self {
+            target_atom_count,
+            values: alloc::vec![None; slot_count.saturating_mul(target_atom_count)],
+        }
+    }
+
+    fn get(&self, slot: usize, atom_id: usize) -> Option<bool> {
+        self.values
+            .get(slot.checked_mul(self.target_atom_count)? + atom_id)
+            .copied()
+            .flatten()
+    }
+
+    fn insert(&mut self, slot: usize, atom_id: usize, value: bool) {
+        if let Some(cell) = self.values.get_mut(
+            slot.saturating_mul(self.target_atom_count)
+                .saturating_add(atom_id),
+        ) {
+            *cell = Some(value);
+        }
+    }
+}
+
 /// Reusable compiled SMARTS query state for repeated matching.
 #[derive(Debug, Clone)]
 pub struct CompiledQuery {
@@ -69,6 +117,9 @@ pub struct CompiledQuery {
     query_degrees: alloc::vec::Vec<usize>,
     stereo_plan: QueryStereoPlan,
     atom_stereo_cache: RefCell<AtomStereoCache>,
+    recursive_cache_slots: usize,
+    recursive_query_lookup: BTreeMap<usize, usize>,
+    recursive_queries: Box<[RecursiveQueryEntry]>,
 }
 
 impl CompiledQuery {
@@ -82,13 +133,30 @@ impl CompiledQuery {
     /// - [`SmartsMatchError::UnsupportedBondPrimitive`] when the query uses a
     ///   bond primitive outside the current validator slice
     pub fn new(query: QueryMol) -> Result<Self, SmartsMatchError> {
+        let mut next_recursive_cache_slot = 0usize;
+        Self::new_with_recursive_slots(query, &mut next_recursive_cache_slot)
+    }
+
+    fn new_with_recursive_slots(
+        query: QueryMol,
+        next_recursive_cache_slot: &mut usize,
+    ) -> Result<Self, SmartsMatchError> {
         let (query_neighbors, query_degrees, stereo_plan) = compile_query_parts(&query)?;
+        let recursive_queries = compile_recursive_queries(&query, next_recursive_cache_slot)?;
+        let recursive_query_lookup = recursive_queries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| (entry.query_key, index))
+            .collect();
         Ok(Self {
             query,
             query_neighbors,
             query_degrees,
             stereo_plan,
             atom_stereo_cache: RefCell::new(AtomStereoCache::new()),
+            recursive_cache_slots: *next_recursive_cache_slot,
+            recursive_query_lookup,
+            recursive_queries,
         })
     }
 
@@ -256,7 +324,21 @@ pub fn substructure_matches_compiled(
 /// - [`SmartsMatchError::UnsupportedBondPrimitive`] when the query uses a bond
 ///   primitive outside the current validator slice
 pub fn match_count(query: &QueryMol, target: &str) -> Result<usize, SmartsMatchError> {
-    substructure_matches(query, target).map(|matches| matches.len())
+    if target.is_empty() {
+        return Err(SmartsMatchError::EmptyTarget);
+    }
+
+    let target =
+        target
+            .parse::<Smiles>()
+            .map_err(|error| SmartsMatchError::InvalidTargetSmiles {
+                source: error.smiles_error(),
+                start: error.start(),
+                end: error.end(),
+            })?;
+    let prepared = PreparedTarget::new(target);
+
+    match_count_prepared(query, &prepared)
 }
 
 /// Count all unique accepted substructure matches for one SMARTS query
@@ -273,7 +355,8 @@ pub fn match_count_prepared(
     query: &QueryMol,
     target: &PreparedTarget,
 ) -> Result<usize, SmartsMatchError> {
-    substructure_matches_prepared(query, target).map(|matches| matches.len())
+    let compiled = CompiledQuery::new(query.clone())?;
+    Ok(match_count_compiled(&compiled, target))
 }
 
 /// Count all unique accepted substructure matches for one compiled SMARTS
@@ -281,7 +364,7 @@ pub fn match_count_prepared(
 #[inline]
 #[must_use]
 pub fn match_count_compiled(query: &CompiledQuery, target: &PreparedTarget) -> usize {
-    substructure_matches_compiled(query, target).len()
+    query_match_count(query, target)
 }
 
 fn ensure_supported_query(
@@ -441,8 +524,80 @@ fn compile_query_parts(query: &QueryMol) -> Result<CompiledQueryParts, SmartsMat
     Ok((query_neighbors, query_degrees, stereo_plan))
 }
 
+fn compile_recursive_queries(
+    query: &QueryMol,
+    next_recursive_cache_slot: &mut usize,
+) -> Result<Box<[RecursiveQueryEntry]>, SmartsMatchError> {
+    let mut entries = alloc::vec::Vec::new();
+    for atom in query.atoms() {
+        collect_recursive_queries_from_atom_expr(
+            &atom.expr,
+            &mut entries,
+            next_recursive_cache_slot,
+        )?;
+    }
+    Ok(entries.into_boxed_slice())
+}
+
+fn collect_recursive_queries_from_atom_expr(
+    expr: &AtomExpr,
+    entries: &mut alloc::vec::Vec<RecursiveQueryEntry>,
+    next_recursive_cache_slot: &mut usize,
+) -> Result<(), SmartsMatchError> {
+    match expr {
+        AtomExpr::Wildcard | AtomExpr::Bare { .. } => Ok(()),
+        AtomExpr::Bracket(expr) => collect_recursive_queries_from_bracket_tree(
+            &expr.tree,
+            entries,
+            next_recursive_cache_slot,
+        ),
+    }
+}
+
+fn collect_recursive_queries_from_bracket_tree(
+    tree: &BracketExprTree,
+    entries: &mut alloc::vec::Vec<RecursiveQueryEntry>,
+    next_recursive_cache_slot: &mut usize,
+) -> Result<(), SmartsMatchError> {
+    match tree {
+        BracketExprTree::Primitive(AtomPrimitive::RecursiveQuery(query)) => {
+            let query_key = core::ptr::from_ref(query.as_ref()) as usize;
+            if entries.iter().all(|entry| entry.query_key != query_key) {
+                let cache_slot = *next_recursive_cache_slot;
+                *next_recursive_cache_slot += 1;
+                entries.push(RecursiveQueryEntry {
+                    query_key,
+                    cache_slot,
+                    compiled: Box::new(CompiledQuery::new_with_recursive_slots(
+                        query.as_ref().clone(),
+                        next_recursive_cache_slot,
+                    )?),
+                });
+            }
+            Ok(())
+        }
+        BracketExprTree::Primitive(_) => Ok(()),
+        BracketExprTree::Not(inner) => {
+            collect_recursive_queries_from_bracket_tree(inner, entries, next_recursive_cache_slot)
+        }
+        BracketExprTree::HighAnd(items)
+        | BracketExprTree::Or(items)
+        | BracketExprTree::LowAnd(items) => {
+            for item in items {
+                collect_recursive_queries_from_bracket_tree(
+                    item,
+                    entries,
+                    next_recursive_cache_slot,
+                )?;
+            }
+            Ok(())
+        }
+    }
+}
+
 fn query_matches(query: &CompiledQuery, target: &PreparedTarget) -> bool {
-    let mut recursive_cache = RecursiveMatchCache::new();
+    let mut recursive_cache =
+        RecursiveMatchCache::new(query.recursive_cache_slots, target.atom_count());
     query_matches_with_mapping(query, target, &mut recursive_cache, None, None)
 }
 
@@ -450,8 +605,15 @@ fn query_substructure_matches(
     query: &CompiledQuery,
     target: &PreparedTarget,
 ) -> Box<[Box<[usize]>]> {
-    let mut recursive_cache = RecursiveMatchCache::new();
+    let mut recursive_cache =
+        RecursiveMatchCache::new(query.recursive_cache_slots, target.atom_count());
     query_substructure_matches_with_mapping(query, target, &mut recursive_cache, None, None)
+}
+
+fn query_match_count(query: &CompiledQuery, target: &PreparedTarget) -> usize {
+    let mut recursive_cache =
+        RecursiveMatchCache::new(query.recursive_cache_slots, target.atom_count());
+    query_match_count_with_mapping(query, target, &mut recursive_cache, None, None)
 }
 
 fn query_matches_with_mapping(
@@ -461,9 +623,33 @@ fn query_matches_with_mapping(
     initial_query_atom: Option<QueryAtomId>,
     initial_target_atom: Option<usize>,
 ) -> bool {
+    if query.query.atom_count() == 1 {
+        return single_atom_query_matches(query, target, recursive_cache, initial_target_atom);
+    }
+    if is_two_atom_edge_query(&query.query) {
+        return two_atom_query_matches(
+            query,
+            target,
+            recursive_cache,
+            initial_query_atom,
+            initial_target_atom,
+        );
+    }
+    if let Some(layout) = three_atom_tree_layout(query) {
+        return three_atom_query_matches(
+            query,
+            target,
+            recursive_cache,
+            layout,
+            initial_query_atom,
+            initial_target_atom,
+        );
+    }
+
     let mut query_to_target = alloc::vec![None; query.query.atom_count()];
     let mut used_target_atoms = alloc::vec![false; target.atom_count()];
     let mut context = SearchContext {
+        compiled_query: query,
         query_neighbors: &query.query_neighbors,
         query_degrees: &query.query_degrees,
         query_to_target: &mut query_to_target,
@@ -489,12 +675,14 @@ fn query_matches_with_mapping(
             ) {
                 return false;
             }
-            if !atom_expr_matches(
+            if !cached_query_atom_matches(
                 &query.query.atoms()[query_atom].expr,
                 query_atom,
-                context.stereo_plan,
+                &query.stereo_plan,
                 target,
                 target_atom,
+                &query.recursive_query_lookup,
+                &query.recursive_queries,
                 context.recursive_cache,
             ) {
                 return false;
@@ -516,9 +704,38 @@ fn query_substructure_matches_with_mapping(
     initial_query_atom: Option<QueryAtomId>,
     initial_target_atom: Option<usize>,
 ) -> Box<[Box<[usize]>]> {
+    if query.query.atom_count() == 1 {
+        return single_atom_query_substructure_matches(
+            query,
+            target,
+            recursive_cache,
+            initial_target_atom,
+        );
+    }
+    if is_two_atom_edge_query(&query.query) {
+        return two_atom_query_substructure_matches(
+            query,
+            target,
+            recursive_cache,
+            initial_query_atom,
+            initial_target_atom,
+        );
+    }
+    if let Some(layout) = three_atom_tree_layout(query) {
+        return three_atom_query_substructure_matches(
+            query,
+            target,
+            recursive_cache,
+            layout,
+            initial_query_atom,
+            initial_target_atom,
+        );
+    }
+
     let mut query_to_target = alloc::vec![None; query.query.atom_count()];
     let mut used_target_atoms = alloc::vec![false; target.atom_count()];
     let mut context = SearchContext {
+        compiled_query: query,
         query_neighbors: &query.query_neighbors,
         query_degrees: &query.query_degrees,
         query_to_target: &mut query_to_target,
@@ -544,12 +761,14 @@ fn query_substructure_matches_with_mapping(
             ) {
                 return Box::default();
             }
-            if !atom_expr_matches(
+            if !cached_query_atom_matches(
                 &query.query.atoms()[query_atom].expr,
                 query_atom,
-                context.stereo_plan,
+                &query.stereo_plan,
                 target,
                 target_atom,
+                &query.recursive_query_lookup,
+                &query.recursive_queries,
                 context.recursive_cache,
             ) {
                 return Box::default();
@@ -573,6 +792,970 @@ fn query_substructure_matches_with_mapping(
         .into_values()
         .collect::<alloc::vec::Vec<_>>()
         .into_boxed_slice()
+}
+
+fn query_match_count_with_mapping(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    recursive_cache: &mut RecursiveMatchCache,
+    initial_query_atom: Option<QueryAtomId>,
+    initial_target_atom: Option<usize>,
+) -> usize {
+    if query.query.atom_count() == 1 {
+        return single_atom_query_match_count(query, target, recursive_cache, initial_target_atom);
+    }
+    if is_two_atom_edge_query(&query.query) {
+        return two_atom_query_match_count(
+            query,
+            target,
+            recursive_cache,
+            initial_query_atom,
+            initial_target_atom,
+        );
+    }
+    if let Some(layout) = three_atom_tree_layout(query) {
+        return three_atom_query_match_count(
+            query,
+            target,
+            recursive_cache,
+            layout,
+            initial_query_atom,
+            initial_target_atom,
+        );
+    }
+
+    let mut query_to_target = alloc::vec![None; query.query.atom_count()];
+    let mut used_target_atoms = alloc::vec![false; target.atom_count()];
+    let mut context = SearchContext {
+        compiled_query: query,
+        query_neighbors: &query.query_neighbors,
+        query_degrees: &query.query_degrees,
+        query_to_target: &mut query_to_target,
+        used_target_atoms: &mut used_target_atoms,
+        stereo_plan: &query.stereo_plan,
+        atom_stereo_cache: &query.atom_stereo_cache,
+        recursive_cache,
+    };
+    let mapped_count =
+        if let (Some(query_atom), Some(target_atom)) = (initial_query_atom, initial_target_atom) {
+            if target
+                .degree(target_atom)
+                .is_some_and(|degree| degree < query.query_degrees[query_atom])
+            {
+                return 0;
+            }
+            if !component_constraints_match(
+                query_atom,
+                target_atom,
+                &query.query,
+                target,
+                context.query_to_target,
+            ) {
+                return 0;
+            }
+            if !cached_query_atom_matches(
+                &query.query.atoms()[query_atom].expr,
+                query_atom,
+                &query.stereo_plan,
+                target,
+                target_atom,
+                &query.recursive_query_lookup,
+                &query.recursive_queries,
+                context.recursive_cache,
+            ) {
+                return 0;
+            }
+            context.query_to_target[query_atom] = Some(target_atom);
+            context.used_target_atoms[target_atom] = true;
+            1
+        } else {
+            0
+        };
+
+    let mut matches = MatchKeys::new();
+    collect_match_keys(
+        &query.query,
+        target,
+        &mut context,
+        mapped_count,
+        &mut matches,
+    );
+    matches.sort_unstable();
+    matches.dedup();
+    matches.len()
+}
+
+fn single_atom_query_matches(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    recursive_cache: &mut RecursiveMatchCache,
+    initial_target_atom: Option<usize>,
+) -> bool {
+    let expr = &query.query.atoms()[0].expr;
+    match initial_target_atom {
+        Some(target_atom) => atom_expr_matches(
+            expr,
+            0,
+            &query.stereo_plan,
+            target,
+            target_atom,
+            &query.recursive_query_lookup,
+            &query.recursive_queries,
+            recursive_cache,
+        ),
+        None => (0..target.atom_count()).any(|target_atom| {
+            atom_expr_matches(
+                expr,
+                0,
+                &query.stereo_plan,
+                target,
+                target_atom,
+                &query.recursive_query_lookup,
+                &query.recursive_queries,
+                recursive_cache,
+            )
+        }),
+    }
+}
+
+fn single_atom_query_substructure_matches(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    recursive_cache: &mut RecursiveMatchCache,
+    initial_target_atom: Option<usize>,
+) -> Box<[Box<[usize]>]> {
+    let expr = &query.query.atoms()[0].expr;
+    match initial_target_atom {
+        Some(target_atom)
+            if atom_expr_matches(
+                expr,
+                0,
+                &query.stereo_plan,
+                target,
+                target_atom,
+                &query.recursive_query_lookup,
+                &query.recursive_queries,
+                recursive_cache,
+            ) =>
+        {
+            alloc::vec![Box::<[usize]>::from([target_atom])].into_boxed_slice()
+        }
+        Some(_) => Box::default(),
+        None => (0..target.atom_count())
+            .filter(|&target_atom| {
+                atom_expr_matches(
+                    expr,
+                    0,
+                    &query.stereo_plan,
+                    target,
+                    target_atom,
+                    &query.recursive_query_lookup,
+                    &query.recursive_queries,
+                    recursive_cache,
+                )
+            })
+            .map(|target_atom| Box::<[usize]>::from([target_atom]))
+            .collect::<alloc::vec::Vec<_>>()
+            .into_boxed_slice(),
+    }
+}
+
+fn single_atom_query_match_count(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    recursive_cache: &mut RecursiveMatchCache,
+    initial_target_atom: Option<usize>,
+) -> usize {
+    let expr = &query.query.atoms()[0].expr;
+    match initial_target_atom {
+        Some(target_atom) => usize::from(atom_expr_matches(
+            expr,
+            0,
+            &query.stereo_plan,
+            target,
+            target_atom,
+            &query.recursive_query_lookup,
+            &query.recursive_queries,
+            recursive_cache,
+        )),
+        None => (0..target.atom_count())
+            .filter(|&target_atom| {
+                atom_expr_matches(
+                    expr,
+                    0,
+                    &query.stereo_plan,
+                    target,
+                    target_atom,
+                    &query.recursive_query_lookup,
+                    &query.recursive_queries,
+                    recursive_cache,
+                )
+            })
+            .count(),
+    }
+}
+
+fn is_two_atom_edge_query(query: &QueryMol) -> bool {
+    query.atom_count() == 2
+        && query.bond_count() == 1
+        && query.atoms()[query.bonds()[0].src].component
+            == query.atoms()[query.bonds()[0].dst].component
+}
+
+fn three_atom_tree_layout(query: &CompiledQuery) -> Option<ThreeAtomTreeLayout> {
+    if query.query.atom_count() != 3 || query.query.bond_count() != 2 {
+        return None;
+    }
+
+    let mut center = None;
+    for (atom_id, degree) in query.query_degrees.iter().copied().enumerate() {
+        match degree {
+            2 => {
+                if center.is_some() {
+                    return None;
+                }
+                center = Some(atom_id);
+            }
+            1 => {}
+            _ => return None,
+        }
+    }
+    let center = center?;
+    let component = query.query.atoms()[center].component;
+    if query
+        .query
+        .atoms()
+        .iter()
+        .any(|atom| atom.component != component)
+    {
+        return None;
+    }
+
+    let neighbors = &query.query_neighbors[center];
+    if neighbors.len() != 2 {
+        return None;
+    }
+
+    Some(ThreeAtomTreeLayout {
+        center,
+        leaf_a: neighbors[0].0,
+        leaf_b: neighbors[1].0,
+        bond_a: neighbors[0].1,
+        bond_b: neighbors[1].1,
+    })
+}
+
+fn two_atom_query_matches(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    recursive_cache: &mut RecursiveMatchCache,
+    initial_query_atom: Option<QueryAtomId>,
+    initial_target_atom: Option<usize>,
+) -> bool {
+    let bond = &query.query.bonds()[0];
+    for_each_target_bond(target, |left_atom, right_atom, bond_label| {
+        mapping_matches_two_atom_query(
+            query,
+            target,
+            recursive_cache,
+            bond.src,
+            bond.dst,
+            left_atom,
+            right_atom,
+            bond_label,
+            initial_query_atom,
+            initial_target_atom,
+        ) || mapping_matches_two_atom_query(
+            query,
+            target,
+            recursive_cache,
+            bond.src,
+            bond.dst,
+            right_atom,
+            left_atom,
+            bond_label,
+            initial_query_atom,
+            initial_target_atom,
+        )
+    })
+}
+
+fn two_atom_query_substructure_matches(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    recursive_cache: &mut RecursiveMatchCache,
+    initial_query_atom: Option<QueryAtomId>,
+    initial_target_atom: Option<usize>,
+) -> Box<[Box<[usize]>]> {
+    let bond = &query.query.bonds()[0];
+    let mut matches = UniqueMatches::new();
+    for_each_target_bond(target, |left_atom, right_atom, bond_label| {
+        collect_two_atom_mapping(
+            &mut matches,
+            query,
+            target,
+            recursive_cache,
+            bond.src,
+            bond.dst,
+            left_atom,
+            right_atom,
+            bond_label,
+            initial_query_atom,
+            initial_target_atom,
+        );
+        collect_two_atom_mapping(
+            &mut matches,
+            query,
+            target,
+            recursive_cache,
+            bond.src,
+            bond.dst,
+            right_atom,
+            left_atom,
+            bond_label,
+            initial_query_atom,
+            initial_target_atom,
+        );
+        false
+    });
+    matches
+        .into_values()
+        .collect::<alloc::vec::Vec<_>>()
+        .into_boxed_slice()
+}
+
+fn two_atom_query_match_count(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    recursive_cache: &mut RecursiveMatchCache,
+    initial_query_atom: Option<QueryAtomId>,
+    initial_target_atom: Option<usize>,
+) -> usize {
+    let bond = &query.query.bonds()[0];
+    let mut matches = MatchKeys::new();
+    for_each_target_bond(target, |left_atom, right_atom, bond_label| {
+        collect_two_atom_match_key(
+            &mut matches,
+            query,
+            target,
+            recursive_cache,
+            bond.src,
+            bond.dst,
+            left_atom,
+            right_atom,
+            bond_label,
+            initial_query_atom,
+            initial_target_atom,
+        );
+        collect_two_atom_match_key(
+            &mut matches,
+            query,
+            target,
+            recursive_cache,
+            bond.src,
+            bond.dst,
+            right_atom,
+            left_atom,
+            bond_label,
+            initial_query_atom,
+            initial_target_atom,
+        );
+        false
+    });
+    matches.sort_unstable();
+    matches.dedup();
+    matches.len()
+}
+
+fn three_atom_query_matches(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    recursive_cache: &mut RecursiveMatchCache,
+    layout: ThreeAtomTreeLayout,
+    initial_query_atom: Option<QueryAtomId>,
+    initial_target_atom: Option<usize>,
+) -> bool {
+    for_each_three_atom_mapping(
+        query,
+        target,
+        recursive_cache,
+        layout,
+        initial_query_atom,
+        initial_target_atom,
+        |mapping| {
+            stereo_constraints_match(
+                &query.query,
+                &query.stereo_plan,
+                &query.query_neighbors,
+                target,
+                mapping,
+                &query.atom_stereo_cache,
+            )
+        },
+    )
+}
+
+fn three_atom_query_substructure_matches(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    recursive_cache: &mut RecursiveMatchCache,
+    layout: ThreeAtomTreeLayout,
+    initial_query_atom: Option<QueryAtomId>,
+    initial_target_atom: Option<usize>,
+) -> Box<[Box<[usize]>]> {
+    let mut matches = UniqueMatches::new();
+    for_each_three_atom_mapping(
+        query,
+        target,
+        recursive_cache,
+        layout,
+        initial_query_atom,
+        initial_target_atom,
+        |mapping| {
+            if !stereo_constraints_match(
+                &query.query,
+                &query.stereo_plan,
+                &query.query_neighbors,
+                target,
+                mapping,
+                &query.atom_stereo_cache,
+            ) {
+                return false;
+            }
+
+            let ordered = current_query_order_mapping(mapping);
+            matches
+                .entry(three_atom_canonical_key(
+                    mapping[0].expect("three-atom fast path must bind every query atom"),
+                    mapping[1].expect("three-atom fast path must bind every query atom"),
+                    mapping[2].expect("three-atom fast path must bind every query atom"),
+                ))
+                .and_modify(|existing| {
+                    if ordered < *existing {
+                        existing.clone_from(&ordered);
+                    }
+                })
+                .or_insert(ordered);
+            false
+        },
+    );
+    matches
+        .into_values()
+        .collect::<alloc::vec::Vec<_>>()
+        .into_boxed_slice()
+}
+
+fn three_atom_query_match_count(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    recursive_cache: &mut RecursiveMatchCache,
+    layout: ThreeAtomTreeLayout,
+    initial_query_atom: Option<QueryAtomId>,
+    initial_target_atom: Option<usize>,
+) -> usize {
+    let mut matches = MatchKeys::new();
+    for_each_three_atom_mapping(
+        query,
+        target,
+        recursive_cache,
+        layout,
+        initial_query_atom,
+        initial_target_atom,
+        |mapping| {
+            if !stereo_constraints_match(
+                &query.query,
+                &query.stereo_plan,
+                &query.query_neighbors,
+                target,
+                mapping,
+                &query.atom_stereo_cache,
+            ) {
+                return false;
+            }
+            matches.push(three_atom_canonical_key(
+                mapping[0].expect("three-atom fast path must bind every query atom"),
+                mapping[1].expect("three-atom fast path must bind every query atom"),
+                mapping[2].expect("three-atom fast path must bind every query atom"),
+            ));
+            false
+        },
+    );
+    matches.sort_unstable();
+    matches.dedup();
+    matches.len()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn for_each_three_atom_mapping(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    recursive_cache: &mut RecursiveMatchCache,
+    layout: ThreeAtomTreeLayout,
+    initial_query_atom: Option<QueryAtomId>,
+    initial_target_atom: Option<usize>,
+    mut visit: impl FnMut(&[Option<usize>]) -> bool,
+) -> bool {
+    if let Some((query_atom, target_atom)) = initial_query_atom.zip(initial_target_atom) {
+        if query_atom == layout.center {
+            return for_each_three_atom_center_mapping(
+                query,
+                target,
+                recursive_cache,
+                layout,
+                target_atom,
+                None,
+                None,
+                initial_query_atom,
+                initial_target_atom,
+                visit,
+            );
+        }
+        if query_atom == layout.leaf_a {
+            for (target_center, target_bond_a) in target.neighbors(target_atom) {
+                if for_each_three_atom_center_mapping(
+                    query,
+                    target,
+                    recursive_cache,
+                    layout,
+                    target_center,
+                    Some((target_atom, target_bond_a)),
+                    None,
+                    initial_query_atom,
+                    initial_target_atom,
+                    &mut visit,
+                ) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if query_atom == layout.leaf_b {
+            for (target_center, target_bond_b) in target.neighbors(target_atom) {
+                if for_each_three_atom_center_mapping(
+                    query,
+                    target,
+                    recursive_cache,
+                    layout,
+                    target_center,
+                    None,
+                    Some((target_atom, target_bond_b)),
+                    initial_query_atom,
+                    initial_target_atom,
+                    &mut visit,
+                ) {
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+
+    for target_center in 0..target.atom_count() {
+        if for_each_three_atom_center_mapping(
+            query,
+            target,
+            recursive_cache,
+            layout,
+            target_center,
+            None,
+            None,
+            initial_query_atom,
+            initial_target_atom,
+            &mut visit,
+        ) {
+            return true;
+        }
+    }
+    false
+}
+
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
+fn for_each_three_atom_center_mapping(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    recursive_cache: &mut RecursiveMatchCache,
+    layout: ThreeAtomTreeLayout,
+    target_center: usize,
+    fixed_leaf_a: Option<(usize, BondLabel)>,
+    fixed_leaf_b: Option<(usize, BondLabel)>,
+    initial_query_atom: Option<QueryAtomId>,
+    initial_target_atom: Option<usize>,
+    mut visit: impl FnMut(&[Option<usize>]) -> bool,
+) -> bool {
+    if target
+        .degree(target_center)
+        .is_some_and(|degree| degree < query.query_degrees[layout.center])
+    {
+        return false;
+    }
+    if !cached_query_atom_matches(
+        &query.query.atoms()[layout.center].expr,
+        layout.center,
+        &query.stereo_plan,
+        target,
+        target_center,
+        &query.recursive_query_lookup,
+        &query.recursive_queries,
+        recursive_cache,
+    ) {
+        return false;
+    }
+
+    let neighbors = target
+        .neighbors(target_center)
+        .collect::<alloc::vec::Vec<_>>();
+    match (fixed_leaf_a, fixed_leaf_b) {
+        (Some((target_leaf_a, target_bond_a)), None) => {
+            for (target_leaf_b, target_bond_b) in neighbors {
+                if target_leaf_b == target_leaf_a {
+                    continue;
+                }
+                if three_atom_mapping_matches(
+                    query,
+                    target,
+                    recursive_cache,
+                    layout,
+                    target_center,
+                    target_leaf_a,
+                    target_bond_a,
+                    target_leaf_b,
+                    target_bond_b,
+                    initial_query_atom,
+                    initial_target_atom,
+                ) && visit(&three_atom_query_mapping(
+                    layout,
+                    target_center,
+                    target_leaf_a,
+                    target_leaf_b,
+                )) {
+                    return true;
+                }
+            }
+        }
+        (None, Some((target_leaf_b, target_bond_b))) => {
+            for (target_leaf_a, target_bond_a) in neighbors {
+                if target_leaf_a == target_leaf_b {
+                    continue;
+                }
+                if three_atom_mapping_matches(
+                    query,
+                    target,
+                    recursive_cache,
+                    layout,
+                    target_center,
+                    target_leaf_a,
+                    target_bond_a,
+                    target_leaf_b,
+                    target_bond_b,
+                    initial_query_atom,
+                    initial_target_atom,
+                ) && visit(&three_atom_query_mapping(
+                    layout,
+                    target_center,
+                    target_leaf_a,
+                    target_leaf_b,
+                )) {
+                    return true;
+                }
+            }
+        }
+        (None, None) => {
+            let mut left_index = 0usize;
+            while left_index < neighbors.len() {
+                let (target_left, left_bond) = neighbors[left_index];
+                let mut right_index = left_index + 1;
+                while right_index < neighbors.len() {
+                    let (target_right, right_bond) = neighbors[right_index];
+                    if three_atom_mapping_matches(
+                        query,
+                        target,
+                        recursive_cache,
+                        layout,
+                        target_center,
+                        target_left,
+                        left_bond,
+                        target_right,
+                        right_bond,
+                        initial_query_atom,
+                        initial_target_atom,
+                    ) && visit(&three_atom_query_mapping(
+                        layout,
+                        target_center,
+                        target_left,
+                        target_right,
+                    )) {
+                        return true;
+                    }
+                    if three_atom_mapping_matches(
+                        query,
+                        target,
+                        recursive_cache,
+                        layout,
+                        target_center,
+                        target_right,
+                        right_bond,
+                        target_left,
+                        left_bond,
+                        initial_query_atom,
+                        initial_target_atom,
+                    ) && visit(&three_atom_query_mapping(
+                        layout,
+                        target_center,
+                        target_right,
+                        target_left,
+                    )) {
+                        return true;
+                    }
+                    right_index += 1;
+                }
+                left_index += 1;
+            }
+        }
+        (Some(_), Some(_)) => {}
+    }
+
+    false
+}
+
+#[allow(clippy::too_many_arguments)]
+fn three_atom_mapping_matches(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    recursive_cache: &mut RecursiveMatchCache,
+    layout: ThreeAtomTreeLayout,
+    target_center: usize,
+    target_leaf_a: usize,
+    target_bond_a: BondLabel,
+    target_leaf_b: usize,
+    target_bond_b: BondLabel,
+    initial_query_atom: Option<QueryAtomId>,
+    initial_target_atom: Option<usize>,
+) -> bool {
+    if initial_query_atom
+        .zip(initial_target_atom)
+        .is_some_and(|(query_atom, target_atom)| {
+            (query_atom == layout.center && target_atom != target_center)
+                || (query_atom == layout.leaf_a && target_atom != target_leaf_a)
+                || (query_atom == layout.leaf_b && target_atom != target_leaf_b)
+        })
+    {
+        return false;
+    }
+
+    if target
+        .degree(target_leaf_a)
+        .is_some_and(|degree| degree < query.query_degrees[layout.leaf_a])
+        || target
+            .degree(target_leaf_b)
+            .is_some_and(|degree| degree < query.query_degrees[layout.leaf_b])
+    {
+        return false;
+    }
+
+    query_bond_matches(
+        layout.bond_a,
+        &query.query.bonds()[layout.bond_a].expr,
+        &query.stereo_plan,
+        target,
+        target_center,
+        target_leaf_a,
+        target_bond_a,
+    ) && query_bond_matches(
+        layout.bond_b,
+        &query.query.bonds()[layout.bond_b].expr,
+        &query.stereo_plan,
+        target,
+        target_center,
+        target_leaf_b,
+        target_bond_b,
+    ) && cached_query_atom_matches(
+        &query.query.atoms()[layout.leaf_a].expr,
+        layout.leaf_a,
+        &query.stereo_plan,
+        target,
+        target_leaf_a,
+        &query.recursive_query_lookup,
+        &query.recursive_queries,
+        recursive_cache,
+    ) && cached_query_atom_matches(
+        &query.query.atoms()[layout.leaf_b].expr,
+        layout.leaf_b,
+        &query.stereo_plan,
+        target,
+        target_leaf_b,
+        &query.recursive_query_lookup,
+        &query.recursive_queries,
+        recursive_cache,
+    )
+}
+
+const fn three_atom_query_mapping(
+    layout: ThreeAtomTreeLayout,
+    target_center: usize,
+    target_leaf_a: usize,
+    target_leaf_b: usize,
+) -> [Option<usize>; 3] {
+    let mut mapping = [None; 3];
+    mapping[layout.center] = Some(target_center);
+    mapping[layout.leaf_a] = Some(target_leaf_a);
+    mapping[layout.leaf_b] = Some(target_leaf_b);
+    mapping
+}
+
+fn for_each_target_bond(
+    target: &PreparedTarget,
+    mut visit: impl FnMut(usize, usize, BondLabel) -> bool,
+) -> bool {
+    for left_atom in 0..target.atom_count() {
+        for (right_atom, bond_label) in target.neighbors(left_atom) {
+            if right_atom <= left_atom {
+                continue;
+            }
+            if visit(left_atom, right_atom, bond_label) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+#[allow(clippy::too_many_arguments)]
+fn mapping_matches_two_atom_query(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    recursive_cache: &mut RecursiveMatchCache,
+    query_left: QueryAtomId,
+    query_right: QueryAtomId,
+    target_left: usize,
+    target_right: usize,
+    bond_label: BondLabel,
+    initial_query_atom: Option<QueryAtomId>,
+    initial_target_atom: Option<usize>,
+) -> bool {
+    if initial_query_atom
+        .zip(initial_target_atom)
+        .is_some_and(|(query_atom, target_atom)| {
+            (query_atom == query_left && target_atom != target_left)
+                || (query_atom == query_right && target_atom != target_right)
+        })
+    {
+        return false;
+    }
+
+    if target
+        .degree(target_left)
+        .is_some_and(|degree| degree < query.query_degrees[query_left])
+        || target
+            .degree(target_right)
+            .is_some_and(|degree| degree < query.query_degrees[query_right])
+    {
+        return false;
+    }
+
+    if !query_bond_matches(
+        0,
+        &query.query.bonds()[0].expr,
+        &query.stereo_plan,
+        target,
+        target_left,
+        target_right,
+        bond_label,
+    ) {
+        return false;
+    }
+
+    cached_query_atom_matches(
+        &query.query.atoms()[query_left].expr,
+        query_left,
+        &query.stereo_plan,
+        target,
+        target_left,
+        &query.recursive_query_lookup,
+        &query.recursive_queries,
+        recursive_cache,
+    ) && cached_query_atom_matches(
+        &query.query.atoms()[query_right].expr,
+        query_right,
+        &query.stereo_plan,
+        target,
+        target_right,
+        &query.recursive_query_lookup,
+        &query.recursive_queries,
+        recursive_cache,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_two_atom_mapping(
+    matches: &mut UniqueMatches,
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    recursive_cache: &mut RecursiveMatchCache,
+    query_left: QueryAtomId,
+    query_right: QueryAtomId,
+    target_left: usize,
+    target_right: usize,
+    bond_label: BondLabel,
+    initial_query_atom: Option<QueryAtomId>,
+    initial_target_atom: Option<usize>,
+) {
+    if mapping_matches_two_atom_query(
+        query,
+        target,
+        recursive_cache,
+        query_left,
+        query_right,
+        target_left,
+        target_right,
+        bond_label,
+        initial_query_atom,
+        initial_target_atom,
+    ) {
+        let mapping = if query_left == 0 {
+            Box::<[usize]>::from([target_left, target_right])
+        } else {
+            Box::<[usize]>::from([target_right, target_left])
+        };
+        matches
+            .entry(two_atom_canonical_key(target_left, target_right))
+            .and_modify(|existing| {
+                if mapping < *existing {
+                    existing.clone_from(&mapping);
+                }
+            })
+            .or_insert(mapping);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_two_atom_match_key(
+    matches: &mut MatchKeys,
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    recursive_cache: &mut RecursiveMatchCache,
+    query_left: QueryAtomId,
+    query_right: QueryAtomId,
+    target_left: usize,
+    target_right: usize,
+    bond_label: BondLabel,
+    initial_query_atom: Option<QueryAtomId>,
+    initial_target_atom: Option<usize>,
+) {
+    if mapping_matches_two_atom_query(
+        query,
+        target,
+        recursive_cache,
+        query_left,
+        query_right,
+        target_left,
+        target_right,
+        bond_label,
+        initial_query_atom,
+        initial_target_atom,
+    ) {
+        matches.push(two_atom_canonical_key(target_left, target_right));
+    }
 }
 
 fn build_query_neighbors(
@@ -1140,7 +2323,6 @@ fn search_mapping(
     }
 
     let next_query_atom = select_next_query_atom(context.query_neighbors, context.query_to_target);
-    let query_atom = &query.atoms()[next_query_atom];
     let candidate_target_atoms = candidate_target_atoms(
         next_query_atom,
         query,
@@ -1148,12 +2330,9 @@ fn search_mapping(
         target,
         context.query_neighbors,
         context.query_to_target,
+        context.used_target_atoms,
     );
-
     for target_atom in candidate_target_atoms {
-        if context.used_target_atoms[target_atom] {
-            continue;
-        }
         if target
             .degree(target_atom)
             .is_some_and(|degree| degree < context.query_degrees[next_query_atom])
@@ -1169,24 +2348,15 @@ fn search_mapping(
         ) {
             continue;
         }
-        if !atom_expr_matches(
-            &query_atom.expr,
+        if !cached_query_atom_matches(
+            &query.atoms()[next_query_atom].expr,
             next_query_atom,
             context.stereo_plan,
             target,
             target_atom,
+            &context.compiled_query.recursive_query_lookup,
+            &context.compiled_query.recursive_queries,
             context.recursive_cache,
-        ) {
-            continue;
-        }
-        if !mapped_bonds_match(
-            next_query_atom,
-            target_atom,
-            query,
-            context.stereo_plan,
-            target,
-            context.query_neighbors,
-            context.query_to_target,
         ) {
             continue;
         }
@@ -1194,6 +2364,8 @@ fn search_mapping(
         context.query_to_target[next_query_atom] = Some(target_atom);
         context.used_target_atoms[target_atom] = true;
         if search_mapping(query, target, context, mapped_count + 1) {
+            context.used_target_atoms[target_atom] = false;
+            context.query_to_target[next_query_atom] = None;
             return true;
         }
         context.used_target_atoms[target_atom] = false;
@@ -1233,7 +2405,6 @@ fn collect_mappings(
     }
 
     let next_query_atom = select_next_query_atom(context.query_neighbors, context.query_to_target);
-    let query_atom = &query.atoms()[next_query_atom];
     let candidate_target_atoms = candidate_target_atoms(
         next_query_atom,
         query,
@@ -1241,12 +2412,9 @@ fn collect_mappings(
         target,
         context.query_neighbors,
         context.query_to_target,
+        context.used_target_atoms,
     );
-
     for target_atom in candidate_target_atoms {
-        if context.used_target_atoms[target_atom] {
-            continue;
-        }
         if target
             .degree(target_atom)
             .is_some_and(|degree| degree < context.query_degrees[next_query_atom])
@@ -1262,24 +2430,15 @@ fn collect_mappings(
         ) {
             continue;
         }
-        if !atom_expr_matches(
-            &query_atom.expr,
+        if !cached_query_atom_matches(
+            &query.atoms()[next_query_atom].expr,
             next_query_atom,
             context.stereo_plan,
             target,
             target_atom,
+            &context.compiled_query.recursive_query_lookup,
+            &context.compiled_query.recursive_queries,
             context.recursive_cache,
-        ) {
-            continue;
-        }
-        if !mapped_bonds_match(
-            next_query_atom,
-            target_atom,
-            query,
-            context.stereo_plan,
-            target,
-            context.query_neighbors,
-            context.query_to_target,
         ) {
             continue;
         }
@@ -1287,6 +2446,74 @@ fn collect_mappings(
         context.query_to_target[next_query_atom] = Some(target_atom);
         context.used_target_atoms[target_atom] = true;
         collect_mappings(query, target, context, mapped_count + 1, matches);
+        context.used_target_atoms[target_atom] = false;
+        context.query_to_target[next_query_atom] = None;
+    }
+}
+
+fn collect_match_keys(
+    query: &QueryMol,
+    target: &PreparedTarget,
+    context: &mut SearchContext<'_>,
+    mapped_count: usize,
+    matches: &mut MatchKeys,
+) {
+    if mapped_count == query.atom_count() {
+        if stereo_constraints_match(
+            query,
+            context.stereo_plan,
+            context.query_neighbors,
+            target,
+            context.query_to_target,
+            context.atom_stereo_cache,
+        ) {
+            matches.push(current_canonical_match_key(context.query_to_target));
+        }
+        return;
+    }
+
+    let next_query_atom = select_next_query_atom(context.query_neighbors, context.query_to_target);
+    let candidate_target_atoms = candidate_target_atoms(
+        next_query_atom,
+        query,
+        context.stereo_plan,
+        target,
+        context.query_neighbors,
+        context.query_to_target,
+        context.used_target_atoms,
+    );
+    for target_atom in candidate_target_atoms {
+        if target
+            .degree(target_atom)
+            .is_some_and(|degree| degree < context.query_degrees[next_query_atom])
+        {
+            continue;
+        }
+        if !component_constraints_match(
+            next_query_atom,
+            target_atom,
+            query,
+            target,
+            context.query_to_target,
+        ) {
+            continue;
+        }
+        if !cached_query_atom_matches(
+            &query.atoms()[next_query_atom].expr,
+            next_query_atom,
+            context.stereo_plan,
+            target,
+            target_atom,
+            &context.compiled_query.recursive_query_lookup,
+            &context.compiled_query.recursive_queries,
+            context.recursive_cache,
+        ) {
+            continue;
+        }
+
+        context.query_to_target[next_query_atom] = Some(target_atom);
+        context.used_target_atoms[target_atom] = true;
+        collect_match_keys(query, target, context, mapped_count + 1, matches);
         context.used_target_atoms[target_atom] = false;
         context.query_to_target[next_query_atom] = None;
     }
@@ -1302,6 +2529,29 @@ fn current_query_order_mapping(query_to_target: &[Option<usize>]) -> Box<[usize]
 
 fn canonical_match_key(mapping: &[usize]) -> Box<[usize]> {
     let mut canonical = mapping.to_vec();
+    canonical.sort_unstable();
+    canonical.into_boxed_slice()
+}
+
+fn two_atom_canonical_key(left: usize, right: usize) -> Box<[usize]> {
+    if left < right {
+        Box::<[usize]>::from([left, right])
+    } else {
+        Box::<[usize]>::from([right, left])
+    }
+}
+
+fn three_atom_canonical_key(first: usize, second: usize, third: usize) -> Box<[usize]> {
+    let mut canonical = [first, second, third];
+    canonical.sort_unstable();
+    Box::<[usize]>::from(canonical)
+}
+
+fn current_canonical_match_key(query_to_target: &[Option<usize>]) -> Box<[usize]> {
+    let mut canonical = query_to_target
+        .iter()
+        .map(|target_atom| target_atom.expect("complete mappings must bind every query atom"))
+        .collect::<alloc::vec::Vec<_>>();
     canonical.sort_unstable();
     canonical.into_boxed_slice()
 }
@@ -1388,27 +2638,36 @@ fn candidate_target_atoms(
     target: &PreparedTarget,
     query_neighbors: &[alloc::vec::Vec<(QueryAtomId, usize)>],
     query_to_target: &[Option<usize>],
+    used_target_atoms: &[bool],
 ) -> alloc::vec::Vec<usize> {
-    let mapped_neighbors = query_neighbors[query_atom]
-        .iter()
-        .filter_map(|(neighbor, bond_index)| {
-            Some((
-                query_to_target[*neighbor]?,
-                *bond_index,
-                &query.bonds()[*bond_index],
-            ))
-        })
-        .collect::<alloc::vec::Vec<_>>();
-
-    if mapped_neighbors.is_empty() {
-        return (0..target.atom_count()).collect();
+    let mut seed = None;
+    let mut has_mapped_neighbor = false;
+    for (neighbor, bond_id) in &query_neighbors[query_atom] {
+        let Some(mapped_target_atom) = query_to_target[*neighbor] else {
+            continue;
+        };
+        has_mapped_neighbor = true;
+        let mapped_target_degree = target.degree(mapped_target_atom).unwrap_or(usize::MAX);
+        if seed.is_none_or(|(best_target_atom, _, _): (usize, usize, usize)| {
+            mapped_target_degree < target.degree(best_target_atom).unwrap_or(usize::MAX)
+        }) {
+            seed = Some((mapped_target_atom, *bond_id, *neighbor));
+        }
     }
 
-    let (seed_target_atom, seed_bond_id, seed_query_bond) = mapped_neighbors[0];
-    let mut candidates = target
-        .neighbors(seed_target_atom)
-        .filter_map(|(neighbor_atom, bond_label)| {
-            query_bond_matches(
+    if !has_mapped_neighbor {
+        return (0..target.atom_count())
+            .filter(|&target_atom| !used_target_atoms[target_atom])
+            .collect();
+    }
+
+    let (seed_target_atom, seed_bond_id, seed_query_neighbor) =
+        seed.expect("mapped neighbors must be non-empty");
+    let seed_query_bond = &query.bonds()[seed_bond_id];
+    let mut candidates = alloc::vec::Vec::new();
+    for (neighbor_atom, bond_label) in target.neighbors(seed_target_atom) {
+        if used_target_atoms[neighbor_atom]
+            || !query_bond_matches(
                 seed_bond_id,
                 &seed_query_bond.expr,
                 stereo_plan,
@@ -1417,48 +2676,35 @@ fn candidate_target_atoms(
                 neighbor_atom,
                 bond_label,
             )
-            .then_some(neighbor_atom)
-        })
-        .collect::<alloc::vec::Vec<_>>();
-
-    candidates.sort_unstable();
-    candidates.dedup();
+        {
+            continue;
+        }
+        let all_mapped_bonds_match = query_neighbors[query_atom]
+            .iter()
+            .filter(|(mapped_neighbor, _)| *mapped_neighbor != seed_query_neighbor)
+            .all(|(mapped_neighbor, query_bond_id)| {
+                let Some(mapped_target_atom) = query_to_target[*mapped_neighbor] else {
+                    return true;
+                };
+                target
+                    .bond(neighbor_atom, mapped_target_atom)
+                    .is_some_and(|target_bond| {
+                        query_bond_matches(
+                            *query_bond_id,
+                            &query.bonds()[*query_bond_id].expr,
+                            stereo_plan,
+                            target,
+                            neighbor_atom,
+                            mapped_target_atom,
+                            target_bond,
+                        )
+                    })
+            });
+        if all_mapped_bonds_match {
+            candidates.push(neighbor_atom);
+        }
+    }
     candidates
-}
-
-fn mapped_bonds_match(
-    query_atom: QueryAtomId,
-    target_atom: usize,
-    query: &QueryMol,
-    stereo_plan: &QueryStereoPlan,
-    target: &PreparedTarget,
-    query_neighbors: &[alloc::vec::Vec<(QueryAtomId, usize)>],
-    query_to_target: &[Option<usize>],
-) -> bool {
-    query_neighbors[query_atom]
-        .iter()
-        .filter_map(|(neighbor_atom, bond_index)| {
-            Some((
-                query_to_target[*neighbor_atom]?,
-                *bond_index,
-                &query.bonds()[*bond_index],
-            ))
-        })
-        .all(|(mapped_target_atom, query_bond_id, query_bond)| {
-            target
-                .bond(target_atom, mapped_target_atom)
-                .is_some_and(|bond| {
-                    query_bond_matches(
-                        query_bond_id,
-                        &query_bond.expr,
-                        stereo_plan,
-                        target,
-                        target_atom,
-                        mapped_target_atom,
-                        bond,
-                    )
-                })
-        })
 }
 
 fn query_bond_matches(
@@ -1552,12 +2798,15 @@ fn bond_primitive_matches(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn atom_expr_matches(
     expr: &AtomExpr,
     query_atom_id: QueryAtomId,
     stereo_plan: &QueryStereoPlan,
     target: &PreparedTarget,
     atom_id: usize,
+    recursive_query_lookup: &BTreeMap<usize, usize>,
+    recursive_queries: &[RecursiveQueryEntry],
     recursive_cache: &mut RecursiveMatchCache,
 ) -> bool {
     match expr {
@@ -1576,17 +2825,45 @@ fn atom_expr_matches(
             stereo_plan,
             target,
             atom_id,
+            recursive_query_lookup,
+            recursive_queries,
             recursive_cache,
         ),
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn cached_query_atom_matches(
+    expr: &AtomExpr,
+    query_atom_id: QueryAtomId,
+    stereo_plan: &QueryStereoPlan,
+    target: &PreparedTarget,
+    atom_id: usize,
+    recursive_query_lookup: &BTreeMap<usize, usize>,
+    recursive_queries: &[RecursiveQueryEntry],
+    recursive_cache: &mut RecursiveMatchCache,
+) -> bool {
+    atom_expr_matches(
+        expr,
+        query_atom_id,
+        stereo_plan,
+        target,
+        atom_id,
+        recursive_query_lookup,
+        recursive_queries,
+        recursive_cache,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 fn bracket_tree_matches(
     tree: &BracketExprTree,
     query_atom_id: QueryAtomId,
     stereo_plan: &QueryStereoPlan,
     target: &PreparedTarget,
     atom_id: usize,
+    recursive_query_lookup: &BTreeMap<usize, usize>,
+    recursive_queries: &[RecursiveQueryEntry],
     recursive_cache: &mut RecursiveMatchCache,
 ) -> bool {
     match tree {
@@ -1596,6 +2873,8 @@ fn bracket_tree_matches(
             stereo_plan,
             target,
             atom_id,
+            recursive_query_lookup,
+            recursive_queries,
             recursive_cache,
         ),
         BracketExprTree::Not(inner) => !bracket_tree_matches(
@@ -1604,6 +2883,8 @@ fn bracket_tree_matches(
             stereo_plan,
             target,
             atom_id,
+            recursive_query_lookup,
+            recursive_queries,
             recursive_cache,
         ),
         BracketExprTree::HighAnd(items) | BracketExprTree::LowAnd(items) => {
@@ -1614,6 +2895,8 @@ fn bracket_tree_matches(
                     stereo_plan,
                     target,
                     atom_id,
+                    recursive_query_lookup,
+                    recursive_queries,
                     recursive_cache,
                 )
             })
@@ -1625,18 +2908,23 @@ fn bracket_tree_matches(
                 stereo_plan,
                 target,
                 atom_id,
+                recursive_query_lookup,
+                recursive_queries,
                 recursive_cache,
             )
         }),
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn atom_primitive_matches(
     primitive: &AtomPrimitive,
     _query_atom_id: QueryAtomId,
     _stereo_plan: &QueryStereoPlan,
     target: &PreparedTarget,
     atom_id: usize,
+    recursive_query_lookup: &BTreeMap<usize, usize>,
+    recursive_queries: &[RecursiveQueryEntry],
     recursive_cache: &mut RecursiveMatchCache,
 ) -> bool {
     let atom = target.atom(atom_id);
@@ -1709,9 +2997,14 @@ fn atom_primitive_matches(
         AtomPrimitive::Charge(expected) => {
             atom.is_some_and(|atom| atom.charge_value() == *expected)
         }
-        AtomPrimitive::RecursiveQuery(query) => {
-            recursive_query_matches(query, target, atom_id, recursive_cache)
-        }
+        AtomPrimitive::RecursiveQuery(query) => recursive_query_matches(
+            query,
+            target,
+            atom_id,
+            recursive_query_lookup,
+            recursive_queries,
+            recursive_cache,
+        ),
     }
 }
 
@@ -1816,25 +3109,33 @@ fn recursive_query_matches(
     query: &QueryMol,
     target: &PreparedTarget,
     atom_id: usize,
+    recursive_query_lookup: &BTreeMap<usize, usize>,
+    recursive_queries: &[RecursiveQueryEntry],
     recursive_cache: &mut RecursiveMatchCache,
 ) -> bool {
-    let cache_key = (core::ptr::from_ref(query) as usize, atom_id);
-    if let Some(cached) = recursive_cache.get(&cache_key) {
-        return *cached;
+    let query_key = core::ptr::from_ref(query) as usize;
+    let Some(entry_index) = recursive_query_lookup.get(&query_key).copied() else {
+        return false;
+    };
+    let entry = &recursive_queries[entry_index];
+
+    if let Some(cached) = recursive_cache.get(entry.cache_slot, atom_id) {
+        return cached;
     }
 
     if query.is_empty() {
-        recursive_cache.insert(cache_key, false);
+        recursive_cache.insert(entry.cache_slot, atom_id, false);
         return false;
     }
 
-    let Ok(compiled) = CompiledQuery::new(query.clone()) else {
-        recursive_cache.insert(cache_key, false);
-        return false;
-    };
-    let anchored =
-        query_matches_with_mapping(&compiled, target, recursive_cache, Some(0), Some(atom_id));
-    recursive_cache.insert(cache_key, anchored);
+    let anchored = query_matches_with_mapping(
+        entry.compiled.as_ref(),
+        target,
+        recursive_cache,
+        Some(0),
+        Some(atom_id),
+    );
+    recursive_cache.insert(entry.cache_slot, atom_id, anchored);
     anchored
 }
 
@@ -1981,6 +3282,34 @@ mod tests {
         assert_eq!(
             substructure_matches(&query, "C1CCC=1").unwrap().as_ref(),
             &[alloc::boxed::Box::<[usize]>::from([0, 1, 2, 3])]
+        );
+    }
+
+    #[test]
+    fn three_atom_tree_fast_path_preserves_counting_and_materialization() {
+        let symmetric = CompiledQuery::new(QueryMol::from_str("C(C)C").unwrap()).unwrap();
+        let branched_target = PreparedTarget::new(Smiles::from_str("CC(C)C").unwrap());
+        assert_eq!(match_count_compiled(&symmetric, &branched_target), 3);
+        assert_eq!(
+            super::substructure_matches_compiled(&symmetric, &branched_target).as_ref(),
+            &[
+                alloc::boxed::Box::<[usize]>::from([1, 0, 2]),
+                alloc::boxed::Box::<[usize]>::from([1, 0, 3]),
+                alloc::boxed::Box::<[usize]>::from([1, 2, 3]),
+            ]
+        );
+
+        let asymmetric = CompiledQuery::new(QueryMol::from_str("C(=O)O").unwrap()).unwrap();
+        let anhydride_like = PreparedTarget::new(Smiles::from_str("OC(=O)OC(=O)O").unwrap());
+        assert_eq!(match_count_compiled(&asymmetric, &anhydride_like), 4);
+        assert_eq!(
+            super::substructure_matches_compiled(&asymmetric, &anhydride_like).as_ref(),
+            &[
+                alloc::boxed::Box::<[usize]>::from([1, 2, 0]),
+                alloc::boxed::Box::<[usize]>::from([1, 2, 3]),
+                alloc::boxed::Box::<[usize]>::from([4, 5, 3]),
+                alloc::boxed::Box::<[usize]>::from([4, 5, 6]),
+            ]
         );
     }
 

@@ -6,7 +6,10 @@ use std::{fs, hint::black_box, path::PathBuf, time::Duration};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use serde::Deserialize;
 use smarts_parser::QueryMol;
-use smarts_validator::{matches_compiled, CompiledQuery, PreparedTarget};
+use smarts_validator::{
+    match_count_compiled, matches_compiled, substructure_matches_compiled, CompiledQuery,
+    PreparedTarget,
+};
 use smiles_parser::Smiles;
 
 const TARGET_BATCH_SIZE: usize = 30_000;
@@ -17,6 +20,8 @@ struct BenchmarkCase {
     smarts: String,
     smiles: String,
     expected_match: bool,
+    #[serde(default)]
+    expected_count: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -30,6 +35,7 @@ struct RuntimeCase {
     query: CompiledQuery,
     target: PreparedTarget,
     expected_match: bool,
+    expected_count: Option<usize>,
 }
 
 struct RuntimeDataset {
@@ -76,6 +82,7 @@ fn build_dataset(cases: &[BenchmarkCase]) -> RuntimeDataset {
                     .unwrap_or_else(|_| panic!("benchmark SMILES must parse: {}", case.name)),
             ),
             expected_match: case.expected_match,
+            expected_count: case.expected_count,
         })
         .collect();
     RuntimeDataset {
@@ -86,10 +93,20 @@ fn build_dataset(cases: &[BenchmarkCase]) -> RuntimeDataset {
 
 fn bench_match_corpus(c: &mut Criterion) {
     let workloads = load_workloads();
-    let mut group = c.benchmark_group("validator_workloads");
+    bench_boolean_workloads(c, &workloads);
+    bench_count_workloads(c, &workloads);
+    bench_materialized_workloads(c, &workloads);
+}
+
+fn configure_group(group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>) {
     group.sample_size(10);
     group.warm_up_time(Duration::from_secs(2));
     group.measurement_time(Duration::from_secs(8));
+}
+
+fn bench_boolean_workloads(c: &mut Criterion, workloads: &[Workload]) {
+    let mut group = c.benchmark_group("validator_boolean_workloads");
+    configure_group(&mut group);
 
     for workload in workloads {
         let cases = load_cases(&workload.case_files);
@@ -106,6 +123,86 @@ fn bench_match_corpus(c: &mut Criterion) {
                                 matches_compiled(black_box(&case.query), black_box(&case.target));
                             assert_eq!(matched, case.expected_match, "benchmark fixture drifted");
                             black_box(matched);
+                        }
+                    }
+                });
+            },
+        );
+        group.throughput(Throughput::Elements(0));
+        black_box(&workload.description);
+    }
+
+    group.finish();
+}
+
+fn bench_count_workloads(c: &mut Criterion, workloads: &[Workload]) {
+    let mut group = c.benchmark_group("validator_count_workloads");
+    configure_group(&mut group);
+
+    for workload in workloads {
+        let cases = load_cases(&workload.case_files);
+        let dataset = build_dataset(&cases);
+        let k = (dataset.cases.len() * dataset.repeat_count) as u64;
+        group.throughput(Throughput::Elements(k));
+        group.bench_function(
+            BenchmarkId::new("rust_smarts_validator", &workload.id),
+            |b| {
+                b.iter(|| {
+                    for _ in 0..dataset.repeat_count {
+                        for case in &dataset.cases {
+                            let count = match_count_compiled(
+                                black_box(&case.query),
+                                black_box(&case.target),
+                            );
+                            assert_eq!(count > 0, case.expected_match, "benchmark fixture drifted");
+                            if let Some(expected_count) = case.expected_count {
+                                assert_eq!(count, expected_count, "benchmark fixture drifted");
+                            }
+                            black_box(count);
+                        }
+                    }
+                });
+            },
+        );
+        group.throughput(Throughput::Elements(0));
+        black_box(&workload.description);
+    }
+
+    group.finish();
+}
+
+fn bench_materialized_workloads(c: &mut Criterion, workloads: &[Workload]) {
+    let mut group = c.benchmark_group("validator_materialized_workloads");
+    configure_group(&mut group);
+
+    for workload in workloads {
+        let cases = load_cases(&workload.case_files);
+        let dataset = build_dataset(&cases);
+        let k = (dataset.cases.len() * dataset.repeat_count) as u64;
+        group.throughput(Throughput::Elements(k));
+        group.bench_function(
+            BenchmarkId::new("rust_smarts_validator", &workload.id),
+            |b| {
+                b.iter(|| {
+                    for _ in 0..dataset.repeat_count {
+                        for case in &dataset.cases {
+                            let matches = substructure_matches_compiled(
+                                black_box(&case.query),
+                                black_box(&case.target),
+                            );
+                            assert_eq!(
+                                !matches.is_empty(),
+                                case.expected_match,
+                                "benchmark fixture drifted"
+                            );
+                            if let Some(expected_count) = case.expected_count {
+                                assert_eq!(
+                                    matches.len(),
+                                    expected_count,
+                                    "benchmark fixture drifted"
+                                );
+                            }
+                            black_box(matches);
                         }
                     }
                 });

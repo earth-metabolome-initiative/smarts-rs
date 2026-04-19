@@ -1,0 +1,72 @@
+[
+  {
+    "name": "z2_aza_phenol_positive",
+    "smarts": "[z2]",
+    "smiles": "O=C(O)c1nc(O)ccn1",
+    "expected_match": true,
+    "expected_count": 3
+  },
+  {
+    "name": "z2_sulfate_negative",
+    "smarts": "[z2]",
+    "smiles": "O=S(=O)(O)O",
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "z_upper_two_sulfone_positive",
+    "smarts": "[Z2]",
+    "smiles": "CS(=O)(=O)C",
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "z_upper_one_nitrobenzene_positive",
+    "smarts": "[Z1]",
+    "smiles": "c1cc([N+](=O)[O-])ccc1",
+    "expected_match": true,
+    "expected_count": 3
+  },
+  {
+    "name": "hybridization_sp_nitrile_positive",
+    "smarts": "[^1]",
+    "smiles": "CC#N",
+    "expected_match": true,
+    "expected_count": 2
+  },
+  {
+    "name": "hybridization_sp_cumulene_positive",
+    "smarts": "[^1]",
+    "smiles": "C=C=C",
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "hybridization_sp2_alkene_positive",
+    "smarts": "[^2]",
+    "smiles": "CC=CF",
+    "expected_match": true,
+    "expected_count": 2
+  },
+  {
+    "name": "hybridization_sp2_aromatic_positive",
+    "smarts": "[^2]",
+    "smiles": "c1ccccc1",
+    "expected_match": true,
+    "expected_count": 6
+  },
+  {
+    "name": "hybridization_sp3_alkane_positive",
+    "smarts": "[^3]",
+    "smiles": "CC",
+    "expected_match": true,
+    "expected_count": 2
+  },
+  {
+    "name": "hybridization_sp3_aromatic_negative",
+    "smarts": "[^3]",
+    "smiles": "c1ccccc1",
+    "expected_match": false,
+    "expected_count": 0
+  }
+]
