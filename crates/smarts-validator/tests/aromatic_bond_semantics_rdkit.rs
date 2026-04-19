@@ -102,6 +102,31 @@ const CASES: &[AromaticCase] = &[
             &[8, 9],
         ],
     },
+    AromaticCase {
+        name: "exocyclic_carbonyl_fused_system_has_no_a_dash_a_bonds",
+        smarts: "a-a",
+        smiles: "O=C1C=CC(=O)C2=C1OC=CO2",
+        expected_count: 0,
+        expected_matches: &[],
+    },
+    AromaticCase {
+        name: "exocyclic_carbonyl_fused_system_keeps_only_true_aromatic_bonds",
+        smarts: "a:a",
+        smiles: "O=C1C=CC(=O)C2=C1OC=CO2",
+        expected_count: 10,
+        expected_matches: &[
+            &[1, 2],
+            &[1, 7],
+            &[2, 3],
+            &[3, 4],
+            &[4, 6],
+            &[6, 11],
+            &[7, 8],
+            &[8, 9],
+            &[9, 10],
+            &[10, 11],
+        ],
+    },
 ];
 
 #[test]
