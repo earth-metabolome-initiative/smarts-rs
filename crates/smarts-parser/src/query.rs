@@ -506,20 +506,7 @@ struct QueryMolWriter<'a> {
 
 impl<'a> QueryMolWriter<'a> {
     fn new(mol: &'a QueryMol) -> Self {
-        let mut parent_bond_by_atom = vec![None; mol.atom_count()];
-        for bond in &mol.bonds {
-            if bond.dst < parent_bond_by_atom.len() && parent_bond_by_atom[bond.dst].is_none() {
-                parent_bond_by_atom[bond.dst] = Some(bond.id);
-            }
-        }
-
-        let mut component_roots = vec![None; mol.component_count()];
-        for atom in &mol.atoms {
-            if parent_bond_by_atom[atom.id].is_none() && component_roots[atom.component].is_none() {
-                component_roots[atom.component] = Some(atom.id);
-            }
-        }
-
+        let (parent_bond_by_atom, component_roots) = build_spanning_forest(mol);
         let component_roots = component_roots
             .into_iter()
             .map(|root| root.expect("each component must have a root atom"))
@@ -529,7 +516,12 @@ impl<'a> QueryMolWriter<'a> {
         for (atom_id, parent_bond) in parent_bond_by_atom.iter().copied().enumerate() {
             if let Some(parent_bond) = parent_bond {
                 let bond = &mol.bonds[parent_bond];
-                children_by_atom[bond.src].push(atom_id);
+                let parent_atom = if bond.src == atom_id {
+                    bond.dst
+                } else {
+                    bond.src
+                };
+                children_by_atom[parent_atom].push(atom_id);
             }
         }
         for children in &mut children_by_atom {
@@ -541,62 +533,8 @@ impl<'a> QueryMolWriter<'a> {
             is_parent_bond[parent_bond] = true;
         }
 
-        let mut ring_tokens_by_atom = vec![Vec::new(); mol.atom_count()];
-        let mut ring_bond_ids = mol
-            .bonds
-            .iter()
-            .filter(|bond| !is_parent_bond[bond.id])
-            .map(|bond| bond.id)
-            .collect::<Vec<_>>();
-        ring_bond_ids.sort_by_key(|&bond_id| {
-            let bond = &mol.bonds[bond_id];
-            (
-                bond.src.min(bond.dst),
-                bond.src.max(bond.dst),
-                bond_expr_rank(&bond.expr),
-                bond.id,
-            )
-        });
-
-        for (ring_label, bond_id) in (1_u32..).zip(ring_bond_ids) {
-            let bond = &mol.bonds[bond_id];
-            let first = bond.src.min(bond.dst);
-            let second = bond.src.max(bond.dst);
-            let token = RingToken {
-                label: ring_label,
-                expr: bond.expr.clone(),
-            };
-            ring_tokens_by_atom[first].push(token.clone());
-            ring_tokens_by_atom[second].push(token);
-        }
-        for tokens in &mut ring_tokens_by_atom {
-            tokens.sort_by_key(|token| token.label);
-        }
-
-        let mut top_level_entries = Vec::new();
-        let mut component_id = 0usize;
-        while component_id < component_roots.len() {
-            if let Some(group_id) = mol.component_group(component_id) {
-                let mut components = vec![component_roots[component_id]];
-                component_id += 1;
-                while component_id < component_roots.len()
-                    && mol.component_group(component_id) == Some(group_id)
-                {
-                    components.push(component_roots[component_id]);
-                    component_id += 1;
-                }
-                top_level_entries.push(TopLevelEntry {
-                    components,
-                    grouped: true,
-                });
-            } else {
-                top_level_entries.push(TopLevelEntry {
-                    components: vec![component_roots[component_id]],
-                    grouped: false,
-                });
-                component_id += 1;
-            }
-        }
+        let ring_tokens_by_atom = build_ring_tokens_by_atom(mol, &is_parent_bond);
+        let top_level_entries = build_top_level_entries(mol, &component_roots);
 
         Self {
             mol,
@@ -645,6 +583,14 @@ impl<'a> QueryMolWriter<'a> {
         }
 
         let main_child = *children.last().expect("children non-empty");
+        if self.requires_parenthesized_main_child(atom_id, main_child) {
+            f.write_str("(")?;
+            self.write_bond_to_child(main_child, f)?;
+            self.write_atom_with_subtree(main_child, f)?;
+            f.write_str(")")?;
+            return Ok(());
+        }
+
         self.write_bond_to_child(main_child, f)?;
         self.write_atom_with_subtree(main_child, f)
     }
@@ -655,6 +601,21 @@ impl<'a> QueryMolWriter<'a> {
         write!(f, "{}", bond.expr)
     }
 
+    fn requires_parenthesized_main_child(&self, atom_id: AtomId, child_id: AtomId) -> bool {
+        let bond_id = self.parent_bond_by_atom[child_id].expect("child must have a parent bond");
+        let bond = &self.mol.bonds[bond_id];
+        if !matches!(bond.expr, BondExpr::Elided) {
+            return false;
+        }
+
+        let parent_text = self.mol.atoms[atom_id].expr.to_string();
+        let child_text = self.mol.atoms[child_id].expr.to_string();
+        let parent_width = parent_text.len();
+        let combined = parent_text + &child_text;
+
+        parse_supported_bare_element(&combined).is_some_and(|(_, _, width)| width > parent_width)
+    }
+
     fn write_ring_tokens(&self, atom_id: AtomId, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for token in &self.ring_tokens_by_atom[atom_id] {
             write!(f, "{}", token.expr)?;
@@ -662,6 +623,132 @@ impl<'a> QueryMolWriter<'a> {
         }
         Ok(())
     }
+}
+
+fn build_spanning_forest(mol: &QueryMol) -> (Vec<Option<BondId>>, Vec<Option<AtomId>>) {
+    let mut component_roots = vec![None; mol.component_count()];
+    let mut parent_bond_by_atom = vec![None; mol.atom_count()];
+    let mut bond_ids_by_atom = vec![Vec::new(); mol.atom_count()];
+    for bond in &mol.bonds {
+        if bond.src < bond_ids_by_atom.len() {
+            bond_ids_by_atom[bond.src].push(bond.id);
+        }
+        if bond.dst < bond_ids_by_atom.len() && bond.dst != bond.src {
+            bond_ids_by_atom[bond.dst].push(bond.id);
+        }
+    }
+    for (atom_id, bond_ids) in bond_ids_by_atom.iter_mut().enumerate() {
+        bond_ids.sort_by_key(|&bond_id| {
+            let bond = &mol.bonds[bond_id];
+            (
+                if bond.src == atom_id {
+                    bond.dst
+                } else {
+                    bond.src
+                },
+                bond_expr_rank(&bond.expr),
+                bond.id,
+            )
+        });
+    }
+
+    let mut visited = vec![false; mol.atom_count()];
+    for atom in &mol.atoms {
+        if visited[atom.id] {
+            continue;
+        }
+
+        if component_roots[atom.component].is_none() {
+            component_roots[atom.component] = Some(atom.id);
+        }
+
+        visited[atom.id] = true;
+        let mut stack = vec![atom.id];
+        while let Some(current_atom) = stack.pop() {
+            for &bond_id in bond_ids_by_atom[current_atom].iter().rev() {
+                let bond = &mol.bonds[bond_id];
+                let next_atom = if bond.src == current_atom {
+                    bond.dst
+                } else {
+                    bond.src
+                };
+
+                if next_atom >= visited.len() || visited[next_atom] {
+                    continue;
+                }
+
+                visited[next_atom] = true;
+                parent_bond_by_atom[next_atom] = Some(bond_id);
+                stack.push(next_atom);
+            }
+        }
+    }
+
+    (parent_bond_by_atom, component_roots)
+}
+
+fn build_ring_tokens_by_atom(mol: &QueryMol, is_parent_bond: &[bool]) -> Vec<Vec<RingToken>> {
+    let mut ring_tokens_by_atom = vec![Vec::new(); mol.atom_count()];
+    let mut ring_bond_ids = mol
+        .bonds
+        .iter()
+        .filter(|bond| !is_parent_bond[bond.id])
+        .map(|bond| bond.id)
+        .collect::<Vec<_>>();
+    ring_bond_ids.sort_by_key(|&bond_id| {
+        let bond = &mol.bonds[bond_id];
+        (
+            bond.src.min(bond.dst),
+            bond.src.max(bond.dst),
+            bond_expr_rank(&bond.expr),
+            bond.id,
+        )
+    });
+
+    for (ring_label, bond_id) in (1_u32..).zip(ring_bond_ids) {
+        let bond = &mol.bonds[bond_id];
+        let first = bond.src.min(bond.dst);
+        let second = bond.src.max(bond.dst);
+        let token = RingToken {
+            label: ring_label,
+            expr: bond.expr.clone(),
+        };
+        ring_tokens_by_atom[first].push(token.clone());
+        ring_tokens_by_atom[second].push(token);
+    }
+    for tokens in &mut ring_tokens_by_atom {
+        tokens.sort_by_key(|token| token.label);
+    }
+
+    ring_tokens_by_atom
+}
+
+fn build_top_level_entries(mol: &QueryMol, component_roots: &[AtomId]) -> Vec<TopLevelEntry> {
+    let mut top_level_entries = Vec::new();
+    let mut component_id = 0usize;
+    while component_id < component_roots.len() {
+        if let Some(group_id) = mol.component_group(component_id) {
+            let mut components = vec![component_roots[component_id]];
+            component_id += 1;
+            while component_id < component_roots.len()
+                && mol.component_group(component_id) == Some(group_id)
+            {
+                components.push(component_roots[component_id]);
+                component_id += 1;
+            }
+            top_level_entries.push(TopLevelEntry {
+                components,
+                grouped: true,
+            });
+        } else {
+            top_level_entries.push(TopLevelEntry {
+                components: vec![component_roots[component_id]],
+                grouped: false,
+            });
+            component_id += 1;
+        }
+    }
+    top_level_entries
 }
 
 fn write_ring_label(f: &mut fmt::Formatter<'_>, label: u32) -> fmt::Result {
@@ -1175,7 +1262,7 @@ mod tests {
         let query = QueryMol::from_parts(atoms, bonds, 3, vec![Some(0), Some(0), None]);
         assert_eq!(query.component_group(0), Some(0));
         assert_eq!(query.component_group(2), None);
-        assert_eq!(query.to_string(), "(C@1=CC@1.C).C");
+        assert_eq!(query.to_string(), "(C(C=1)@C=1.C).C");
     }
 
     #[test]
@@ -1322,6 +1409,6 @@ mod tests {
             ),
         ];
         let query = QueryMol::from_parts(atoms, bonds, 1, vec![None]);
-        assert_eq!(query.to_string(), "C-1C=2C-1C=2");
+        assert_eq!(query.to_string(), "C(C1=C2)-C12");
     }
 }

@@ -65,7 +65,7 @@ impl<'de> serde::Deserialize<'de> for QueryMol {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::{boxed::Box, collections::BTreeMap, string::ToString, vec, vec::Vec};
+    use alloc::{boxed::Box, collections::BTreeMap, format, string::ToString, vec, vec::Vec};
     use elements_rs::{Element, Isotope};
     use smiles_parser::bond::Bond;
 
@@ -374,6 +374,52 @@ mod tests {
         assert_eq!(query.atom_count(), 3);
         assert_eq!(query.bond_count(), 3);
         assert_eq!(query.component_count(), 1);
+    }
+
+    #[test]
+    fn rejects_self_loop_ring_closures() {
+        for input in ["C00", "C11"] {
+            let err = parse_smarts(input).unwrap_err();
+            assert_eq!(err.kind(), SmartsParseErrorKind::SelfLoopRingClosure);
+        }
+    }
+
+    #[test]
+    fn rejects_ring_closures_across_disconnected_components() {
+        for input in ["C9C98.C8", "[$(C9C98.C8)]"] {
+            let err = parse_smarts(input).unwrap_err();
+            assert_eq!(err.kind(), SmartsParseErrorKind::CrossComponentRingClosure);
+            assert_eq!(err.code(), "cross_component_ring_closure");
+        }
+    }
+
+    #[test]
+    fn roundtrips_parse_display_through_ambiguous_bare_element_boundary() {
+        let query = parse_smarts("C(ss\nCCNNCC)").unwrap();
+        let rendered = query.to_string();
+        let reparsed = parse_smarts(&rendered).unwrap();
+        assert_eq!(rendered, reparsed.to_string());
+        assert_same_query_structure(&query, &reparsed);
+    }
+
+    #[test]
+    fn roundtrips_recursive_queries_through_ambiguous_bare_element_boundary() {
+        let query = parse_smarts("C(oOO)").unwrap();
+        let rendered = query.to_string();
+        let reparsed = parse_smarts(&rendered).unwrap();
+        assert_eq!(rendered, reparsed.to_string());
+        assert_same_query_structure(&query, &reparsed);
+    }
+
+    #[test]
+    fn roundtrips_wrapped_bracket_text_with_multiring_recursive_payload() {
+        let expr = fuzz_parse_bracket_text("r$(C7(C7%(88))%(88))S").unwrap();
+        let rendered_expr = expr.to_string();
+        let query = parse_smarts(&format!("[{rendered_expr}]")).unwrap();
+        let rendered_query = query.to_string();
+        let reparsed = parse_smarts(&rendered_query).unwrap();
+        assert_eq!(rendered_query, reparsed.to_string());
+        assert_same_query_structure(&query, &reparsed);
     }
 
     #[test]

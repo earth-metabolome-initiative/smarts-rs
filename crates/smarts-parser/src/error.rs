@@ -18,6 +18,12 @@ pub enum SmartsParseErrorKind {
     /// A ring closure label was opened but never closed.
     #[error("ring closure was opened but not closed")]
     UnclosedRingClosure,
+    /// A ring closure attempted to bond one atom to itself.
+    #[error("ring closure bonds atom to itself")]
+    SelfLoopRingClosure,
+    /// A ring closure attempted to connect atoms from different disconnected components.
+    #[error("ring closure crosses disconnected components")]
+    CrossComponentRingClosure,
     /// A bracket atom started with `[` but was not terminated by `]`.
     #[error("unterminated bracket atom")]
     UnterminatedBracketAtom,
@@ -97,6 +103,8 @@ impl SmartsParseError {
             SmartsParseErrorKind::UnexpectedCharacter(_) => "unexpected_character",
             SmartsParseErrorKind::ConflictingRingClosureBond => "conflicting_ring_closure_bond",
             SmartsParseErrorKind::UnclosedRingClosure => "unclosed_ring_closure",
+            SmartsParseErrorKind::SelfLoopRingClosure => "self_loop_ring_closure",
+            SmartsParseErrorKind::CrossComponentRingClosure => "cross_component_ring_closure",
             SmartsParseErrorKind::UnterminatedBracketAtom => "unterminated_bracket_atom",
             SmartsParseErrorKind::UnsupportedFeature(feature) => feature.code(),
         }
@@ -135,6 +143,16 @@ mod tests {
                 SmartsParseErrorKind::UnclosedRingClosure,
                 "ring closure was opened but not closed",
                 "unclosed_ring_closure",
+            ),
+            (
+                SmartsParseErrorKind::SelfLoopRingClosure,
+                "ring closure bonds atom to itself",
+                "self_loop_ring_closure",
+            ),
+            (
+                SmartsParseErrorKind::CrossComponentRingClosure,
+                "ring closure crosses disconnected components",
+                "cross_component_ring_closure",
             ),
             (
                 SmartsParseErrorKind::UnterminatedBracketAtom,

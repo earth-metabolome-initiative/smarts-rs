@@ -38,6 +38,7 @@ struct Parser<'a> {
 #[derive(Debug, Clone)]
 struct PendingRingClosure {
     atom_id: usize,
+    component_id: usize,
     explicit_bond: Option<BondExpr>,
 }
 
@@ -340,6 +341,13 @@ impl<'a> Parser<'a> {
         let explicit_bond_expr = explicit_bond;
 
         if let Some(open) = self.open_ring_closures.remove(&label) {
+            if open.atom_id == current_atom {
+                return Err(self.error(SmartsParseErrorKind::SelfLoopRingClosure));
+            }
+            if open.component_id != self.current_component {
+                return Err(self.error(SmartsParseErrorKind::CrossComponentRingClosure));
+            }
+
             let bond_expr = resolve_ring_bond(open.explicit_bond, explicit_bond_expr)
                 .ok_or_else(|| self.error(SmartsParseErrorKind::ConflictingRingClosureBond))?;
 
@@ -354,6 +362,7 @@ impl<'a> Parser<'a> {
                 label,
                 PendingRingClosure {
                     atom_id: current_atom,
+                    component_id: self.current_component,
                     explicit_bond: explicit_bond_expr,
                 },
             );
@@ -853,7 +862,7 @@ mod tests {
         assert_eq!(nested_branch.bond_count(), 2);
 
         let explicit_ring = parse_smarts("C-1CC1").unwrap();
-        assert_eq!(explicit_ring.to_string(), "C-1CC-1");
+        assert_eq!(explicit_ring.to_string(), "C(C1)-C1");
 
         let bonded_low_and = parse_smarts("C-;:N").unwrap();
         assert_eq!(bonded_low_and.to_string(), "C-;:N");
