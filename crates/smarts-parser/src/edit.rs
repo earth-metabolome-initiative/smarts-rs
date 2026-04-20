@@ -91,6 +91,7 @@ pub struct EditableQueryMol {
 
 impl QueryMol {
     /// Starts an editable session for the current query graph.
+    #[inline]
     #[must_use]
     pub fn edit(&self) -> EditableQueryMol {
         EditableQueryMol { mol: self.clone() }
@@ -238,6 +239,7 @@ impl BracketExpr {
     ///
     /// Returns [`EditError::EmptyExpressionTree`] if normalization would leave
     /// an empty boolean operator.
+    #[inline]
     pub fn normalize(&mut self) -> Result<(), EditError> {
         normalize_bracket_tree(&mut self.tree)
     }
@@ -248,6 +250,7 @@ impl BracketExpr {
     ///
     /// Returns [`EditError::EmptyExpressionTree`] if normalization would leave
     /// an empty boolean operator.
+    #[inline]
     pub fn normalized(mut self) -> Result<Self, EditError> {
         self.normalize()?;
         Ok(self)
@@ -473,18 +476,21 @@ pub fn replace_bond_primitive(
 
 impl EditableQueryMol {
     /// Returns the current read-only query view.
+    #[inline]
     #[must_use]
     pub const fn as_query_mol(&self) -> &QueryMol {
         &self.mol
     }
 
     /// Returns one atom by dense identifier.
+    #[inline]
     #[must_use]
     pub fn atom(&self, atom_id: AtomId) -> Option<&QueryAtom> {
         self.mol.atom(atom_id)
     }
 
     /// Returns one bond by dense identifier.
+    #[inline]
     #[must_use]
     pub fn bond(&self, bond_id: BondId) -> Option<&QueryBond> {
         self.mol.bond(bond_id)

@@ -132,6 +132,7 @@ pub enum AtomPrimitive {
 
 impl AtomPrimitive {
     /// Returns the nested recursive SMARTS query, if this primitive stores one.
+    #[inline]
     #[must_use]
     pub fn recursive_query(&self) -> Option<&QueryMol> {
         match self {
@@ -141,6 +142,7 @@ impl AtomPrimitive {
     }
 
     /// Returns the nested recursive SMARTS query mutably, if this primitive stores one.
+    #[inline]
     #[must_use]
     pub fn recursive_query_mut(&mut self) -> Option<&mut QueryMol> {
         match self {
@@ -150,6 +152,7 @@ impl AtomPrimitive {
     }
 
     /// Replaces this primitive with one recursive SMARTS query.
+    #[inline]
     pub fn set_recursive_query(&mut self, query: QueryMol) {
         *self = Self::RecursiveQuery(Box::new(query));
     }
