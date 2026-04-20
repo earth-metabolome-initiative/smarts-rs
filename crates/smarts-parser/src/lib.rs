@@ -15,13 +15,20 @@ use alloc::string::ToString;
 use core::str::FromStr;
 
 mod bracket;
+mod edit;
 mod error;
 mod parse;
 pub(crate) mod query;
+mod validate;
 
 pub use bracket::{
     parse_bracket_text as fuzz_parse_bracket_text, BracketParseError as FuzzBracketParseError,
     BracketParseErrorKind as FuzzBracketParseErrorKind,
+};
+pub use edit::{
+    add_atom_primitive, add_bond_primitive, normalize_bond_tree, normalize_bracket_tree,
+    remove_atom_primitive, remove_bond_primitive, replace_atom_primitive, replace_bond_primitive,
+    EditError, EditableQueryMol, ExprPath, ExprPathSegment,
 };
 pub use error::{SmartsParseError, SmartsParseErrorKind, UnsupportedFeature};
 pub use parse::parse_smarts;
@@ -31,6 +38,7 @@ pub use query::{
     QueryAtom, QueryBond, QueryMol,
 };
 pub use smiles_parser::atom::bracketed::chirality::Chirality;
+pub use validate::{recursive_depth, validate_recursive_depth, QueryValidationError};
 
 impl FromStr for QueryMol {
     type Err = SmartsParseError;

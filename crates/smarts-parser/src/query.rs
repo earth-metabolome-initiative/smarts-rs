@@ -130,6 +130,31 @@ pub enum AtomPrimitive {
     Charge(i8),
 }
 
+impl AtomPrimitive {
+    /// Returns the nested recursive SMARTS query, if this primitive stores one.
+    #[must_use]
+    pub fn recursive_query(&self) -> Option<&QueryMol> {
+        match self {
+            Self::RecursiveQuery(query) => Some(query),
+            _ => None,
+        }
+    }
+
+    /// Returns the nested recursive SMARTS query mutably, if this primitive stores one.
+    #[must_use]
+    pub fn recursive_query_mut(&mut self) -> Option<&mut QueryMol> {
+        match self {
+            Self::RecursiveQuery(query) => Some(query),
+            _ => None,
+        }
+    }
+
+    /// Replaces this primitive with one recursive SMARTS query.
+    pub fn set_recursive_query(&mut self, query: QueryMol) {
+        *self = Self::RecursiveQuery(Box::new(query));
+    }
+}
+
 /// Kind of hydrogen-count predicate used in SMARTS.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HydrogenKind {
@@ -219,23 +244,40 @@ pub struct QueryMol {
     bonds: Vec<QueryBond>,
     component_count: usize,
     component_groups: Vec<Option<ComponentGroupId>>,
+    neighbors_by_atom: Vec<Vec<AtomId>>,
+    incident_bonds_by_atom: Vec<Vec<BondId>>,
+    atoms_by_component: Vec<Vec<AtomId>>,
+    bonds_by_component: Vec<Vec<BondId>>,
 }
+
+type TopologyIndexes = (
+    Vec<Vec<AtomId>>,
+    Vec<Vec<BondId>>,
+    Vec<Vec<AtomId>>,
+    Vec<Vec<BondId>>,
+);
 
 impl QueryMol {
     /// Builds a parsed SMARTS query from already-lowered graph parts.
     #[inline]
     #[must_use]
-    pub const fn from_parts(
+    pub fn from_parts(
         atoms: Vec<QueryAtom>,
         bonds: Vec<QueryBond>,
         component_count: usize,
         component_groups: Vec<Option<ComponentGroupId>>,
     ) -> Self {
+        let (neighbors_by_atom, incident_bonds_by_atom, atoms_by_component, bonds_by_component) =
+            build_topology_indexes(&atoms, &bonds, component_count);
         Self {
             atoms,
             bonds,
             component_count,
             component_groups,
+            neighbors_by_atom,
+            incident_bonds_by_atom,
+            atoms_by_component,
+            bonds_by_component,
         }
     }
 
@@ -251,6 +293,20 @@ impl QueryMol {
     #[must_use]
     pub fn bonds(&self) -> &[QueryBond] {
         &self.bonds
+    }
+
+    /// Returns one atom by dense identifier.
+    #[inline]
+    #[must_use]
+    pub fn atom(&self, atom_id: AtomId) -> Option<&QueryAtom> {
+        self.atoms.get(atom_id)
+    }
+
+    /// Returns one bond by dense identifier.
+    #[inline]
+    #[must_use]
+    pub fn bond(&self, bond_id: BondId) -> Option<&QueryBond> {
+        self.bonds.get(bond_id)
     }
 
     /// Returns the number of atoms in the query graph.
@@ -295,6 +351,77 @@ impl QueryMol {
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.atoms.is_empty()
+    }
+
+    /// Returns the neighboring atom ids for one atom.
+    #[inline]
+    #[must_use]
+    pub fn neighbors(&self, atom_id: AtomId) -> &[AtomId] {
+        self.neighbors_by_atom
+            .get(atom_id)
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// Returns the incident bond ids for one atom.
+    #[inline]
+    #[must_use]
+    pub fn incident_bonds(&self, atom_id: AtomId) -> &[BondId] {
+        self.incident_bonds_by_atom
+            .get(atom_id)
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// Returns the graph degree for one atom.
+    #[inline]
+    #[must_use]
+    pub fn degree(&self, atom_id: AtomId) -> usize {
+        self.neighbors(atom_id).len()
+    }
+
+    /// Returns the dense bond id between two atoms, if present.
+    #[must_use]
+    pub fn bond_between(&self, a: AtomId, b: AtomId) -> Option<BondId> {
+        self.incident_bonds(a).iter().copied().find(|&bond_id| {
+            let Some(bond) = self.bonds.get(bond_id) else {
+                return false;
+            };
+            (bond.src == a && bond.dst == b) || (bond.src == b && bond.dst == a)
+        })
+    }
+
+    /// Returns the atom ids for one connected component.
+    #[inline]
+    #[must_use]
+    pub fn component_atoms(&self, component_id: ComponentId) -> &[AtomId] {
+        self.atoms_by_component
+            .get(component_id)
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// Returns the bond ids for one connected component.
+    #[inline]
+    #[must_use]
+    pub fn component_bonds(&self, component_id: ComponentId) -> &[BondId] {
+        self.bonds_by_component
+            .get(component_id)
+            .map_or(&[], Vec::as_slice)
+    }
+
+    #[must_use]
+    pub(crate) fn cloned_parts(
+        &self,
+    ) -> (
+        Vec<QueryAtom>,
+        Vec<QueryBond>,
+        usize,
+        Vec<Option<ComponentGroupId>>,
+    ) {
+        (
+            self.atoms.clone(),
+            self.bonds.clone(),
+            self.component_count,
+            self.component_groups.clone(),
+        )
     }
 }
 
@@ -503,6 +630,74 @@ const fn bond_primitive_order_key(primitive: BondPrimitive) -> u8 {
         BondPrimitive::Any => 7,
         BondPrimitive::Ring => 8,
     }
+}
+
+fn build_topology_indexes(
+    atoms: &[QueryAtom],
+    bonds: &[QueryBond],
+    component_count: usize,
+) -> TopologyIndexes {
+    let mut neighbors_by_atom = vec![Vec::new(); atoms.len()];
+    let mut incident_bonds_by_atom = vec![Vec::new(); atoms.len()];
+    let mut atoms_by_component = vec![Vec::new(); component_count];
+    let mut bonds_by_component = vec![Vec::new(); component_count];
+
+    for atom in atoms {
+        if atom.component < atoms_by_component.len() {
+            atoms_by_component[atom.component].push(atom.id);
+        }
+    }
+
+    for bond in bonds {
+        if let Some(incident) = incident_bonds_by_atom.get_mut(bond.src) {
+            incident.push(bond.id);
+        }
+        if bond.dst != bond.src {
+            if let Some(incident) = incident_bonds_by_atom.get_mut(bond.dst) {
+                incident.push(bond.id);
+            }
+        }
+
+        if let Some(neighbors) = neighbors_by_atom.get_mut(bond.src) {
+            neighbors.push(bond.dst);
+        }
+        if bond.dst != bond.src {
+            if let Some(neighbors) = neighbors_by_atom.get_mut(bond.dst) {
+                neighbors.push(bond.src);
+            }
+        }
+
+        let Some(src_atom) = atoms.get(bond.src) else {
+            continue;
+        };
+        let Some(dst_atom) = atoms.get(bond.dst) else {
+            continue;
+        };
+        if src_atom.component == dst_atom.component && src_atom.component < bonds_by_component.len()
+        {
+            bonds_by_component[src_atom.component].push(bond.id);
+        }
+    }
+
+    for neighbors in &mut neighbors_by_atom {
+        neighbors.sort_unstable();
+    }
+    for incident in &mut incident_bonds_by_atom {
+        incident.sort_unstable();
+    }
+    for atom_ids in &mut atoms_by_component {
+        atom_ids.sort_unstable();
+    }
+    for bond_ids in &mut bonds_by_component {
+        bond_ids.sort_unstable();
+    }
+
+    (
+        neighbors_by_atom,
+        incident_bonds_by_atom,
+        atoms_by_component,
+        bonds_by_component,
+    )
 }
 
 #[derive(Debug, Clone)]
