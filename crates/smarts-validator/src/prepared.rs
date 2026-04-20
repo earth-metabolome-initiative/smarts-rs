@@ -1,6 +1,10 @@
 //! Prepared molecule sidecars and prepared target caches.
 
-use alloc::{collections::BTreeMap, vec, vec::Vec};
+use alloc::{
+    collections::{BTreeMap, BTreeSet},
+    vec,
+    vec::Vec,
+};
 use elements_rs::Element;
 use smiles_parser::{
     atom::{bracketed::chirality::Chirality, Atom},
@@ -9,6 +13,14 @@ use smiles_parser::{
 };
 
 use crate::target::{AtomId, BondLabel, MoleculeTarget};
+
+type RingCaches = (
+    RingMembership,
+    BTreeSet<(AtomId, AtomId)>,
+    NodeProps<u8>,
+    NodeProps<u8>,
+    NodeProps<u8>,
+);
 
 /// Dense per-atom prepared properties.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -140,6 +152,7 @@ pub struct PreparedTarget {
     aromatic_atoms: NodeProps<bool>,
     effective_formal_charges: NodeProps<i8>,
     ring_membership: RingMembership,
+    ring_bonds: BTreeSet<(AtomId, AtomId)>,
     tetrahedral_chiralities: NodeProps<Option<Chirality>>,
     double_bond_stereo: BTreeMap<(AtomId, AtomId), DoubleBondStereoConfig>,
     connected_components: NodeProps<usize>,
@@ -161,6 +174,13 @@ impl PreparedTarget {
     #[must_use]
     pub fn new(target: Smiles) -> Self {
         let aromaticity = target.aromaticity_assignment_for(AromaticityPolicy::RdkitDefault);
+        let (
+            ring_membership,
+            ring_bonds,
+            ring_bond_counts,
+            ring_membership_counts,
+            smallest_ring_sizes,
+        ) = ring_caches(&target);
         let aromatic_atoms = NodeProps::new(
             target
                 .nodes()
@@ -171,11 +191,9 @@ impl PreparedTarget {
         );
         let effective_formal_charges = NodeProps::new(
             (0..target.nodes().len())
-                .map(|atom_id| effective_formal_charge(&target, atom_id))
+                .map(|atom_id| effective_formal_charge(&target, &aromaticity, atom_id))
                 .collect(),
         );
-        let ring_membership = target.ring_membership();
-        let symm_sssr = target.symm_sssr_result();
         let tetrahedral_chiralities = NodeProps::new(
             (0..target.nodes().len())
                 .map(|atom_id| target.smarts_tetrahedral_chirality(atom_id))
@@ -232,19 +250,13 @@ impl PreparedTarget {
                 .map(|atom_id| aliphatic_hetero_neighbor_count(&target, &aromaticity, atom_id))
                 .collect(),
         );
-        let ring_bond_counts = NodeProps::new(
-            (0..target.nodes().len())
-                .map(|atom_id| ring_bond_count(&ring_membership, atom_id))
-                .collect(),
-        );
-        let (ring_membership_counts, smallest_ring_sizes) =
-            ring_cycle_properties(target.nodes().len(), symm_sssr.cycles());
         Self {
             target,
             aromaticity,
             aromatic_atoms,
             effective_formal_charges,
             ring_membership,
+            ring_bonds,
             tetrahedral_chiralities,
             double_bond_stereo,
             connected_components,
@@ -311,6 +323,17 @@ impl PreparedTarget {
         })
     }
 
+    /// Returns whether the provided bond is aromatic under the prepared view.
+    #[inline]
+    #[must_use]
+    pub fn is_aromatic_bond(&self, left_atom: AtomId, right_atom: AtomId) -> bool {
+        self.aromaticity.contains_edge(left_atom, right_atom)
+            || self
+                .target
+                .edge_for_node_pair((left_atom, right_atom))
+                .is_some_and(|edge| edge.2 == Bond::Aromatic)
+    }
+
     /// Returns whether the provided atom is aromatic under the RDKit-default
     /// aromaticity assignment.
     #[inline]
@@ -337,7 +360,7 @@ impl PreparedTarget {
     #[inline]
     #[must_use]
     pub fn is_ring_bond(&self, left_atom: AtomId, right_atom: AtomId) -> bool {
-        self.ring_membership.contains_edge(left_atom, right_atom)
+        self.ring_bonds.contains(&edge_key(left_atom, right_atom))
     }
 
     /// Returns the semantic SMARTS-facing tetrahedral chirality of the atom.
@@ -551,6 +574,10 @@ fn effective_bond_label(
     if rdkit_like_oxyhalogen_terminal_oxo_bond(target, left_atom, right_atom, raw_bond) {
         return BondLabel::Single;
     }
+    if rdkit_like_phosphorus_terminal_oxo_bond(target, aromaticity, left_atom, right_atom, raw_bond)
+    {
+        return BondLabel::Single;
+    }
     if aromaticity.contains_edge(left_atom, right_atom)
         && matches!(
             normalized_bond(raw_bond),
@@ -579,18 +606,31 @@ fn rdkit_like_oxyhalogen_terminal_oxo_bond(
         return false;
     };
 
-    target
-        .edges_for_node(halogen_atom)
-        .filter_map(|edge| bond_edge_other(edge, halogen_atom))
-        .filter(|&neighbor_atom| neighbor_atom != oxygen_atom)
-        .filter(|&neighbor_atom| {
-            target
-                .node_by_id(neighbor_atom)
-                .and_then(Atom::element)
-                .is_some_and(|element| element == Element::O)
-        })
-        .count()
-        >= 1
+    let mut saw_other_oxygen = false;
+    let mut saw_non_oxygen_heavy_neighbor = false;
+
+    for edge in target.edges_for_node(halogen_atom) {
+        let Some(neighbor_atom) = bond_edge_other(edge, halogen_atom) else {
+            continue;
+        };
+        if neighbor_atom == oxygen_atom {
+            continue;
+        }
+        let Some(element) = target.node_by_id(neighbor_atom).and_then(Atom::element) else {
+            continue;
+        };
+        if element == Element::O {
+            saw_other_oxygen = true;
+        } else if element != Element::H {
+            saw_non_oxygen_heavy_neighbor = true;
+        }
+    }
+
+    !saw_non_oxygen_heavy_neighbor
+        && (saw_other_oxygen
+            || target
+                .node_by_id(halogen_atom)
+                .is_some_and(|atom| atom.hydrogen_count() > 0))
 }
 
 fn identify_terminal_oxyhalogen_pair(
@@ -618,7 +658,11 @@ fn identify_terminal_oxyhalogen_pair(
     None
 }
 
-fn effective_formal_charge(target: &Smiles, atom_id: AtomId) -> i8 {
+fn effective_formal_charge(
+    target: &Smiles,
+    aromaticity: &AromaticityAssignment,
+    atom_id: AtomId,
+) -> i8 {
     let Some(atom) = target.node_by_id(atom_id) else {
         return 0;
     };
@@ -644,6 +688,34 @@ fn effective_formal_charge(target: &Smiles, atom_id: AtomId) -> i8 {
         return base_charge.saturating_sub(1);
     }
 
+    if atom.element() == Some(Element::P) {
+        return base_charge.saturating_add(
+            i8::try_from(terminal_phosphorus_oxo_bond_count(
+                target,
+                aromaticity,
+                atom_id,
+            ))
+            .unwrap_or(i8::MAX),
+        );
+    }
+
+    if atom.element() == Some(Element::O)
+        && target.edges_for_node(atom_id).count() == 1
+        && target.edges_for_node(atom_id).any(|edge| {
+            bond_edge_other(edge, atom_id).is_some_and(|neighbor_atom| {
+                rdkit_like_phosphorus_terminal_oxo_bond(
+                    target,
+                    aromaticity,
+                    atom_id,
+                    neighbor_atom,
+                    edge.2,
+                )
+            })
+        })
+    {
+        return base_charge.saturating_sub(1);
+    }
+
     base_charge
 }
 
@@ -653,6 +725,137 @@ fn terminal_oxyhalogen_oxo_bond_count(target: &Smiles, atom_id: AtomId) -> usize
         .filter(|edge| {
             bond_edge_other(*edge, atom_id).is_some_and(|neighbor_atom| {
                 rdkit_like_oxyhalogen_terminal_oxo_bond(target, atom_id, neighbor_atom, edge.2)
+            })
+        })
+        .count()
+}
+
+fn rdkit_like_phosphorus_terminal_oxo_bond(
+    target: &Smiles,
+    _aromaticity: &AromaticityAssignment,
+    left_atom: AtomId,
+    right_atom: AtomId,
+    raw_bond: Bond,
+) -> bool {
+    if normalized_bond(raw_bond) != Bond::Double {
+        return false;
+    }
+
+    let Some((oxygen_atom, phosphorus_atom)) =
+        identify_terminal_phosphorus_oxo_pair(target, left_atom, right_atom)
+    else {
+        return false;
+    };
+
+    if target
+        .node_by_id(phosphorus_atom)
+        .is_some_and(|atom| atom.charge_value() != 0)
+    {
+        return false;
+    }
+
+    let mut other_double_neighbor = None;
+    let mut single_neighbors = Vec::new();
+
+    for edge in target.edges_for_node(phosphorus_atom) {
+        let Some(neighbor_atom) = bond_edge_other(edge, phosphorus_atom) else {
+            continue;
+        };
+        if neighbor_atom == oxygen_atom {
+            continue;
+        }
+
+        match normalized_bond(edge.2) {
+            Bond::Double => {
+                if other_double_neighbor.is_some() {
+                    return false;
+                }
+                other_double_neighbor = Some(neighbor_atom);
+            }
+            Bond::Single => single_neighbors.push(neighbor_atom),
+            Bond::Triple | Bond::Quadruple | Bond::Up | Bond::Down | Bond::Aromatic => {
+                return false
+            }
+        }
+    }
+
+    let Some(other_double_neighbor) = other_double_neighbor else {
+        return false;
+    };
+    let Some(other_double_element) = target
+        .node_by_id(other_double_neighbor)
+        .and_then(Atom::element)
+    else {
+        return false;
+    };
+    if single_neighbors.is_empty() {
+        return false;
+    }
+
+    match other_double_element {
+        Element::N => target.edges_for_node(other_double_neighbor).any(|edge| {
+            bond_edge_other(edge, other_double_neighbor).is_some_and(|neighbor_atom| {
+                neighbor_atom != phosphorus_atom
+                    && target
+                        .node_by_id(neighbor_atom)
+                        .and_then(Atom::element)
+                        .is_some_and(|element| element != Element::H)
+            })
+        }),
+        Element::C => target.edges_for_node(other_double_neighbor).any(|edge| {
+            bond_edge_other(edge, other_double_neighbor).is_some_and(|neighbor_atom| {
+                neighbor_atom != phosphorus_atom
+                    && target
+                        .node_by_id(neighbor_atom)
+                        .and_then(Atom::element)
+                        .is_some_and(|element| element != Element::H)
+            })
+        }),
+        _ => false,
+    }
+}
+
+fn identify_terminal_phosphorus_oxo_pair(
+    target: &Smiles,
+    left_atom: AtomId,
+    right_atom: AtomId,
+) -> Option<(AtomId, AtomId)> {
+    let left_element = target.node_by_id(left_atom)?.element()?;
+    let right_element = target.node_by_id(right_atom)?.element()?;
+
+    if left_element == Element::O
+        && target.edges_for_node(left_atom).count() == 1
+        && right_element == Element::P
+    {
+        return Some((left_atom, right_atom));
+    }
+
+    if right_element == Element::O
+        && target.edges_for_node(right_atom).count() == 1
+        && left_element == Element::P
+    {
+        return Some((right_atom, left_atom));
+    }
+
+    None
+}
+
+fn terminal_phosphorus_oxo_bond_count(
+    target: &Smiles,
+    aromaticity: &AromaticityAssignment,
+    atom_id: AtomId,
+) -> usize {
+    target
+        .edges_for_node(atom_id)
+        .filter(|edge| {
+            bond_edge_other(*edge, atom_id).is_some_and(|neighbor_atom| {
+                rdkit_like_phosphorus_terminal_oxo_bond(
+                    target,
+                    aromaticity,
+                    atom_id,
+                    neighbor_atom,
+                    edge.2,
+                )
             })
         })
         .count()
@@ -706,11 +909,44 @@ fn aliphatic_hetero_neighbor_count(
         .unwrap_or(u8::MAX)
 }
 
-fn ring_bond_count(ring_membership: &RingMembership, atom_id: usize) -> u8 {
-    ring_membership
-        .bond_edges()
+fn ring_bonds_from_cycles(cycles: &[Vec<usize>]) -> BTreeSet<(AtomId, AtomId)> {
+    let mut ring_bonds = BTreeSet::new();
+    for cycle in cycles {
+        if cycle.len() < 2 {
+            continue;
+        }
+        for edge in cycle.windows(2) {
+            ring_bonds.insert(edge_key(edge[0], edge[1]));
+        }
+        ring_bonds.insert(edge_key(cycle[cycle.len() - 1], cycle[0]));
+    }
+    ring_bonds
+}
+
+fn ring_caches(target: &Smiles) -> RingCaches {
+    let ring_membership = target.ring_membership();
+    let symm_sssr = target.symm_sssr_result();
+    let ring_bonds = ring_bonds_from_cycles(symm_sssr.cycles());
+    let ring_bond_counts = NodeProps::new(
+        (0..target.nodes().len())
+            .map(|atom_id| ring_bond_count(&ring_bonds, atom_id))
+            .collect(),
+    );
+    let (ring_membership_counts, smallest_ring_sizes) =
+        ring_cycle_properties(target.nodes().len(), symm_sssr.cycles());
+    (
+        ring_membership,
+        ring_bonds,
+        ring_bond_counts,
+        ring_membership_counts,
+        smallest_ring_sizes,
+    )
+}
+
+fn ring_bond_count(ring_bonds: &BTreeSet<(AtomId, AtomId)>, atom_id: usize) -> u8 {
+    ring_bonds
         .iter()
-        .filter(|edge| edge[0] == atom_id || edge[1] == atom_id)
+        .filter(|edge| edge.0 == atom_id || edge.1 == atom_id)
         .count()
         .try_into()
         .unwrap_or(u8::MAX)
