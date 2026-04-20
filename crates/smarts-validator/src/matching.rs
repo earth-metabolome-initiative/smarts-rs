@@ -2994,9 +2994,7 @@ fn atom_primitive_matches(
         AtomPrimitive::AliphaticHeteroNeighbor(expected) => target
             .aliphatic_hetero_neighbor_count(atom_id)
             .is_some_and(|count| count_query_matches_u16(*expected, u16::from(count), 1)),
-        AtomPrimitive::Charge(expected) => {
-            atom.is_some_and(|atom| atom.charge_value() == *expected)
-        }
+        AtomPrimitive::Charge(expected) => target.formal_charge(atom_id) == Some(*expected),
         AtomPrimitive::RecursiveQuery(query) => recursive_query_matches(
             query,
             target,

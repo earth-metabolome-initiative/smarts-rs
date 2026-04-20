@@ -138,6 +138,7 @@ pub struct PreparedTarget {
     target: Smiles,
     aromaticity: AromaticityAssignment,
     aromatic_atoms: NodeProps<bool>,
+    effective_formal_charges: NodeProps<i8>,
     ring_membership: RingMembership,
     tetrahedral_chiralities: NodeProps<Option<Chirality>>,
     double_bond_stereo: BTreeMap<(AtomId, AtomId), DoubleBondStereoConfig>,
@@ -166,6 +167,11 @@ impl PreparedTarget {
                 .iter()
                 .enumerate()
                 .map(|(atom_id, atom)| aromaticity.contains_atom(atom_id) || atom.aromatic())
+                .collect(),
+        );
+        let effective_formal_charges = NodeProps::new(
+            (0..target.nodes().len())
+                .map(|atom_id| effective_formal_charge(&target, atom_id))
                 .collect(),
         );
         let ring_membership = target.ring_membership();
@@ -237,6 +243,7 @@ impl PreparedTarget {
             target,
             aromaticity,
             aromatic_atoms,
+            effective_formal_charges,
             ring_membership,
             tetrahedral_chiralities,
             double_bond_stereo,
@@ -310,6 +317,13 @@ impl PreparedTarget {
     #[must_use]
     pub fn is_aromatic(&self, atom_id: AtomId) -> bool {
         self.aromatic_atoms.get(atom_id).copied().unwrap_or(false)
+    }
+
+    /// Returns the effective formal charge used for SMARTS matching.
+    #[inline]
+    #[must_use]
+    pub fn formal_charge(&self, atom_id: AtomId) -> Option<i8> {
+        self.effective_formal_charges.get(atom_id).copied()
     }
 
     /// Returns whether the provided atom belongs to at least one ring.
@@ -604,6 +618,46 @@ fn identify_terminal_oxyhalogen_pair(
     None
 }
 
+fn effective_formal_charge(target: &Smiles, atom_id: AtomId) -> i8 {
+    let Some(atom) = target.node_by_id(atom_id) else {
+        return 0;
+    };
+    let base_charge = atom.charge_value();
+
+    if atom
+        .element()
+        .is_some_and(|element| matches!(element, Element::Cl | Element::Br | Element::I))
+    {
+        return base_charge.saturating_add(
+            i8::try_from(terminal_oxyhalogen_oxo_bond_count(target, atom_id)).unwrap_or(i8::MAX),
+        );
+    }
+
+    if atom.element() == Some(Element::O)
+        && target.edges_for_node(atom_id).count() == 1
+        && target.edges_for_node(atom_id).any(|edge| {
+            bond_edge_other(edge, atom_id).is_some_and(|neighbor_atom| {
+                rdkit_like_oxyhalogen_terminal_oxo_bond(target, atom_id, neighbor_atom, edge.2)
+            })
+        })
+    {
+        return base_charge.saturating_sub(1);
+    }
+
+    base_charge
+}
+
+fn terminal_oxyhalogen_oxo_bond_count(target: &Smiles, atom_id: AtomId) -> usize {
+    target
+        .edges_for_node(atom_id)
+        .filter(|edge| {
+            bond_edge_other(*edge, atom_id).is_some_and(|neighbor_atom| {
+                rdkit_like_oxyhalogen_terminal_oxo_bond(target, atom_id, neighbor_atom, edge.2)
+            })
+        })
+        .count()
+}
+
 fn atom_is_aromatic_for_prepared_view(
     target: &Smiles,
     aromaticity: &AromaticityAssignment,
@@ -763,6 +817,7 @@ mod tests {
         "C4=CC5=C(C=C4)N(C(=C5CC(COC(=O)[C@@H]6CCCN(C2=O)N6)(C)C)C7=C(N=CC#C7)[C@H](C)OC)CC"
     );
     const OXYHALOGEN_COUNTEREXAMPLE: &str = "[O-]Cl(=O)(=O)=O";
+    const BROMIC_ACID_COUNTEREXAMPLE: &str = "OBr(=O)=O";
 
     #[test]
     fn prepared_target_keeps_smiles_and_basic_caches() {
@@ -1013,6 +1068,16 @@ mod tests {
         assert_eq!(prepared.bond(1, 2), Some(BondLabel::Single));
         assert_eq!(prepared.bond(1, 3), Some(BondLabel::Single));
         assert_eq!(prepared.bond(1, 4), Some(BondLabel::Single));
+    }
+
+    #[test]
+    fn prepared_target_normalizes_terminal_oxyhalogen_charges_like_rdkit() {
+        let prepared = PreparedTarget::new(Smiles::from_str(BROMIC_ACID_COUNTEREXAMPLE).unwrap());
+
+        assert_eq!(prepared.formal_charge(0), Some(0));
+        assert_eq!(prepared.formal_charge(1), Some(2));
+        assert_eq!(prepared.formal_charge(2), Some(-1));
+        assert_eq!(prepared.formal_charge(3), Some(-1));
     }
 
     #[test]
