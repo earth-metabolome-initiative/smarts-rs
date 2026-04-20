@@ -1189,4 +1189,51 @@ mod tests {
             &BracketParseErrorKind::UnexpectedEnd
         );
     }
+
+    #[test]
+    fn direct_bracket_parser_methods_cover_remaining_numeric_and_symbol_fallbacks() {
+        for (text, expected) in [
+            ("As", "As"),
+            ("as", "as"),
+            ("Hg", "Hg"),
+            ("Rb", "Rb"),
+            ("z", "z"),
+            ("Z2", "Z2"),
+        ] {
+            let mut parser = BracketParser::new(text);
+            assert_eq!(parser.parse_primitive(true).unwrap().to_string(), expected);
+        }
+
+        let mut parser = BracketParser::new("$((C))");
+        assert_eq!(
+            parser.parse_recursive_smarts().unwrap().to_string(),
+            "$((C))"
+        );
+
+        let mut parser = BracketParser::new("{2}");
+        assert_eq!(
+            parser.parse_optional_numeric_query().unwrap(),
+            Some(NumericQuery::Exact(2))
+        );
+
+        for text in ["{}", "{2x}", "{2-3x}", "{3-2}"] {
+            let mut parser = BracketParser::new(text);
+            assert_eq!(
+                parser.parse_optional_numeric_query().unwrap_err().kind(),
+                &BracketParseErrorKind::UnsupportedPrimitive
+            );
+        }
+
+        let eof = BracketParser::new("");
+        assert!(eof.h_is_atomic_hydrogen_context());
+
+        let charge_run = BracketParser::new("+12");
+        assert!(charge_run.h_is_atomic_hydrogen_context());
+
+        let bad_suffix = BracketParser::new("+-");
+        assert!(!bad_suffix.h_is_atomic_hydrogen_context());
+
+        let plain_symbol = BracketParser::new("C");
+        assert!(!plain_symbol.h_is_atomic_hydrogen_context());
+    }
 }

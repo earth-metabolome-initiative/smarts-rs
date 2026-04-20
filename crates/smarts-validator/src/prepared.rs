@@ -1040,9 +1040,14 @@ mod tests {
     use alloc::{vec, vec::Vec};
     use core::str::FromStr;
     use elements_rs::Element;
-    use smiles_parser::{atom::Atom, Smiles};
+    use smiles_parser::{atom::Atom, AromaticityPolicy, Smiles};
 
-    use super::{EdgeProps, NodeProps, PreparedMolecule, PreparedTarget};
+    use super::{
+        connected_component_ids, effective_formal_charge, hybridization_code,
+        identify_terminal_oxyhalogen_pair, rdkit_like_oxyhalogen_terminal_oxo_bond,
+        rdkit_like_phosphorus_terminal_oxo_bond, ring_bonds_from_cycles, EdgeProps, NodeProps,
+        PreparedMolecule, PreparedTarget,
+    };
     use crate::{
         geometric_target::{MoleculeGraph, UndirectedBond},
         target::{AtomLabel, BondLabel, MoleculeTarget},
@@ -1314,6 +1319,134 @@ mod tests {
         assert_eq!(prepared.formal_charge(1), Some(2));
         assert_eq!(prepared.formal_charge(2), Some(-1));
         assert_eq!(prepared.formal_charge(3), Some(-1));
+    }
+
+    #[test]
+    fn prepared_helper_paths_cover_remaining_normalization_branches() {
+        let alkyl_hypochlorite = Smiles::from_str("Cl(=O)C").unwrap();
+        let alkyl_hypochlorite_aromaticity =
+            alkyl_hypochlorite.aromaticity_assignment_for(AromaticityPolicy::RdkitDefault);
+        let raw_cl_o = alkyl_hypochlorite.edge_for_node_pair((0, 1)).unwrap().2;
+
+        assert_eq!(
+            identify_terminal_oxyhalogen_pair(&alkyl_hypochlorite, 0, 1),
+            Some((1, 0))
+        );
+        assert!(!rdkit_like_oxyhalogen_terminal_oxo_bond(
+            &alkyl_hypochlorite,
+            0,
+            1,
+            raw_cl_o
+        ));
+        assert_eq!(
+            effective_formal_charge(&alkyl_hypochlorite, &alkyl_hypochlorite_aromaticity, 99),
+            0
+        );
+
+        let wildcard_cycles = ring_bonds_from_cycles(&[vec![0], vec![0, 1, 2]]);
+        assert!(!wildcard_cycles.contains(&(0, 0)));
+        assert!(wildcard_cycles.contains(&(0, 1)));
+        assert!(wildcard_cycles.contains(&(0, 2)));
+
+        let disconnected = connected_component_ids(&Smiles::from_str("CC.O").unwrap());
+        assert_eq!(disconnected.get(0), Some(&0));
+        assert_eq!(disconnected.get(2), Some(&1));
+
+        let aromatic_assignment_target = Smiles::from_str("c1ccccc1").unwrap();
+        let aromatic_assignment =
+            aromatic_assignment_target.aromaticity_assignment_for(AromaticityPolicy::RdkitDefault);
+        assert_eq!(
+            hybridization_code(&aromatic_assignment_target, &aromatic_assignment, 999),
+            0
+        );
+
+        let unsupported_lone_pair = Smiles::from_str("CCl").unwrap();
+        let unsupported_lone_pair_aromaticity =
+            unsupported_lone_pair.aromaticity_assignment_for(AromaticityPolicy::RdkitDefault);
+        assert_eq!(
+            hybridization_code(
+                &unsupported_lone_pair,
+                &unsupported_lone_pair_aromaticity,
+                1
+            ),
+            3
+        );
+    }
+
+    #[test]
+    fn phosphorus_terminal_oxo_helper_covers_remaining_false_and_true_cases() {
+        let duplicate_double = Smiles::from_str("COP(=O)(=N)=C").unwrap();
+        let duplicate_double_aromaticity =
+            duplicate_double.aromaticity_assignment_for(AromaticityPolicy::RdkitDefault);
+        let duplicate_double_bond = duplicate_double.edge_for_node_pair((1, 2)).unwrap().2;
+        assert!(!rdkit_like_phosphorus_terminal_oxo_bond(
+            &duplicate_double,
+            &duplicate_double_aromaticity,
+            1,
+            2,
+            duplicate_double_bond
+        ));
+
+        let triple_neighbor = Smiles::from_str("COP(=O)#N").unwrap();
+        let triple_neighbor_aromaticity =
+            triple_neighbor.aromaticity_assignment_for(AromaticityPolicy::RdkitDefault);
+        let triple_neighbor_bond = triple_neighbor.edge_for_node_pair((2, 3)).unwrap().2;
+        assert!(!rdkit_like_phosphorus_terminal_oxo_bond(
+            &triple_neighbor,
+            &triple_neighbor_aromaticity,
+            2,
+            3,
+            triple_neighbor_bond
+        ));
+
+        let empty_single_neighbors = Smiles::from_str("P(=O)=NC").unwrap();
+        let empty_single_neighbors_aromaticity =
+            empty_single_neighbors.aromaticity_assignment_for(AromaticityPolicy::RdkitDefault);
+        let empty_single_neighbors_bond =
+            empty_single_neighbors.edge_for_node_pair((0, 1)).unwrap().2;
+        assert!(!rdkit_like_phosphorus_terminal_oxo_bond(
+            &empty_single_neighbors,
+            &empty_single_neighbors_aromaticity,
+            0,
+            1,
+            empty_single_neighbors_bond
+        ));
+
+        let sulfur_partner = Smiles::from_str("CP(=O)(=S)C").unwrap();
+        let sulfur_partner_aromaticity =
+            sulfur_partner.aromaticity_assignment_for(AromaticityPolicy::RdkitDefault);
+        let sulfur_partner_bond = sulfur_partner.edge_for_node_pair((1, 2)).unwrap().2;
+        assert!(!rdkit_like_phosphorus_terminal_oxo_bond(
+            &sulfur_partner,
+            &sulfur_partner_aromaticity,
+            1,
+            2,
+            sulfur_partner_bond
+        ));
+
+        let substituted_imidate = Smiles::from_str("CP(=O)(=NC)C").unwrap();
+        let substituted_imidate_aromaticity =
+            substituted_imidate.aromaticity_assignment_for(AromaticityPolicy::RdkitDefault);
+        let substituted_imidate_bond = substituted_imidate.edge_for_node_pair((1, 2)).unwrap().2;
+        assert!(rdkit_like_phosphorus_terminal_oxo_bond(
+            &substituted_imidate,
+            &substituted_imidate_aromaticity,
+            1,
+            2,
+            substituted_imidate_bond
+        ));
+
+        let substituted_ylide = Smiles::from_str("CP(=O)(=CC)C").unwrap();
+        let substituted_ylide_aromaticity =
+            substituted_ylide.aromaticity_assignment_for(AromaticityPolicy::RdkitDefault);
+        let substituted_ylide_bond = substituted_ylide.edge_for_node_pair((1, 2)).unwrap().2;
+        assert!(rdkit_like_phosphorus_terminal_oxo_bond(
+            &substituted_ylide,
+            &substituted_ylide_aromaticity,
+            1,
+            2,
+            substituted_ylide_bond
+        ));
     }
 
     #[test]
