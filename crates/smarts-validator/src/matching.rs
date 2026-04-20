@@ -893,7 +893,7 @@ fn single_atom_query_matches(
 ) -> bool {
     let expr = &query.query.atoms()[0].expr;
     match initial_target_atom {
-        Some(target_atom) => atom_expr_matches(
+        Some(target_atom) => cached_query_atom_matches(
             expr,
             0,
             &query.stereo_plan,
@@ -904,7 +904,7 @@ fn single_atom_query_matches(
             recursive_cache,
         ),
         None => (0..target.atom_count()).any(|target_atom| {
-            atom_expr_matches(
+            cached_query_atom_matches(
                 expr,
                 0,
                 &query.stereo_plan,
@@ -927,7 +927,7 @@ fn single_atom_query_substructure_matches(
     let expr = &query.query.atoms()[0].expr;
     match initial_target_atom {
         Some(target_atom)
-            if atom_expr_matches(
+            if cached_query_atom_matches(
                 expr,
                 0,
                 &query.stereo_plan,
@@ -943,7 +943,7 @@ fn single_atom_query_substructure_matches(
         Some(_) => Box::default(),
         None => (0..target.atom_count())
             .filter(|&target_atom| {
-                atom_expr_matches(
+                cached_query_atom_matches(
                     expr,
                     0,
                     &query.stereo_plan,
@@ -968,7 +968,7 @@ fn single_atom_query_match_count(
 ) -> usize {
     let expr = &query.query.atoms()[0].expr;
     match initial_target_atom {
-        Some(target_atom) => usize::from(atom_expr_matches(
+        Some(target_atom) => usize::from(cached_query_atom_matches(
             expr,
             0,
             &query.stereo_plan,
@@ -980,7 +980,7 @@ fn single_atom_query_match_count(
         )),
         None => (0..target.atom_count())
             .filter(|&target_atom| {
-                atom_expr_matches(
+                cached_query_atom_matches(
                     expr,
                     0,
                     &query.stereo_plan,
@@ -2843,6 +2843,9 @@ fn cached_query_atom_matches(
     recursive_queries: &[RecursiveQueryEntry],
     recursive_cache: &mut RecursiveMatchCache,
 ) -> bool {
+    if is_hidden_attached_hydrogen(target, atom_id) {
+        return false;
+    }
     atom_expr_matches(
         expr,
         query_atom_id,
