@@ -1,5 +1,4 @@
 use alloc::{boxed::Box, collections::BTreeMap, string::String, string::ToString};
-use core::cell::RefCell;
 
 use elements_rs::{AtomicNumber, ElementVariant, MassNumber};
 use smarts_parser::{
@@ -27,7 +26,7 @@ struct SearchContext<'a> {
     query_to_target: &'a mut [Option<usize>],
     used_target_atoms: &'a mut [bool],
     stereo_plan: &'a QueryStereoPlan,
-    atom_stereo_cache: &'a RefCell<AtomStereoCache>,
+    atom_stereo_cache: &'a mut AtomStereoCache,
     recursive_cache: &'a mut RecursiveMatchCache,
 }
 
@@ -116,7 +115,6 @@ pub struct CompiledQuery {
     query_neighbors: QueryNeighbors,
     query_degrees: alloc::vec::Vec<usize>,
     stereo_plan: QueryStereoPlan,
-    atom_stereo_cache: RefCell<AtomStereoCache>,
     recursive_cache_slots: usize,
     recursive_query_lookup: BTreeMap<usize, usize>,
     recursive_queries: Box<[RecursiveQueryEntry]>,
@@ -153,7 +151,6 @@ impl CompiledQuery {
             query_neighbors,
             query_degrees,
             stereo_plan,
-            atom_stereo_cache: RefCell::new(AtomStereoCache::new()),
             recursive_cache_slots: *next_recursive_cache_slot,
             recursive_query_lookup,
             recursive_queries,
@@ -596,29 +593,54 @@ fn collect_recursive_queries_from_bracket_tree(
 }
 
 fn query_matches(query: &CompiledQuery, target: &PreparedTarget) -> bool {
+    let mut atom_stereo_cache = AtomStereoCache::new();
     let mut recursive_cache =
         RecursiveMatchCache::new(query.recursive_cache_slots, target.atom_count());
-    query_matches_with_mapping(query, target, &mut recursive_cache, None, None)
+    query_matches_with_mapping(
+        query,
+        target,
+        &mut atom_stereo_cache,
+        &mut recursive_cache,
+        None,
+        None,
+    )
 }
 
 fn query_substructure_matches(
     query: &CompiledQuery,
     target: &PreparedTarget,
 ) -> Box<[Box<[usize]>]> {
+    let mut atom_stereo_cache = AtomStereoCache::new();
     let mut recursive_cache =
         RecursiveMatchCache::new(query.recursive_cache_slots, target.atom_count());
-    query_substructure_matches_with_mapping(query, target, &mut recursive_cache, None, None)
+    query_substructure_matches_with_mapping(
+        query,
+        target,
+        &mut atom_stereo_cache,
+        &mut recursive_cache,
+        None,
+        None,
+    )
 }
 
 fn query_match_count(query: &CompiledQuery, target: &PreparedTarget) -> usize {
+    let mut atom_stereo_cache = AtomStereoCache::new();
     let mut recursive_cache =
         RecursiveMatchCache::new(query.recursive_cache_slots, target.atom_count());
-    query_match_count_with_mapping(query, target, &mut recursive_cache, None, None)
+    query_match_count_with_mapping(
+        query,
+        target,
+        &mut atom_stereo_cache,
+        &mut recursive_cache,
+        None,
+        None,
+    )
 }
 
 fn query_matches_with_mapping(
     query: &CompiledQuery,
     target: &PreparedTarget,
+    atom_stereo_cache: &mut AtomStereoCache,
     recursive_cache: &mut RecursiveMatchCache,
     initial_query_atom: Option<QueryAtomId>,
     initial_target_atom: Option<usize>,
@@ -639,6 +661,7 @@ fn query_matches_with_mapping(
         return three_atom_query_matches(
             query,
             target,
+            atom_stereo_cache,
             recursive_cache,
             layout,
             initial_query_atom,
@@ -655,7 +678,7 @@ fn query_matches_with_mapping(
         query_to_target: &mut query_to_target,
         used_target_atoms: &mut used_target_atoms,
         stereo_plan: &query.stereo_plan,
-        atom_stereo_cache: &query.atom_stereo_cache,
+        atom_stereo_cache,
         recursive_cache,
     };
     let mapped_count =
@@ -700,6 +723,7 @@ fn query_matches_with_mapping(
 fn query_substructure_matches_with_mapping(
     query: &CompiledQuery,
     target: &PreparedTarget,
+    atom_stereo_cache: &mut AtomStereoCache,
     recursive_cache: &mut RecursiveMatchCache,
     initial_query_atom: Option<QueryAtomId>,
     initial_target_atom: Option<usize>,
@@ -725,6 +749,7 @@ fn query_substructure_matches_with_mapping(
         return three_atom_query_substructure_matches(
             query,
             target,
+            atom_stereo_cache,
             recursive_cache,
             layout,
             initial_query_atom,
@@ -741,7 +766,7 @@ fn query_substructure_matches_with_mapping(
         query_to_target: &mut query_to_target,
         used_target_atoms: &mut used_target_atoms,
         stereo_plan: &query.stereo_plan,
-        atom_stereo_cache: &query.atom_stereo_cache,
+        atom_stereo_cache,
         recursive_cache,
     };
     let mapped_count =
@@ -797,6 +822,7 @@ fn query_substructure_matches_with_mapping(
 fn query_match_count_with_mapping(
     query: &CompiledQuery,
     target: &PreparedTarget,
+    atom_stereo_cache: &mut AtomStereoCache,
     recursive_cache: &mut RecursiveMatchCache,
     initial_query_atom: Option<QueryAtomId>,
     initial_target_atom: Option<usize>,
@@ -817,6 +843,7 @@ fn query_match_count_with_mapping(
         return three_atom_query_match_count(
             query,
             target,
+            atom_stereo_cache,
             recursive_cache,
             layout,
             initial_query_atom,
@@ -833,7 +860,7 @@ fn query_match_count_with_mapping(
         query_to_target: &mut query_to_target,
         used_target_atoms: &mut used_target_atoms,
         stereo_plan: &query.stereo_plan,
-        atom_stereo_cache: &query.atom_stereo_cache,
+        atom_stereo_cache,
         recursive_cache,
     };
     let mapped_count =
@@ -1170,6 +1197,7 @@ fn two_atom_query_match_count(
 fn three_atom_query_matches(
     query: &CompiledQuery,
     target: &PreparedTarget,
+    atom_stereo_cache: &mut AtomStereoCache,
     recursive_cache: &mut RecursiveMatchCache,
     layout: ThreeAtomTreeLayout,
     initial_query_atom: Option<QueryAtomId>,
@@ -1189,7 +1217,7 @@ fn three_atom_query_matches(
                 &query.query_neighbors,
                 target,
                 mapping,
-                &query.atom_stereo_cache,
+                atom_stereo_cache,
             )
         },
     )
@@ -1198,6 +1226,7 @@ fn three_atom_query_matches(
 fn three_atom_query_substructure_matches(
     query: &CompiledQuery,
     target: &PreparedTarget,
+    atom_stereo_cache: &mut AtomStereoCache,
     recursive_cache: &mut RecursiveMatchCache,
     layout: ThreeAtomTreeLayout,
     initial_query_atom: Option<QueryAtomId>,
@@ -1218,7 +1247,7 @@ fn three_atom_query_substructure_matches(
                 &query.query_neighbors,
                 target,
                 mapping,
-                &query.atom_stereo_cache,
+                atom_stereo_cache,
             ) {
                 return false;
             }
@@ -1248,6 +1277,7 @@ fn three_atom_query_substructure_matches(
 fn three_atom_query_match_count(
     query: &CompiledQuery,
     target: &PreparedTarget,
+    atom_stereo_cache: &mut AtomStereoCache,
     recursive_cache: &mut RecursiveMatchCache,
     layout: ThreeAtomTreeLayout,
     initial_query_atom: Option<QueryAtomId>,
@@ -1268,7 +1298,7 @@ fn three_atom_query_match_count(
                 &query.query_neighbors,
                 target,
                 mapping,
-                &query.atom_stereo_cache,
+                atom_stereo_cache,
             ) {
                 return false;
             }
@@ -3015,7 +3045,7 @@ fn atom_chirality_matches(
     query_atom_id: QueryAtomId,
     target: &PreparedTarget,
     query_to_target: &[Option<usize>],
-    atom_stereo_cache: &RefCell<AtomStereoCache>,
+    atom_stereo_cache: &mut AtomStereoCache,
 ) -> bool {
     let Some(query_chirality) = extract_query_chirality(&query.atoms()[query_atom_id].expr) else {
         return true;
@@ -3046,10 +3076,7 @@ fn atom_chirality_matches(
         query_atom_id,
         neighbor_tokens,
     };
-    let expected_chirality = {
-        let cache = atom_stereo_cache.borrow();
-        cache.get(&cache_key).copied()
-    };
+    let expected_chirality = atom_stereo_cache.get(&cache_key).copied();
     let expected_chirality = expected_chirality.unwrap_or_else(|| {
         let computed = build_local_stereo_fragment(
             query,
@@ -3066,9 +3093,7 @@ fn atom_chirality_matches(
                     local_smiles.smarts_tetrahedral_chirality(local_center_atom_id)
                 })
         });
-        atom_stereo_cache
-            .borrow_mut()
-            .insert(cache_key.clone(), computed);
+        atom_stereo_cache.insert(cache_key.clone(), computed);
         computed
     });
     expected_chirality == Some(actual_target_chirality)
@@ -3080,7 +3105,7 @@ fn stereo_constraints_match(
     query_neighbors: &[alloc::vec::Vec<(QueryAtomId, usize)>],
     target: &PreparedTarget,
     query_to_target: &[Option<usize>],
-    atom_stereo_cache: &RefCell<AtomStereoCache>,
+    atom_stereo_cache: &mut AtomStereoCache,
 ) -> bool {
     stereo_plan
         .double_bond_constraints
@@ -3129,9 +3154,11 @@ fn recursive_query_matches(
         return false;
     }
 
+    let mut atom_stereo_cache = AtomStereoCache::new();
     let anchored = query_matches_with_mapping(
         entry.compiled.as_ref(),
         target,
+        &mut atom_stereo_cache,
         recursive_cache,
         Some(0),
         Some(atom_id),

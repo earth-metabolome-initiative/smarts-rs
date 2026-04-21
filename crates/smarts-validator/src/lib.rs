@@ -47,9 +47,16 @@ mod tests {
 
     use smarts_parser::QueryMol;
 
+    fn assert_sync<T: Sync>() {}
+
     #[test]
     fn matches_single_atom_query_against_smiles_target() {
         let query = QueryMol::from_str("[O;H1]").unwrap();
         assert!(crate::matches(&query, "CCO").unwrap());
+    }
+
+    #[test]
+    fn compiled_query_should_be_sync_for_parallel_matching() {
+        assert_sync::<crate::CompiledQuery>();
     }
 }
