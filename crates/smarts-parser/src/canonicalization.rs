@@ -306,37 +306,8 @@ impl QueryMol {
         if !has_chirality {
             return provisional;
         }
-        let old_emitted_neighbors = emitted_stereo_neighbors(self);
-        let new_emitted_neighbors = emitted_stereo_neighbors(&provisional);
-        let atoms = order
-            .iter()
-            .copied()
-            .map(|old_atom| {
-                let new_atom = new_index_of_old_atom[old_atom];
-                let mapped_old_neighbors = old_emitted_neighbors[old_atom]
-                    .iter()
-                    .copied()
-                    .map(|neighbor| new_index_of_old_atom[neighbor])
-                    .collect::<Vec<_>>();
-                let expr = if atom_expr_supports_emitted_parity(
-                    &self.atoms()[old_atom].expr,
-                    &mapped_old_neighbors,
-                    &new_emitted_neighbors[new_atom],
-                ) && emitted_neighbor_permutation_is_odd(
-                    &mapped_old_neighbors,
-                    &new_emitted_neighbors[new_atom],
-                ) {
-                    invert_atom_expr_chirality(self.atoms()[old_atom].expr.clone())
-                } else {
-                    self.atoms()[old_atom].expr.clone()
-                };
-                QueryAtom {
-                    id: new_atom,
-                    component: 0,
-                    expr,
-                }
-            })
-            .collect::<Vec<_>>();
+        let atoms =
+            chirality_adjusted_canonical_atoms(self, &provisional, order, new_index_of_old_atom);
 
         Self::from_parts(
             atoms,
@@ -404,11 +375,60 @@ fn atom_expr_contains_chirality(expr: &AtomExpr) -> bool {
     }
 }
 
+fn chirality_adjusted_canonical_atoms(
+    original: &QueryMol,
+    provisional: &QueryMol,
+    order: &[AtomId],
+    new_index_of_old_atom: &[AtomId],
+) -> Vec<QueryAtom> {
+    let old_parent_bond_by_atom = spanning_forest_parent_bonds(original);
+    let new_parent_bond_by_atom = spanning_forest_parent_bonds(provisional);
+    let old_ring_neighbors = ring_neighbors_by_atom(original, &old_parent_bond_by_atom);
+    let new_ring_neighbors = ring_neighbors_by_atom(provisional, &new_parent_bond_by_atom);
+    let old_emitted_neighbors = emitted_stereo_neighbors(original);
+    let new_emitted_neighbors = emitted_stereo_neighbors(provisional);
+
+    order
+        .iter()
+        .copied()
+        .map(|old_atom| {
+            let new_atom = new_index_of_old_atom[old_atom];
+            let mapped_old_neighbors = old_emitted_neighbors[old_atom]
+                .iter()
+                .copied()
+                .map(|neighbor| new_index_of_old_atom[neighbor])
+                .collect::<Vec<_>>();
+            let expr = if atom_expr_supports_emitted_parity(
+                &original.atoms()[old_atom].expr,
+                &mapped_old_neighbors,
+                &new_emitted_neighbors[new_atom],
+                old_ring_neighbors[old_atom].is_empty() && new_ring_neighbors[new_atom].is_empty(),
+            ) && emitted_neighbor_permutation_is_odd(
+                &mapped_old_neighbors,
+                &new_emitted_neighbors[new_atom],
+            ) {
+                invert_atom_expr_chirality(original.atoms()[old_atom].expr.clone())
+            } else {
+                original.atoms()[old_atom].expr.clone()
+            };
+            QueryAtom {
+                id: new_atom,
+                component: 0,
+                expr,
+            }
+        })
+        .collect()
+}
+
 fn atom_expr_supports_emitted_parity(
     expr: &AtomExpr,
     from_neighbors: &[AtomId],
     to_neighbors: &[AtomId],
+    has_no_ring_neighbors: bool,
 ) -> bool {
+    if !has_no_ring_neighbors {
+        return false;
+    }
     if !atom_expr_has_single_atomic_identity(expr) {
         return false;
     }
@@ -2211,6 +2231,25 @@ mod tests {
     #[test]
     fn canonicalize_handles_underconstrained_ring_chirality_with_h_fuzz_artifact() {
         let query = QueryMol::from_str("C[No]1[21Al43AlB]2[21AlBNo@H]1[21Al40AlB]2[21Al]").unwrap();
+
+        let canonical = query.canonicalize();
+        let recanonicalized = canonical.canonicalize();
+        let rendered = canonical.to_string();
+        let reparsed = QueryMol::from_str(&rendered).unwrap();
+        let reparsed_canonical = reparsed.canonicalize();
+
+        assert_eq!(canonical, recanonicalized);
+        assert!(canonical.is_canonical());
+        assert_eq!(canonical.atom_count(), query.atom_count());
+        assert_eq!(canonical.bond_count(), query.bond_count());
+        assert_eq!(canonical.component_count(), query.component_count());
+        assert_eq!(rendered, canonical.to_canonical_smarts());
+        assert_eq!(canonical, reparsed_canonical);
+    }
+
+    #[test]
+    fn canonicalize_handles_fused_ring_generic_chirality_fuzz_artifact() {
+        let query = QueryMol::from_str("c[@]8[C@@]71cOC7=8s1").unwrap();
 
         let canonical = query.canonicalize();
         let recanonicalized = canonical.canonicalize();
