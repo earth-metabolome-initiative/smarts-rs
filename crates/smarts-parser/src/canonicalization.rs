@@ -409,6 +409,9 @@ fn atom_expr_supports_emitted_parity(
     from_neighbors: &[AtomId],
     to_neighbors: &[AtomId],
 ) -> bool {
+    if !atom_expr_has_single_atomic_identity(expr) {
+        return false;
+    }
     let emitted_degree = from_neighbors.len().max(to_neighbors.len());
     match atom_expr_chirality(expr) {
         Some(Chirality::At | Chirality::AtAt | Chirality::TH(1 | 2)) => {
@@ -455,6 +458,13 @@ fn atom_expr_has_single_hydrogen(expr: &AtomExpr) -> bool {
     }
 }
 
+fn atom_expr_has_single_atomic_identity(expr: &AtomExpr) -> bool {
+    match expr {
+        AtomExpr::Wildcard | AtomExpr::Bare { .. } => true,
+        AtomExpr::Bracket(bracket) => bracket_tree_atomic_identity_count(&bracket.tree) == 1,
+    }
+}
+
 fn bracket_tree_has_single_hydrogen(tree: &BracketExprTree) -> bool {
     match tree {
         BracketExprTree::Primitive(AtomPrimitive::Hydrogen(
@@ -467,6 +477,33 @@ fn bracket_tree_has_single_hydrogen(tree: &BracketExprTree) -> bool {
         | BracketExprTree::Or(items)
         | BracketExprTree::LowAnd(items) => items.iter().any(bracket_tree_has_single_hydrogen),
     }
+}
+
+fn bracket_tree_atomic_identity_count(tree: &BracketExprTree) -> usize {
+    match tree {
+        BracketExprTree::Primitive(primitive) => {
+            usize::from(atom_primitive_is_atomic_identity(primitive))
+        }
+        BracketExprTree::Not(inner) => bracket_tree_atomic_identity_count(inner),
+        BracketExprTree::HighAnd(items)
+        | BracketExprTree::Or(items)
+        | BracketExprTree::LowAnd(items) => {
+            items.iter().map(bracket_tree_atomic_identity_count).sum()
+        }
+    }
+}
+
+const fn atom_primitive_is_atomic_identity(primitive: &AtomPrimitive) -> bool {
+    matches!(
+        primitive,
+        AtomPrimitive::Wildcard
+            | AtomPrimitive::AliphaticAny
+            | AtomPrimitive::AromaticAny
+            | AtomPrimitive::Symbol { .. }
+            | AtomPrimitive::Isotope { .. }
+            | AtomPrimitive::IsotopeWildcard(_)
+            | AtomPrimitive::AtomicNumber(_)
+    )
 }
 
 fn flatten_original_atom_order(entries: &[CanonicalizedEntry]) -> Vec<AtomId> {
@@ -2155,6 +2192,25 @@ mod tests {
     #[test]
     fn canonicalize_handles_underconstrained_ring_chirality_fuzz_artifact() {
         let query = QueryMol::from_str("C[No]1[21Al43AlB]2[21AlBNo@@]1[21Al24AlB]2[21Al]").unwrap();
+
+        let canonical = query.canonicalize();
+        let recanonicalized = canonical.canonicalize();
+        let rendered = canonical.to_string();
+        let reparsed = QueryMol::from_str(&rendered).unwrap();
+        let reparsed_canonical = reparsed.canonicalize();
+
+        assert_eq!(canonical, recanonicalized);
+        assert!(canonical.is_canonical());
+        assert_eq!(canonical.atom_count(), query.atom_count());
+        assert_eq!(canonical.bond_count(), query.bond_count());
+        assert_eq!(canonical.component_count(), query.component_count());
+        assert_eq!(rendered, canonical.to_canonical_smarts());
+        assert_eq!(canonical, reparsed_canonical);
+    }
+
+    #[test]
+    fn canonicalize_handles_underconstrained_ring_chirality_with_h_fuzz_artifact() {
+        let query = QueryMol::from_str("C[No]1[21Al43AlB]2[21AlBNo@H]1[21Al40AlB]2[21Al]").unwrap();
 
         let canonical = query.canonicalize();
         let recanonicalized = canonical.canonicalize();
