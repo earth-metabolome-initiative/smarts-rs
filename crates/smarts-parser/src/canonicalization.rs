@@ -318,7 +318,11 @@ impl QueryMol {
                     .copied()
                     .map(|neighbor| new_index_of_old_atom[neighbor])
                     .collect::<Vec<_>>();
-                let expr = if emitted_neighbor_permutation_is_odd(
+                let expr = if atom_expr_supports_emitted_parity(
+                    &self.atoms()[old_atom].expr,
+                    &mapped_old_neighbors,
+                    &new_emitted_neighbors[new_atom],
+                ) && emitted_neighbor_permutation_is_odd(
                     &mapped_old_neighbors,
                     &new_emitted_neighbors[new_atom],
                 ) {
@@ -400,6 +404,28 @@ fn atom_expr_contains_chirality(expr: &AtomExpr) -> bool {
     }
 }
 
+fn atom_expr_supports_emitted_parity(
+    expr: &AtomExpr,
+    from_neighbors: &[AtomId],
+    to_neighbors: &[AtomId],
+) -> bool {
+    let emitted_degree = from_neighbors.len().max(to_neighbors.len());
+    match atom_expr_chirality(expr) {
+        Some(Chirality::At | Chirality::AtAt | Chirality::TH(1 | 2)) => {
+            emitted_degree == 4 || (emitted_degree == 3 && atom_expr_has_single_hydrogen(expr))
+        }
+        Some(Chirality::AL(1 | 2)) => emitted_degree == 2,
+        Some(_) | None => false,
+    }
+}
+
+fn atom_expr_chirality(expr: &AtomExpr) -> Option<Chirality> {
+    match expr {
+        AtomExpr::Wildcard | AtomExpr::Bare { .. } => None,
+        AtomExpr::Bracket(bracket) => bracket_tree_chirality(&bracket.tree),
+    }
+}
+
 fn bracket_tree_contains_chirality(tree: &BracketExprTree) -> bool {
     match tree {
         BracketExprTree::Primitive(AtomPrimitive::Chirality(_)) => true,
@@ -408,6 +434,38 @@ fn bracket_tree_contains_chirality(tree: &BracketExprTree) -> bool {
         BracketExprTree::HighAnd(items)
         | BracketExprTree::Or(items)
         | BracketExprTree::LowAnd(items) => items.iter().any(bracket_tree_contains_chirality),
+    }
+}
+
+fn bracket_tree_chirality(tree: &BracketExprTree) -> Option<Chirality> {
+    match tree {
+        BracketExprTree::Primitive(AtomPrimitive::Chirality(chirality)) => Some(*chirality),
+        BracketExprTree::Primitive(_) => None,
+        BracketExprTree::Not(inner) => bracket_tree_chirality(inner),
+        BracketExprTree::HighAnd(items)
+        | BracketExprTree::Or(items)
+        | BracketExprTree::LowAnd(items) => items.iter().find_map(bracket_tree_chirality),
+    }
+}
+
+fn atom_expr_has_single_hydrogen(expr: &AtomExpr) -> bool {
+    match expr {
+        AtomExpr::Wildcard | AtomExpr::Bare { .. } => false,
+        AtomExpr::Bracket(bracket) => bracket_tree_has_single_hydrogen(&bracket.tree),
+    }
+}
+
+fn bracket_tree_has_single_hydrogen(tree: &BracketExprTree) -> bool {
+    match tree {
+        BracketExprTree::Primitive(AtomPrimitive::Hydrogen(
+            _,
+            None | Some(crate::query::NumericQuery::Exact(1)),
+        )) => true,
+        BracketExprTree::Primitive(_) => false,
+        BracketExprTree::Not(inner) => bracket_tree_has_single_hydrogen(inner),
+        BracketExprTree::HighAnd(items)
+        | BracketExprTree::Or(items)
+        | BracketExprTree::LowAnd(items) => items.iter().any(bracket_tree_has_single_hydrogen),
     }
 }
 
@@ -2078,6 +2136,25 @@ mod tests {
     #[test]
     fn canonicalize_handles_trigonal_bipyramidal_parallel_bond_fuzz_artifact() {
         let query = QueryMol::from_str(r"[@PasBP]17O[@TBP]17O").unwrap();
+
+        let canonical = query.canonicalize();
+        let recanonicalized = canonical.canonicalize();
+        let rendered = canonical.to_string();
+        let reparsed = QueryMol::from_str(&rendered).unwrap();
+        let reparsed_canonical = reparsed.canonicalize();
+
+        assert_eq!(canonical, recanonicalized);
+        assert!(canonical.is_canonical());
+        assert_eq!(canonical.atom_count(), query.atom_count());
+        assert_eq!(canonical.bond_count(), query.bond_count());
+        assert_eq!(canonical.component_count(), query.component_count());
+        assert_eq!(rendered, canonical.to_canonical_smarts());
+        assert_eq!(canonical, reparsed_canonical);
+    }
+
+    #[test]
+    fn canonicalize_handles_underconstrained_ring_chirality_fuzz_artifact() {
+        let query = QueryMol::from_str("C[No]1[21Al43AlB]2[21AlBNo@@]1[21Al24AlB]2[21Al]").unwrap();
 
         let canonical = query.canonicalize();
         let recanonicalized = canonical.canonicalize();
