@@ -48,3 +48,9 @@ name = "canonicalization_loop"
 path = "fuzz_targets/canonicalization_loop.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "canonicalization_large_loop"
+path = "fuzz_targets/canonicalization_large_loop.rs"
+test = false
+doc = false
