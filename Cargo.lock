@@ -580,6 +580,7 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "elements_rs",
+ "geometric-traits",
  "serde",
  "serde_json",
  "smiles-parser",

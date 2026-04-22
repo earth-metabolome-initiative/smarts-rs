@@ -15,6 +15,7 @@ use alloc::string::ToString;
 use core::str::FromStr;
 
 mod bracket;
+mod canonicalization;
 mod edit;
 mod error;
 mod parse;
@@ -25,6 +26,7 @@ pub use bracket::{
     parse_bracket_text as fuzz_parse_bracket_text, BracketParseError as FuzzBracketParseError,
     BracketParseErrorKind as FuzzBracketParseErrorKind,
 };
+pub use canonicalization::QueryCanonicalLabeling;
 pub use edit::{
     add_atom_primitive, add_bond_primitive, normalize_bond_tree, normalize_bracket_tree,
     remove_atom_primitive, remove_bond_primitive, replace_atom_primitive, replace_bond_primitive,
