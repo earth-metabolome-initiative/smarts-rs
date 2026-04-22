@@ -42,3 +42,9 @@ name = "validator_match_loop"
 path = "fuzz_targets/validator_match_loop.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "canonicalization_loop"
+path = "fuzz_targets/canonicalization_loop.rs"
+test = false
+doc = false
