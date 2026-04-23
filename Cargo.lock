@@ -575,28 +575,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 
 [[package]]
-name = "smarts-parser"
+name = "smarts-rs"
 version = "0.1.0"
 dependencies = [
  "criterion",
  "elements_rs",
  "geometric-traits",
+ "rayon",
  "serde",
  "serde_json",
- "smiles-parser",
- "thiserror",
-]
-
-[[package]]
-name = "smarts-validator"
-version = "0.1.0"
-dependencies = [
- "criterion",
- "elements_rs",
- "geometric-traits",
- "serde",
- "serde_json",
- "smarts-parser",
  "smiles-parser",
  "thiserror",
 ]

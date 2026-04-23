@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Benchmark RDKit substructure matching on the shared validator workloads."""
+"""Benchmark RDKit substructure matching on the shared matching workloads."""
 
 from __future__ import annotations
 
@@ -42,11 +42,11 @@ class RuntimeCase:
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-CORPUS_ROOT = REPO_ROOT / "corpus" / "validator"
+MATCHING_CORPUS_ROOT = REPO_ROOT / "corpus" / "matching"
 
 
 def load_workloads() -> list[Workload]:
-    raw = json.loads((REPO_ROOT / "corpus" / "benchmark" / "validator-workloads.json").read_text())
+    raw = json.loads((REPO_ROOT / "corpus" / "benchmark" / "matching-workloads.json").read_text())
     return [
         Workload(
             id=item["id"],
@@ -60,7 +60,7 @@ def load_workloads() -> list[Workload]:
 def load_cases(case_files: tuple[str, ...]) -> list[BenchmarkCase]:
     cases: list[BenchmarkCase] = []
     for case_file in case_files:
-        raw = json.loads((CORPUS_ROOT / case_file).read_text())
+        raw = json.loads((MATCHING_CORPUS_ROOT / case_file).read_text())
         for item in raw:
             cases.append(
                 BenchmarkCase(

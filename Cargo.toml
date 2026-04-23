@@ -1,8 +1,54 @@
+[package]
+name = "smarts-rs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "SMARTS parsing, canonicalization, and substructure matching"
+readme = "README.md"
+keywords = ["smarts", "chemistry", "substructure"]
+categories = ["parser-implementations", "science"]
+
+[features]
+default = []
+serde = ["dep:serde"]
+
+[lints]
+workspace = true
+
+[dependencies]
+elements_rs = { version = "0.2.3", default-features = false }
+geometric-traits = { git = "https://github.com/earth-metabolome-initiative/geometric-traits", branch = "main", default-features = false, features = ["alloc"] }
+serde = { version = "1.0.228", default-features = false, features = ["alloc"], optional = true }
+smiles-parser = { git = "https://github.com/earth-metabolome-initiative/smiles-parser", branch = "main", default-features = false }
+thiserror = { version = "2.0.17", default-features = false }
+
+[dev-dependencies]
+criterion = "0.8.2"
+elements_rs = "0.2.3"
+geometric-traits = { git = "https://github.com/earth-metabolome-initiative/geometric-traits", branch = "main" }
+rayon = "1.11.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+
+[[bench]]
+name = "parse_corpus"
+harness = false
+
+[[bench]]
+name = "canonicalization_corpus"
+harness = false
+
+[[bench]]
+name = "match_corpus"
+harness = false
+
+[[bench]]
+name = "evolution_matrix"
+harness = false
+
 [workspace]
-members = [
-    "crates/smarts-parser",
-    "crates/smarts-validator",
-]
+members = ["."]
 exclude = ["fuzz"]
 resolver = "2"
 

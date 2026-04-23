@@ -21,7 +21,9 @@ ALL_HARNESSES=(
   "bracket_parse_loop"
   "parse_bracket_atom"
   "recursive_smarts_lowering"
-  "validator_match_loop"
+  "matching_loop"
+  "canonicalization_loop"
+  "canonicalization_large_loop"
 )
 
 HARNESSES=()
@@ -46,7 +48,7 @@ Options:
 
 Examples:
   scripts/run_fuzz_tmux.sh
-  scripts/run_fuzz_tmux.sh validator_match_loop parse_display_loop
+  scripts/run_fuzz_tmux.sh matching_loop parse_display_loop
   scripts/run_fuzz_tmux.sh -s fuzzing -- -max_len=4096 -timeout=5
 
 Notes:
@@ -73,6 +75,20 @@ has_harness() {
     fi
   done
   return 1
+}
+
+harness_corpus_dir() {
+  local harness=$1
+  case "$harness" in
+    canonicalization_loop|canonicalization_large_loop)
+      printf '%s' "corpus/canonicalization_loop"
+      ;;
+    *)
+      if [[ -d "$FUZZ_DIR/corpus/$harness" ]]; then
+        printf '%s' "corpus/$harness"
+      fi
+      ;;
+  esac
 }
 
 while (($# > 0)); do
@@ -145,7 +161,13 @@ fi
 build_pane_command() {
   local harness=$1
   local cargo_cmd=("cargo" "fuzz" "run" "$harness")
+  local corpus_dir=""
   local pane_args=("${LIBFUZZER_ARGS[@]}")
+
+  corpus_dir=$(harness_corpus_dir "$harness")
+  if [[ -n "$corpus_dir" ]]; then
+    cargo_cmd+=("$corpus_dir")
+  fi
 
   if [[ "$USER_SET_LIBFUZZER_ARGS" == false ]]; then
     case "$harness" in
@@ -161,8 +183,14 @@ build_pane_command() {
       recursive_smarts_lowering)
         pane_args=("-timeout=5" "-max_len=192")
         ;;
-      validator_match_loop)
+      matching_loop)
         pane_args=("-timeout=5" "-max_len=192")
+        ;;
+      canonicalization_loop)
+        pane_args=("-timeout=5" "-max_len=256")
+        ;;
+      canonicalization_large_loop)
+        pane_args=("-timeout=5" "-max_len=256")
         ;;
     esac
   fi

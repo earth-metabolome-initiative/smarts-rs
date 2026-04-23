@@ -7,10 +7,11 @@ edition = "2021"
 [package.metadata]
 cargo-fuzz = true
 
+[workspace]
+
 [dependencies]
 libfuzzer-sys = "0.4"
-smarts-parser = { path = "../crates/smarts-parser" }
-smarts-validator = { path = "../crates/smarts-validator" }
+smarts-rs = { path = ".." }
 smiles-parser = { git = "https://github.com/earth-metabolome-initiative/smiles-parser", branch = "main" }
 
 [[bin]]
@@ -38,8 +39,8 @@ test = false
 doc = false
 
 [[bin]]
-name = "validator_match_loop"
-path = "fuzz_targets/validator_match_loop.rs"
+name = "matching_loop"
+path = "fuzz_targets/matching_loop.rs"
 test = false
 doc = false
 

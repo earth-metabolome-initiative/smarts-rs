@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use smarts_parser::{parse_smarts, AtomExpr, AtomPrimitive, BracketExprTree, QueryMol};
+use smarts_rs::{parse_smarts, AtomExpr, AtomPrimitive, BracketExprTree, QueryMol};
 
 #[derive(Default)]
 struct QueryBudget {
