@@ -99,6 +99,26 @@ pub struct QueryScreenFeatureStats {
     pub star3_feature_masks: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QueryFeatureFilter {
+    Edge {
+        feature: EdgeFeature,
+        required_count: u16,
+    },
+    Path3 {
+        feature: Path3Feature,
+        required_count: u16,
+    },
+    Path4 {
+        feature: Path4Feature,
+        required_count: u16,
+    },
+    Star3 {
+        feature: Star3Feature,
+        required_count: u16,
+    },
+}
+
 /// Conservative summary of one compiled SMARTS query.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryScreen {
@@ -135,6 +155,8 @@ pub struct QueryScreen {
     required_star3_features: Box<[Star3Feature]>,
     /// Required exact 3-neighbor star signature multiplicities.
     required_star3_feature_counts: Box<[(Star3Feature, u16)]>,
+    /// Planned local-signature filter order.
+    planned_feature_filters: Box<[QueryFeatureFilter]>,
 }
 
 impl QueryScreen {
@@ -144,6 +166,16 @@ impl QueryScreen {
         let atom_requirements = collect_query_atom_requirements(query);
         let (incident_bonds, required_bond_counts) = collect_query_bond_requirements(query);
         let feature_counts = collect_query_feature_counts(query, &incident_bonds);
+        let required_edge_feature_counts = feature_counts.edge.into_iter().collect::<Vec<_>>();
+        let required_path3_feature_counts = feature_counts.path3.into_iter().collect::<Vec<_>>();
+        let required_path4_feature_counts = feature_counts.path4.into_iter().collect::<Vec<_>>();
+        let required_star3_feature_counts = feature_counts.star3.into_iter().collect::<Vec<_>>();
+        let planned_feature_filters = plan_feature_filters(
+            &required_edge_feature_counts,
+            &required_path3_feature_counts,
+            &required_path4_feature_counts,
+            &required_star3_feature_counts,
+        );
 
         Self {
             min_atom_count: query.atom_count(),
@@ -154,14 +186,27 @@ impl QueryScreen {
             min_aromatic_atom_count: atom_requirements.min_aromatic_count,
             min_ring_atom_count: atom_requirements.min_ring_count,
             required_bond_counts,
-            required_edge_features: feature_counts.edge.keys().copied().collect(),
-            required_edge_feature_counts: feature_counts.edge.into_iter().collect(),
-            required_path3_features: feature_counts.path3.keys().copied().collect(),
-            required_path3_feature_counts: feature_counts.path3.into_iter().collect(),
-            required_path4_features: feature_counts.path4.keys().copied().collect(),
-            required_path4_feature_counts: feature_counts.path4.into_iter().collect(),
-            required_star3_features: feature_counts.star3.keys().copied().collect(),
-            required_star3_feature_counts: feature_counts.star3.into_iter().collect(),
+            required_edge_features: required_edge_feature_counts
+                .iter()
+                .map(|(feature, _)| *feature)
+                .collect(),
+            required_edge_feature_counts: required_edge_feature_counts.into_boxed_slice(),
+            required_path3_features: required_path3_feature_counts
+                .iter()
+                .map(|(feature, _)| *feature)
+                .collect(),
+            required_path3_feature_counts: required_path3_feature_counts.into_boxed_slice(),
+            required_path4_features: required_path4_feature_counts
+                .iter()
+                .map(|(feature, _)| *feature)
+                .collect(),
+            required_path4_feature_counts: required_path4_feature_counts.into_boxed_slice(),
+            required_star3_features: required_star3_feature_counts
+                .iter()
+                .map(|(feature, _)| *feature)
+                .collect(),
+            required_star3_feature_counts: required_star3_feature_counts.into_boxed_slice(),
+            planned_feature_filters,
         }
     }
 
@@ -488,6 +533,83 @@ impl TargetCorpusScratch<'_> {
         self.path3_mask_cache.clear();
         self.path4_mask_cache.clear();
         self.star3_mask_cache.clear();
+    }
+}
+
+impl QueryFeatureFilter {
+    fn populate_candidate_mask(
+        self,
+        index: &TargetCorpusIndex,
+        active_candidate_mask: Option<&[u64]>,
+        scratch: &mut TargetCorpusScratch<'_>,
+    ) -> usize {
+        match self {
+            Self::Edge {
+                feature,
+                required_count,
+            } => index.populate_edge_candidate_mask(
+                feature,
+                required_count,
+                active_candidate_mask,
+                scratch,
+            ),
+            Self::Path3 {
+                feature,
+                required_count,
+            } => index.populate_path3_candidate_mask(
+                feature,
+                required_count,
+                active_candidate_mask,
+                scratch,
+            ),
+            Self::Path4 {
+                feature,
+                required_count,
+            } => index.populate_path4_candidate_mask(
+                feature,
+                required_count,
+                active_candidate_mask,
+                scratch,
+            ),
+            Self::Star3 {
+                feature,
+                required_count,
+            } => index.populate_star3_candidate_mask(
+                feature,
+                required_count,
+                active_candidate_mask,
+                scratch,
+            ),
+        }
+    }
+
+    fn intersect_candidate_mask(
+        self,
+        scratch: &mut TargetCorpusScratch<'_>,
+        has_active_source: &mut bool,
+    ) -> bool {
+        match self {
+            Self::Edge { .. } => intersect_source(
+                &mut scratch.candidate_mask,
+                has_active_source,
+                &scratch.edge_candidate_mask,
+            ),
+            Self::Path3 { .. } => intersect_source(
+                &mut scratch.candidate_mask,
+                has_active_source,
+                &scratch.path3_candidate_mask,
+            ),
+            Self::Path4 { .. } => intersect_source(
+                &mut scratch.candidate_mask,
+                has_active_source,
+                &scratch.path4_candidate_mask,
+            ),
+            Self::Star3 { .. } => intersect_source(
+                &mut scratch.candidate_mask,
+                has_active_source,
+                &scratch.star3_candidate_mask,
+            ),
+        }
     }
 }
 
@@ -913,16 +1035,17 @@ impl TargetCorpusIndex {
                 return;
             }
         }
-        if !self.apply_edge_feature_count_filters(query, scratch, &mut has_active_source) {
-            return;
-        }
-        if !self.apply_path3_feature_count_filters(query, scratch, &mut has_active_source) {
-            return;
-        }
-        if !self.apply_path4_feature_count_filters(query, scratch, &mut has_active_source) {
-            return;
-        }
-        if !self.apply_star3_feature_count_filters(query, scratch, &mut has_active_source) {
+        let mut candidate_population = if has_active_source {
+            bitset_population(&scratch.candidate_mask)
+        } else {
+            self.screens.len()
+        };
+        if !self.apply_feature_count_filters(
+            query,
+            scratch,
+            &mut has_active_source,
+            &mut candidate_population,
+        ) {
             return;
         }
 
@@ -1017,24 +1140,29 @@ impl TargetCorpusIndex {
         )
     }
 
-    fn apply_edge_feature_count_filters<'idx>(
+    fn apply_feature_count_filters<'idx>(
         &'idx self,
         query: &QueryScreen,
         scratch: &mut TargetCorpusScratch<'idx>,
         has_active_source: &mut bool,
+        candidate_population: &mut usize,
     ) -> bool {
-        for &(feature, required_count) in &query.required_edge_feature_counts {
-            let population = self.populate_edge_candidate_mask(feature, required_count, scratch);
+        for filter in query.planned_feature_filters.iter().copied() {
+            let active_candidate_mask = should_filter_sparse_counts(
+                *has_active_source,
+                *candidate_population,
+                self.screens.len(),
+            )
+            .then(|| scratch.candidate_mask.clone());
+            let population =
+                filter.populate_candidate_mask(self, active_candidate_mask.as_deref(), scratch);
             if population == 0 {
                 return false;
             }
-            if !intersect_source(
-                &mut scratch.candidate_mask,
-                has_active_source,
-                &scratch.edge_candidate_mask,
-            ) {
+            if !filter.intersect_candidate_mask(scratch, has_active_source) {
                 return false;
             }
+            *candidate_population = bitset_population(&scratch.candidate_mask);
         }
 
         true
@@ -1044,18 +1172,21 @@ impl TargetCorpusIndex {
         &self,
         query_feature: EdgeFeature,
         required_count: u16,
+        active_candidate_mask: Option<&[u64]>,
         scratch: &mut TargetCorpusScratch<'_>,
     ) -> usize {
         if required_count == 0 {
             return self.screens.len();
         }
-        if let Some(cached) = scratch
-            .edge_mask_cache
-            .get(&(query_feature, required_count))
-        {
-            scratch.edge_candidate_mask.clear();
-            scratch.edge_candidate_mask.extend_from_slice(&cached.words);
-            return cached.population;
+        if active_candidate_mask.is_none() {
+            if let Some(cached) = scratch
+                .edge_mask_cache
+                .get(&(query_feature, required_count))
+            {
+                scratch.edge_candidate_mask.clear();
+                scratch.edge_candidate_mask.extend_from_slice(&cached.words);
+                return cached.population;
+            }
         }
 
         scratch.edge_touched_targets.clear();
@@ -1065,7 +1196,7 @@ impl TargetCorpusIndex {
         }
 
         self.collect_edge_domain_matches(query_feature, scratch);
-        self.accumulate_indexed_edge_matches(query_feature, scratch);
+        self.accumulate_indexed_edge_matches(query_feature, scratch, active_candidate_mask);
 
         let word_count = bitset_word_count(self.screens.len());
         if scratch.edge_candidate_mask.len() == word_count {
@@ -1083,13 +1214,15 @@ impl TargetCorpusIndex {
             scratch.edge_count_by_target[target_id] = 0;
         }
 
-        scratch.edge_mask_cache.insert(
-            (query_feature, required_count),
-            CachedFeatureMask {
-                population,
-                words: scratch.edge_candidate_mask.clone().into_boxed_slice(),
-            },
-        );
+        if active_candidate_mask.is_none() {
+            scratch.edge_mask_cache.insert(
+                (query_feature, required_count),
+                CachedFeatureMask {
+                    population,
+                    words: scratch.edge_candidate_mask.clone().into_boxed_slice(),
+                },
+            );
+        }
 
         population
     }
@@ -1120,6 +1253,7 @@ impl TargetCorpusIndex {
         &self,
         query_feature: EdgeFeature,
         scratch: &mut TargetCorpusScratch<'_>,
+        active_candidate_mask: Option<&[u64]>,
     ) {
         let feature_count = self.indexed_edge_feature_count_index.len();
         let forward_has_candidates = build_edge_orientation_feature_mask(
@@ -1175,50 +1309,31 @@ impl TargetCorpusIndex {
             &scratch.edge_feature_candidate_mask,
             &mut scratch.edge_count_by_target,
             &mut scratch.edge_touched_targets,
+            active_candidate_mask,
         );
-    }
-
-    fn apply_path3_feature_count_filters<'idx>(
-        &'idx self,
-        query: &QueryScreen,
-        scratch: &mut TargetCorpusScratch<'idx>,
-        has_active_source: &mut bool,
-    ) -> bool {
-        for &(feature, required_count) in &query.required_path3_feature_counts {
-            let population = self.populate_path3_candidate_mask(feature, required_count, scratch);
-            if population == 0 {
-                return false;
-            }
-            if !intersect_source(
-                &mut scratch.candidate_mask,
-                has_active_source,
-                &scratch.path3_candidate_mask,
-            ) {
-                return false;
-            }
-        }
-
-        true
     }
 
     fn populate_path3_candidate_mask(
         &self,
         query_feature: Path3Feature,
         required_count: u16,
+        active_candidate_mask: Option<&[u64]>,
         scratch: &mut TargetCorpusScratch<'_>,
     ) -> usize {
         if required_count == 0 {
             return self.screens.len();
         }
-        if let Some(cached) = scratch
-            .path3_mask_cache
-            .get(&(query_feature, required_count))
-        {
-            scratch.path3_candidate_mask.clear();
-            scratch
-                .path3_candidate_mask
-                .extend_from_slice(&cached.words);
-            return cached.population;
+        if active_candidate_mask.is_none() {
+            if let Some(cached) = scratch
+                .path3_mask_cache
+                .get(&(query_feature, required_count))
+            {
+                scratch.path3_candidate_mask.clear();
+                scratch
+                    .path3_candidate_mask
+                    .extend_from_slice(&cached.words);
+                return cached.population;
+            }
         }
 
         scratch.path3_touched_targets.clear();
@@ -1228,7 +1343,7 @@ impl TargetCorpusIndex {
         }
 
         self.collect_path3_domain_matches(query_feature, scratch);
-        self.accumulate_indexed_path3_matches(query_feature, scratch);
+        self.accumulate_indexed_path3_matches(query_feature, scratch, active_candidate_mask);
 
         let word_count = bitset_word_count(self.screens.len());
         if scratch.path3_candidate_mask.len() == word_count {
@@ -1246,13 +1361,15 @@ impl TargetCorpusIndex {
             scratch.path3_count_by_target[target_id] = 0;
         }
 
-        scratch.path3_mask_cache.insert(
-            (query_feature, required_count),
-            CachedFeatureMask {
-                population,
-                words: scratch.path3_candidate_mask.clone().into_boxed_slice(),
-            },
-        );
+        if active_candidate_mask.is_none() {
+            scratch.path3_mask_cache.insert(
+                (query_feature, required_count),
+                CachedFeatureMask {
+                    population,
+                    words: scratch.path3_candidate_mask.clone().into_boxed_slice(),
+                },
+            );
+        }
 
         population
     }
@@ -1293,6 +1410,7 @@ impl TargetCorpusIndex {
         &self,
         query_feature: Path3Feature,
         scratch: &mut TargetCorpusScratch<'_>,
+        active_candidate_mask: Option<&[u64]>,
     ) {
         let feature_count = self.indexed_path3_feature_count_index.len();
         let forward_has_candidates = build_path3_orientation_feature_mask(
@@ -1356,50 +1474,31 @@ impl TargetCorpusIndex {
             &scratch.path3_feature_candidate_mask,
             &mut scratch.path3_count_by_target,
             &mut scratch.path3_touched_targets,
+            active_candidate_mask,
         );
-    }
-
-    fn apply_path4_feature_count_filters<'idx>(
-        &'idx self,
-        query: &QueryScreen,
-        scratch: &mut TargetCorpusScratch<'idx>,
-        has_active_source: &mut bool,
-    ) -> bool {
-        for &(feature, required_count) in &query.required_path4_feature_counts {
-            let population = self.populate_path4_candidate_mask(feature, required_count, scratch);
-            if population == 0 {
-                return false;
-            }
-            if !intersect_source(
-                &mut scratch.candidate_mask,
-                has_active_source,
-                &scratch.path4_candidate_mask,
-            ) {
-                return false;
-            }
-        }
-
-        true
     }
 
     fn populate_path4_candidate_mask(
         &self,
         query_feature: Path4Feature,
         required_count: u16,
+        active_candidate_mask: Option<&[u64]>,
         scratch: &mut TargetCorpusScratch<'_>,
     ) -> usize {
         if required_count == 0 {
             return self.screens.len();
         }
-        if let Some(cached) = scratch
-            .path4_mask_cache
-            .get(&(query_feature, required_count))
-        {
-            scratch.path4_candidate_mask.clear();
-            scratch
-                .path4_candidate_mask
-                .extend_from_slice(&cached.words);
-            return cached.population;
+        if active_candidate_mask.is_none() {
+            if let Some(cached) = scratch
+                .path4_mask_cache
+                .get(&(query_feature, required_count))
+            {
+                scratch.path4_candidate_mask.clear();
+                scratch
+                    .path4_candidate_mask
+                    .extend_from_slice(&cached.words);
+                return cached.population;
+            }
         }
 
         scratch.path4_touched_targets.clear();
@@ -1420,9 +1519,9 @@ impl TargetCorpusIndex {
             .saturating_mul(scratch.path4_right_atoms.len());
 
         if candidate_combination_count <= self.indexed_path4_feature_count_index.len() {
-            self.accumulate_enumerated_path4_matches(query_feature, scratch);
+            self.accumulate_enumerated_path4_matches(query_feature, scratch, active_candidate_mask);
         } else {
-            self.accumulate_scanned_path4_matches(query_feature, scratch);
+            self.accumulate_scanned_path4_matches(query_feature, scratch, active_candidate_mask);
         }
 
         let population = finalize_sparse_candidate_mask(
@@ -1432,13 +1531,15 @@ impl TargetCorpusIndex {
             &scratch.path4_touched_targets,
             &mut scratch.path4_candidate_mask,
         );
-        scratch.path4_mask_cache.insert(
-            (query_feature, required_count),
-            CachedFeatureMask {
-                population,
-                words: scratch.path4_candidate_mask.clone().into_boxed_slice(),
-            },
-        );
+        if active_candidate_mask.is_none() {
+            scratch.path4_mask_cache.insert(
+                (query_feature, required_count),
+                CachedFeatureMask {
+                    population,
+                    words: scratch.path4_candidate_mask.clone().into_boxed_slice(),
+                },
+            );
+        }
 
         population
     }
@@ -1489,6 +1590,7 @@ impl TargetCorpusIndex {
         &self,
         query_feature: Path4Feature,
         scratch: &mut TargetCorpusScratch<'_>,
+        active_candidate_mask: Option<&[u64]>,
     ) {
         scratch.path4_visited_features.clear();
         for &left in &scratch.path4_left_atoms {
@@ -1533,6 +1635,7 @@ impl TargetCorpusIndex {
                     &mut scratch.path4_count_by_target,
                     &mut scratch.path4_touched_targets,
                     sparse_counts,
+                    active_candidate_mask,
                 );
             }
         }
@@ -1542,6 +1645,7 @@ impl TargetCorpusIndex {
         &self,
         query_feature: Path4Feature,
         scratch: &mut TargetCorpusScratch<'_>,
+        active_candidate_mask: Option<&[u64]>,
     ) {
         for &(target_feature, ref sparse_counts) in &self.indexed_path4_feature_count_index {
             if path4_target_feature_satisfies_query(target_feature, query_feature) {
@@ -1549,52 +1653,33 @@ impl TargetCorpusIndex {
                     &mut scratch.path4_count_by_target,
                     &mut scratch.path4_touched_targets,
                     sparse_counts,
+                    active_candidate_mask,
                 );
             }
         }
-    }
-
-    fn apply_star3_feature_count_filters<'idx>(
-        &'idx self,
-        query: &QueryScreen,
-        scratch: &mut TargetCorpusScratch<'idx>,
-        has_active_source: &mut bool,
-    ) -> bool {
-        for &(feature, required_count) in &query.required_star3_feature_counts {
-            let population = self.populate_star3_candidate_mask(feature, required_count, scratch);
-            if population == 0 {
-                return false;
-            }
-            if !intersect_source(
-                &mut scratch.candidate_mask,
-                has_active_source,
-                &scratch.star3_candidate_mask,
-            ) {
-                return false;
-            }
-        }
-
-        true
     }
 
     fn populate_star3_candidate_mask(
         &self,
         query_feature: Star3Feature,
         required_count: u16,
+        active_candidate_mask: Option<&[u64]>,
         scratch: &mut TargetCorpusScratch<'_>,
     ) -> usize {
         if required_count == 0 {
             return self.screens.len();
         }
-        if let Some(cached) = scratch
-            .star3_mask_cache
-            .get(&(query_feature, required_count))
-        {
-            scratch.star3_candidate_mask.clear();
-            scratch
-                .star3_candidate_mask
-                .extend_from_slice(&cached.words);
-            return cached.population;
+        if active_candidate_mask.is_none() {
+            if let Some(cached) = scratch
+                .star3_mask_cache
+                .get(&(query_feature, required_count))
+            {
+                scratch.star3_candidate_mask.clear();
+                scratch
+                    .star3_candidate_mask
+                    .extend_from_slice(&cached.words);
+                return cached.population;
+            }
         }
 
         scratch.star3_touched_targets.clear();
@@ -1615,9 +1700,9 @@ impl TargetCorpusIndex {
             .saturating_mul(scratch.star3_third_atoms.len());
 
         if candidate_combination_count <= self.indexed_star3_feature_count_index.len() {
-            self.accumulate_enumerated_star3_matches(query_feature, scratch);
+            self.accumulate_enumerated_star3_matches(query_feature, scratch, active_candidate_mask);
         } else {
-            self.accumulate_scanned_star3_matches(query_feature, scratch);
+            self.accumulate_scanned_star3_matches(query_feature, scratch, active_candidate_mask);
         }
 
         let population = finalize_sparse_candidate_mask(
@@ -1627,13 +1712,15 @@ impl TargetCorpusIndex {
             &scratch.star3_touched_targets,
             &mut scratch.star3_candidate_mask,
         );
-        scratch.star3_mask_cache.insert(
-            (query_feature, required_count),
-            CachedFeatureMask {
-                population,
-                words: scratch.star3_candidate_mask.clone().into_boxed_slice(),
-            },
-        );
+        if active_candidate_mask.is_none() {
+            scratch.star3_mask_cache.insert(
+                (query_feature, required_count),
+                CachedFeatureMask {
+                    population,
+                    words: scratch.star3_candidate_mask.clone().into_boxed_slice(),
+                },
+            );
+        }
 
         population
     }
@@ -1684,6 +1771,7 @@ impl TargetCorpusIndex {
         &self,
         query_feature: Star3Feature,
         scratch: &mut TargetCorpusScratch<'_>,
+        active_candidate_mask: Option<&[u64]>,
     ) {
         scratch.star3_visited_features.clear();
         for &center in &scratch.star3_center_atoms {
@@ -1736,6 +1824,7 @@ impl TargetCorpusIndex {
                     &mut scratch.star3_count_by_target,
                     &mut scratch.star3_touched_targets,
                     sparse_counts,
+                    active_candidate_mask,
                 );
             }
         }
@@ -1745,6 +1834,7 @@ impl TargetCorpusIndex {
         &self,
         query_feature: Star3Feature,
         scratch: &mut TargetCorpusScratch<'_>,
+        active_candidate_mask: Option<&[u64]>,
     ) {
         for &(target_feature, ref sparse_counts) in &self.indexed_star3_feature_count_index {
             if star3_target_feature_satisfies_query(target_feature, query_feature) {
@@ -1752,6 +1842,7 @@ impl TargetCorpusIndex {
                     &mut scratch.star3_count_by_target,
                     &mut scratch.star3_touched_targets,
                     sparse_counts,
+                    active_candidate_mask,
                 );
             }
         }
@@ -1830,8 +1921,12 @@ fn accumulate_sparse_counts(
     count_by_target: &mut [u16],
     touched_targets: &mut Vec<usize>,
     sparse_counts: &[(usize, u16)],
+    active_candidate_mask: Option<&[u64]>,
 ) {
     for &(target_id, count) in sparse_counts {
+        if active_candidate_mask.is_some_and(|mask| !bitset_contains(mask, target_id)) {
+            continue;
+        }
         if count_by_target[target_id] == 0 {
             touched_targets.push(target_id);
         }
@@ -2095,16 +2190,173 @@ fn accumulate_feature_id_mask_counts<T>(
     feature_mask: &[u64],
     count_by_target: &mut [u16],
     touched_targets: &mut Vec<usize>,
+    active_candidate_mask: Option<&[u64]>,
 ) {
     for (word_index, mut word) in feature_mask.iter().copied().enumerate() {
         while word != 0 {
             let bit = word.trailing_zeros() as usize;
             let feature_id = word_index * u64::BITS as usize + bit;
             if let Some((_, sparse_counts)) = entries.get(feature_id) {
-                accumulate_sparse_counts(count_by_target, touched_targets, sparse_counts);
+                accumulate_sparse_counts(
+                    count_by_target,
+                    touched_targets,
+                    sparse_counts,
+                    active_candidate_mask,
+                );
             }
             word &= word - 1;
         }
+    }
+}
+
+fn bitset_population(words: &[u64]) -> usize {
+    words.iter().map(|word| word.count_ones() as usize).sum()
+}
+
+fn bitset_contains(words: &[u64], bit: usize) -> bool {
+    let word = bit / u64::BITS as usize;
+    let offset = bit % u64::BITS as usize;
+    words
+        .get(word)
+        .is_some_and(|word_bits| (word_bits & (1u64 << offset)) != 0)
+}
+
+const fn should_filter_sparse_counts(
+    has_active_source: bool,
+    candidate_population: usize,
+    target_count: usize,
+) -> bool {
+    has_active_source && candidate_population.saturating_mul(4) <= target_count
+}
+
+fn plan_feature_filters(
+    edge_filters: &[(EdgeFeature, u16)],
+    path3_filters: &[(Path3Feature, u16)],
+    path4_filters: &[(Path4Feature, u16)],
+    star3_filters: &[(Star3Feature, u16)],
+) -> Box<[QueryFeatureFilter]> {
+    let mut filters = Vec::with_capacity(
+        edge_filters.len() + path3_filters.len() + path4_filters.len() + star3_filters.len(),
+    );
+    filters.extend(
+        edge_filters
+            .iter()
+            .copied()
+            .map(|(feature, required_count)| QueryFeatureFilter::Edge {
+                feature,
+                required_count,
+            }),
+    );
+    filters.extend(
+        path3_filters
+            .iter()
+            .copied()
+            .map(|(feature, required_count)| QueryFeatureFilter::Path3 {
+                feature,
+                required_count,
+            }),
+    );
+    filters.extend(
+        path4_filters
+            .iter()
+            .copied()
+            .map(|(feature, required_count)| QueryFeatureFilter::Path4 {
+                feature,
+                required_count,
+            }),
+    );
+    filters.extend(
+        star3_filters
+            .iter()
+            .copied()
+            .map(|(feature, required_count)| QueryFeatureFilter::Star3 {
+                feature,
+                required_count,
+            }),
+    );
+    filters.sort_unstable_by(|left, right| {
+        feature_filter_sort_key(*right).cmp(&feature_filter_sort_key(*left))
+    });
+    filters.into_boxed_slice()
+}
+
+const fn feature_filter_sort_key(filter: QueryFeatureFilter) -> (usize, u16, usize) {
+    (
+        feature_filter_specificity(filter),
+        feature_filter_required_count(filter),
+        feature_filter_width(filter),
+    )
+}
+
+const fn feature_filter_required_count(filter: QueryFeatureFilter) -> u16 {
+    match filter {
+        QueryFeatureFilter::Edge { required_count, .. }
+        | QueryFeatureFilter::Path3 { required_count, .. }
+        | QueryFeatureFilter::Path4 { required_count, .. }
+        | QueryFeatureFilter::Star3 { required_count, .. } => required_count,
+    }
+}
+
+const fn feature_filter_width(filter: QueryFeatureFilter) -> usize {
+    match filter {
+        QueryFeatureFilter::Edge { .. } => 3,
+        QueryFeatureFilter::Path3 { .. } => 5,
+        QueryFeatureFilter::Path4 { .. } | QueryFeatureFilter::Star3 { .. } => 7,
+    }
+}
+
+const fn feature_filter_specificity(filter: QueryFeatureFilter) -> usize {
+    match filter {
+        QueryFeatureFilter::Edge { feature, .. } => {
+            atom_feature_specificity(feature.left)
+                + bond_feature_specificity(feature.bond)
+                + atom_feature_specificity(feature.right)
+        }
+        QueryFeatureFilter::Path3 { feature, .. } => {
+            atom_feature_specificity(feature.left)
+                + bond_feature_specificity(feature.left_bond)
+                + atom_feature_specificity(feature.center)
+                + bond_feature_specificity(feature.right_bond)
+                + atom_feature_specificity(feature.right)
+        }
+        QueryFeatureFilter::Path4 { feature, .. } => {
+            atom_feature_specificity(feature.left)
+                + bond_feature_specificity(feature.left_bond)
+                + atom_feature_specificity(feature.left_middle)
+                + bond_feature_specificity(feature.center_bond)
+                + atom_feature_specificity(feature.right_middle)
+                + bond_feature_specificity(feature.right_bond)
+                + atom_feature_specificity(feature.right)
+        }
+        QueryFeatureFilter::Star3 { feature, .. } => {
+            atom_feature_specificity(feature.center)
+                + bond_feature_specificity(feature.arms[0].bond)
+                + atom_feature_specificity(feature.arms[0].atom)
+                + bond_feature_specificity(feature.arms[1].bond)
+                + atom_feature_specificity(feature.arms[1].atom)
+                + bond_feature_specificity(feature.arms[2].bond)
+                + atom_feature_specificity(feature.arms[2].atom)
+        }
+    }
+}
+
+const fn atom_feature_specificity(feature: AtomFeature) -> usize {
+    bool_score(feature.element.is_some(), 8)
+        + bool_score(feature.aromatic.is_some(), 4)
+        + bool_score(feature.requires_ring, 3)
+        + bool_score(feature.degree.is_some(), 2)
+        + bool_score(feature.total_hydrogens.is_some(), 2)
+}
+
+const fn bond_feature_specificity(feature: EdgeBondFeature) -> usize {
+    bool_score(feature.kind.is_some(), 4) + bool_score(feature.requires_ring, 2)
+}
+
+const fn bool_score(enabled: bool, score: usize) -> usize {
+    if enabled {
+        score
+    } else {
+        0
     }
 }
 

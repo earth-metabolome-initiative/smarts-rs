@@ -44,12 +44,19 @@ struct PreparedAtomCaches {
 
 #[derive(Debug, Clone)]
 struct PreparedAtomIndexes {
+    atom_ids_by_isotope_mass_number: BTreeMap<u16, AtomIdList>,
     atom_ids_by_atomic_number: BTreeMap<u16, AtomIdList>,
     atom_ids_by_degree: BTreeMap<usize, AtomIdList>,
+    atom_ids_by_connectivity: BTreeMap<u8, AtomIdList>,
+    atom_ids_by_implicit_hydrogen: BTreeMap<u8, AtomIdList>,
     atom_ids_by_total_hydrogen: BTreeMap<u8, AtomIdList>,
+    atom_ids_by_total_valence: BTreeMap<u8, AtomIdList>,
+    atom_ids_by_hybridization: BTreeMap<u8, AtomIdList>,
+    atom_ids_by_hetero_neighbor_count: BTreeMap<u8, AtomIdList>,
+    atom_ids_by_aliphatic_hetero_neighbor_count: BTreeMap<u8, AtomIdList>,
+    atom_ids_by_formal_charge: BTreeMap<i8, AtomIdList>,
     aromatic_atom_ids: AtomIdList,
     aliphatic_atom_ids: AtomIdList,
-    ring_atom_ids: AtomIdList,
 }
 
 /// Dense per-atom prepared properties.
@@ -189,12 +196,19 @@ pub struct PreparedTarget {
     double_bond_stereo: BTreeMap<(AtomId, AtomId), DoubleBondStereoConfig>,
     connected_components: NodeProps<usize>,
     degrees: NodeProps<usize>,
+    atom_ids_by_isotope_mass_number: BTreeMap<u16, AtomIdList>,
     atom_ids_by_atomic_number: BTreeMap<u16, AtomIdList>,
     atom_ids_by_degree: BTreeMap<usize, AtomIdList>,
+    atom_ids_by_connectivity: BTreeMap<u8, AtomIdList>,
+    atom_ids_by_implicit_hydrogen: BTreeMap<u8, AtomIdList>,
     atom_ids_by_total_hydrogen: BTreeMap<u8, AtomIdList>,
+    atom_ids_by_total_valence: BTreeMap<u8, AtomIdList>,
+    atom_ids_by_hybridization: BTreeMap<u8, AtomIdList>,
+    atom_ids_by_hetero_neighbor_count: BTreeMap<u8, AtomIdList>,
+    atom_ids_by_aliphatic_hetero_neighbor_count: BTreeMap<u8, AtomIdList>,
+    atom_ids_by_formal_charge: BTreeMap<i8, AtomIdList>,
     aromatic_atom_ids: AtomIdList,
     aliphatic_atom_ids: AtomIdList,
-    ring_atom_ids: AtomIdList,
     connectivities: NodeProps<u8>,
     implicit_hydrogens: NodeProps<u8>,
     total_hydrogens: NodeProps<u8>,
@@ -205,6 +219,9 @@ pub struct PreparedTarget {
     ring_membership_counts: NodeProps<u8>,
     ring_bond_counts: NodeProps<u8>,
     smallest_ring_sizes: NodeProps<u8>,
+    atom_ids_by_ring_membership_count: BTreeMap<u8, AtomIdList>,
+    atom_ids_by_ring_bond_count: BTreeMap<u8, AtomIdList>,
+    atom_ids_by_smallest_ring_size: BTreeMap<u8, AtomIdList>,
 }
 
 impl PreparedTarget {
@@ -221,8 +238,18 @@ impl PreparedTarget {
             smallest_ring_sizes,
         ) = ring_caches(&target);
         let atom_caches = prepared_atom_caches(&target, &aromaticity);
-        let atom_indexes =
-            prepared_atom_indexes(atom_count, &target, &ring_membership, &atom_caches);
+        let atom_indexes = prepared_atom_indexes(atom_count, &target, &atom_caches);
+        let atom_ids_by_ring_membership_count = atom_id_index_by(atom_count, |atom_id| {
+            ring_membership_counts.get(atom_id).copied()
+        });
+        let atom_ids_by_ring_bond_count =
+            atom_id_index_by(atom_count, |atom_id| ring_bond_counts.get(atom_id).copied());
+        let atom_ids_by_smallest_ring_size = atom_id_index_by(atom_count, |atom_id| {
+            smallest_ring_sizes
+                .get(atom_id)
+                .copied()
+                .filter(|&size| size > 0)
+        });
         let effective_neighbors = effective_neighbor_cache(&target, &aromaticity);
         let double_bond_stereo = semantic_double_bond_stereo_configs(&target);
         let PreparedAtomCaches {
@@ -241,12 +268,19 @@ impl PreparedTarget {
             aliphatic_hetero_neighbor_counts,
         } = atom_caches;
         let PreparedAtomIndexes {
+            atom_ids_by_isotope_mass_number,
             atom_ids_by_atomic_number,
             atom_ids_by_degree,
+            atom_ids_by_connectivity,
+            atom_ids_by_implicit_hydrogen,
             atom_ids_by_total_hydrogen,
+            atom_ids_by_total_valence,
+            atom_ids_by_hybridization,
+            atom_ids_by_hetero_neighbor_count,
+            atom_ids_by_aliphatic_hetero_neighbor_count,
+            atom_ids_by_formal_charge,
             aromatic_atom_ids,
             aliphatic_atom_ids,
-            ring_atom_ids,
         } = atom_indexes;
 
         Self {
@@ -262,12 +296,19 @@ impl PreparedTarget {
             double_bond_stereo,
             connected_components,
             degrees,
+            atom_ids_by_isotope_mass_number,
             atom_ids_by_atomic_number,
             atom_ids_by_degree,
+            atom_ids_by_connectivity,
+            atom_ids_by_implicit_hydrogen,
             atom_ids_by_total_hydrogen,
+            atom_ids_by_total_valence,
+            atom_ids_by_hybridization,
+            atom_ids_by_hetero_neighbor_count,
+            atom_ids_by_aliphatic_hetero_neighbor_count,
+            atom_ids_by_formal_charge,
             aromatic_atom_ids,
             aliphatic_atom_ids,
-            ring_atom_ids,
             connectivities,
             implicit_hydrogens,
             total_hydrogens,
@@ -278,6 +319,9 @@ impl PreparedTarget {
             ring_membership_counts,
             ring_bond_counts,
             smallest_ring_sizes,
+            atom_ids_by_ring_membership_count,
+            atom_ids_by_ring_bond_count,
+            atom_ids_by_smallest_ring_size,
         }
     }
 
@@ -414,6 +458,15 @@ impl PreparedTarget {
         self.degrees.get(atom_id).copied()
     }
 
+    /// Returns atom IDs with the provided isotope mass number.
+    #[inline]
+    #[must_use]
+    pub(crate) fn atom_ids_with_isotope_mass_number(&self, mass_number: u16) -> &[AtomId] {
+        self.atom_ids_by_isotope_mass_number
+            .get(&mass_number)
+            .map_or(&[], Box::as_ref)
+    }
+
     /// Returns atom IDs with the provided atomic number.
     #[inline]
     #[must_use]
@@ -432,12 +485,75 @@ impl PreparedTarget {
             .map_or(&[], Box::as_ref)
     }
 
+    /// Returns atom IDs with the provided SMARTS connectivity count.
+    #[inline]
+    #[must_use]
+    pub(crate) fn atom_ids_with_connectivity(&self, count: u8) -> &[AtomId] {
+        self.atom_ids_by_connectivity
+            .get(&count)
+            .map_or(&[], Box::as_ref)
+    }
+
+    /// Returns atom IDs with the provided implicit hydrogen count.
+    #[inline]
+    #[must_use]
+    pub(crate) fn atom_ids_with_implicit_hydrogen(&self, count: u8) -> &[AtomId] {
+        self.atom_ids_by_implicit_hydrogen
+            .get(&count)
+            .map_or(&[], Box::as_ref)
+    }
+
     /// Returns atom IDs with the provided total hydrogen count.
     #[inline]
     #[must_use]
     pub(crate) fn atom_ids_with_total_hydrogen(&self, count: u8) -> &[AtomId] {
         self.atom_ids_by_total_hydrogen
             .get(&count)
+            .map_or(&[], Box::as_ref)
+    }
+
+    /// Returns atom IDs with the provided RDKit-style total valence.
+    #[inline]
+    #[must_use]
+    pub(crate) fn atom_ids_with_total_valence(&self, count: u8) -> &[AtomId] {
+        self.atom_ids_by_total_valence
+            .get(&count)
+            .map_or(&[], Box::as_ref)
+    }
+
+    /// Returns atom IDs with the provided SMARTS hybridization code.
+    #[inline]
+    #[must_use]
+    pub(crate) fn atom_ids_with_hybridization(&self, code: u8) -> &[AtomId] {
+        self.atom_ids_by_hybridization
+            .get(&code)
+            .map_or(&[], Box::as_ref)
+    }
+
+    /// Returns atom IDs with the provided hetero-neighbor count.
+    #[inline]
+    #[must_use]
+    pub(crate) fn atom_ids_with_hetero_neighbor_count(&self, count: u8) -> &[AtomId] {
+        self.atom_ids_by_hetero_neighbor_count
+            .get(&count)
+            .map_or(&[], Box::as_ref)
+    }
+
+    /// Returns atom IDs with the provided aliphatic hetero-neighbor count.
+    #[inline]
+    #[must_use]
+    pub(crate) fn atom_ids_with_aliphatic_hetero_neighbor_count(&self, count: u8) -> &[AtomId] {
+        self.atom_ids_by_aliphatic_hetero_neighbor_count
+            .get(&count)
+            .map_or(&[], Box::as_ref)
+    }
+
+    /// Returns atom IDs with the provided effective formal charge.
+    #[inline]
+    #[must_use]
+    pub(crate) fn atom_ids_with_formal_charge(&self, charge: i8) -> &[AtomId] {
+        self.atom_ids_by_formal_charge
+            .get(&charge)
             .map_or(&[], Box::as_ref)
     }
 
@@ -455,11 +571,31 @@ impl PreparedTarget {
         &self.aliphatic_atom_ids
     }
 
-    /// Returns atom IDs that belong to at least one ring.
+    /// Returns atom IDs with the provided ring-membership count.
     #[inline]
     #[must_use]
-    pub(crate) fn ring_atom_ids(&self) -> &[AtomId] {
-        &self.ring_atom_ids
+    pub(crate) fn atom_ids_with_ring_membership_count(&self, count: u8) -> &[AtomId] {
+        self.atom_ids_by_ring_membership_count
+            .get(&count)
+            .map_or(&[], Box::as_ref)
+    }
+
+    /// Returns atom IDs with the provided incident ring-bond count.
+    #[inline]
+    #[must_use]
+    pub(crate) fn atom_ids_with_ring_bond_count(&self, count: u8) -> &[AtomId] {
+        self.atom_ids_by_ring_bond_count
+            .get(&count)
+            .map_or(&[], Box::as_ref)
+    }
+
+    /// Returns atom IDs with the provided smallest ring size.
+    #[inline]
+    #[must_use]
+    pub(crate) fn atom_ids_with_smallest_ring_size(&self, size: u8) -> &[AtomId] {
+        self.atom_ids_by_smallest_ring_size
+            .get(&size)
+            .map_or(&[], Box::as_ref)
     }
 
     /// Returns the SMARTS connectivity count for the provided atom.
@@ -581,10 +717,14 @@ fn prepared_atom_caches(
 fn prepared_atom_indexes(
     atom_count: usize,
     target: &Smiles,
-    ring_membership: &RingMembership,
     caches: &PreparedAtomCaches,
 ) -> PreparedAtomIndexes {
     PreparedAtomIndexes {
+        atom_ids_by_isotope_mass_number: atom_id_index_by(atom_count, |atom_id| {
+            target
+                .node_by_id(atom_id)
+                .and_then(Atom::isotope_mass_number)
+        }),
         atom_ids_by_atomic_number: atom_id_index_by(atom_count, |atom_id| {
             target
                 .node_by_id(atom_id)
@@ -594,8 +734,32 @@ fn prepared_atom_indexes(
         atom_ids_by_degree: atom_id_index_by(atom_count, |atom_id| {
             caches.degrees.get(atom_id).copied()
         }),
+        atom_ids_by_connectivity: atom_id_index_by(atom_count, |atom_id| {
+            caches.connectivities.get(atom_id).copied()
+        }),
+        atom_ids_by_implicit_hydrogen: atom_id_index_by(atom_count, |atom_id| {
+            caches.implicit_hydrogens.get(atom_id).copied()
+        }),
         atom_ids_by_total_hydrogen: atom_id_index_by(atom_count, |atom_id| {
             caches.total_hydrogens.get(atom_id).copied()
+        }),
+        atom_ids_by_total_valence: atom_id_index_by(atom_count, |atom_id| {
+            caches.total_valences.get(atom_id).copied()
+        }),
+        atom_ids_by_hybridization: atom_id_index_by(atom_count, |atom_id| {
+            caches.hybridizations.get(atom_id).copied()
+        }),
+        atom_ids_by_hetero_neighbor_count: atom_id_index_by(atom_count, |atom_id| {
+            caches.hetero_neighbor_counts.get(atom_id).copied()
+        }),
+        atom_ids_by_aliphatic_hetero_neighbor_count: atom_id_index_by(atom_count, |atom_id| {
+            caches
+                .aliphatic_hetero_neighbor_counts
+                .get(atom_id)
+                .copied()
+        }),
+        atom_ids_by_formal_charge: atom_id_index_by(atom_count, |atom_id| {
+            caches.effective_formal_charges.get(atom_id).copied()
         }),
         aromatic_atom_ids: atom_ids_where(atom_count, |atom_id| {
             caches.aromatic_atoms.get(atom_id).copied().unwrap_or(false)
@@ -603,7 +767,6 @@ fn prepared_atom_indexes(
         aliphatic_atom_ids: atom_ids_where(atom_count, |atom_id| {
             !caches.aromatic_atoms.get(atom_id).copied().unwrap_or(false)
         }),
-        ring_atom_ids: atom_ids_where(atom_count, |atom_id| ring_membership.contains_atom(atom_id)),
     }
 }
 
@@ -1328,6 +1491,7 @@ mod tests {
     fn prepared_target_indexes_common_atom_domains() {
         let prepared = PreparedTarget::new(Smiles::from_str("CCO.c1ccccc1").unwrap());
 
+        assert!(prepared.atom_ids_with_isotope_mass_number(13).is_empty());
         assert_eq!(
             prepared.atom_ids_with_atomic_number(6),
             &[0, 1, 3, 4, 5, 6, 7, 8]
@@ -1336,15 +1500,63 @@ mod tests {
         assert!(prepared.atom_ids_with_atomic_number(9).is_empty());
         assert_eq!(prepared.atom_ids_with_degree(1), &[0, 2]);
         assert_eq!(prepared.atom_ids_with_degree(2), &[1, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(prepared.atom_ids_with_connectivity(2), &[2]);
+        assert_eq!(prepared.atom_ids_with_connectivity(3), &[3, 4, 5, 6, 7, 8]);
+        assert_eq!(prepared.atom_ids_with_connectivity(4), &[0, 1]);
+        assert_eq!(
+            prepared.atom_ids_with_implicit_hydrogen(1),
+            &[2, 3, 4, 5, 6, 7, 8]
+        );
+        assert_eq!(prepared.atom_ids_with_implicit_hydrogen(2), &[1]);
+        assert_eq!(prepared.atom_ids_with_implicit_hydrogen(3), &[0]);
         assert_eq!(
             prepared.atom_ids_with_total_hydrogen(1),
             &[2, 3, 4, 5, 6, 7, 8]
         );
         assert_eq!(prepared.atom_ids_with_total_hydrogen(2), &[1]);
         assert_eq!(prepared.atom_ids_with_total_hydrogen(3), &[0]);
+        assert_eq!(prepared.atom_ids_with_total_valence(2), &[2]);
+        assert_eq!(
+            prepared.atom_ids_with_total_valence(4),
+            &[0, 1, 3, 4, 5, 6, 7, 8]
+        );
+        assert_eq!(prepared.atom_ids_with_hybridization(2), &[3, 4, 5, 6, 7, 8]);
+        assert_eq!(prepared.atom_ids_with_hybridization(3), &[0, 1, 2]);
+        assert_eq!(
+            prepared.atom_ids_with_formal_charge(0),
+            &[0, 1, 2, 3, 4, 5, 6, 7, 8]
+        );
         assert_eq!(prepared.aromatic_atom_ids(), &[3, 4, 5, 6, 7, 8]);
         assert_eq!(prepared.aliphatic_atom_ids(), &[0, 1, 2]);
-        assert_eq!(prepared.ring_atom_ids(), &[3, 4, 5, 6, 7, 8]);
+        assert_eq!(
+            prepared.atom_ids_with_ring_membership_count(1),
+            &[3, 4, 5, 6, 7, 8]
+        );
+        assert_eq!(
+            prepared.atom_ids_with_ring_bond_count(2),
+            &[3, 4, 5, 6, 7, 8]
+        );
+        assert_eq!(
+            prepared.atom_ids_with_smallest_ring_size(6),
+            &[3, 4, 5, 6, 7, 8]
+        );
+    }
+
+    #[test]
+    fn prepared_target_indexes_extended_atom_domains() {
+        let isotope = PreparedTarget::new(Smiles::from_str("[13CH4]").unwrap());
+        assert_eq!(isotope.atom_ids_with_isotope_mass_number(13), &[0]);
+
+        let charged = PreparedTarget::new(Smiles::from_str("[NH4+].[O-]C=O").unwrap());
+        assert_eq!(charged.atom_ids_with_formal_charge(1), &[0]);
+        assert_eq!(charged.atom_ids_with_formal_charge(-1), &[1]);
+
+        let sulfone = PreparedTarget::new(Smiles::from_str("CS(=O)(=O)C").unwrap());
+        assert_eq!(sulfone.atom_ids_with_hetero_neighbor_count(2), &[1]);
+        assert_eq!(
+            sulfone.atom_ids_with_aliphatic_hetero_neighbor_count(2),
+            &[1]
+        );
     }
 
     #[test]

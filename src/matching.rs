@@ -29,6 +29,7 @@ struct SearchContext<'a> {
     compiled_query: &'a CompiledQuery,
     query_neighbors: &'a [alloc::vec::Vec<(QueryAtomId, usize)>],
     query_atom_scores: &'a [usize],
+    query_atom_anchor_widths: &'a [usize],
     query_to_target: &'a mut [Option<usize>],
     used_target_atoms: &'a mut [u32],
     used_target_generation: u32,
@@ -38,9 +39,38 @@ struct SearchContext<'a> {
 }
 
 struct SearchScratchView<'a> {
+    query_atom_anchor_widths: &'a [usize],
     query_to_target: &'a mut [Option<usize>],
     used_target_atoms: &'a mut [u32],
     used_target_generation: u32,
+}
+
+#[derive(Debug, Clone)]
+struct FreshSearchBuffers {
+    query_atom_anchor_widths: alloc::vec::Vec<usize>,
+    query_to_target: alloc::vec::Vec<Option<usize>>,
+    used_target_atoms: alloc::vec::Vec<u32>,
+}
+
+impl FreshSearchBuffers {
+    fn new(query: &CompiledQuery, target: &PreparedTarget) -> Self {
+        let mut query_atom_anchor_widths = alloc::vec::Vec::new();
+        prepare_query_atom_anchor_widths(&mut query_atom_anchor_widths, query, target);
+        Self {
+            query_atom_anchor_widths,
+            query_to_target: alloc::vec![None; query.query.atom_count()],
+            used_target_atoms: alloc::vec![0; target.atom_count()],
+        }
+    }
+
+    fn view(&mut self) -> SearchScratchView<'_> {
+        SearchScratchView {
+            query_atom_anchor_widths: &self.query_atom_anchor_widths,
+            query_to_target: &mut self.query_to_target,
+            used_target_atoms: &mut self.used_target_atoms,
+            used_target_generation: 1,
+        }
+    }
 }
 
 struct AtomMatchContext<'a, 'cache> {
@@ -76,6 +106,7 @@ impl<'a> SearchScratchView<'a> {
             compiled_query: query,
             query_neighbors: &query.query_neighbors,
             query_atom_scores: &query.query_atom_scores,
+            query_atom_anchor_widths: self.query_atom_anchor_widths,
             query_to_target: self.query_to_target,
             used_target_atoms: self.used_target_atoms,
             used_target_generation: self.used_target_generation,
@@ -227,12 +258,70 @@ struct TwoAtomQueryMapping {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MappedNeighborSeed {
+    target_atom: usize,
+    bond_id: usize,
+    query_neighbor: QueryAtomId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ThreeAtomTargetMapping {
     center: usize,
     leaf_a: usize,
     bond_a: BondLabel,
     leaf_b: usize,
     bond_b: BondLabel,
+}
+
+enum SingleAtomCandidates<'a> {
+    One(usize),
+    Anchored(&'a [usize]),
+    All(core::ops::Range<usize>),
+}
+
+impl SingleAtomCandidates<'_> {
+    fn any(self, mut predicate: impl FnMut(usize) -> bool) -> bool {
+        match self {
+            Self::One(target_atom) => predicate(target_atom),
+            Self::Anchored(target_atoms) => target_atoms.iter().copied().any(predicate),
+            Self::All(mut target_atoms) => target_atoms.any(predicate),
+        }
+    }
+
+    fn count(self, mut predicate: impl FnMut(usize) -> bool) -> usize {
+        match self {
+            Self::One(target_atom) => usize::from(predicate(target_atom)),
+            Self::Anchored(target_atoms) => target_atoms
+                .iter()
+                .copied()
+                .filter(|&target_atom| predicate(target_atom))
+                .count(),
+            Self::All(target_atoms) => target_atoms
+                .filter(|&target_atom| predicate(target_atom))
+                .count(),
+        }
+    }
+
+    fn collect_matches(self, mut predicate: impl FnMut(usize) -> bool) -> Box<[Box<[usize]>]> {
+        match self {
+            Self::One(target_atom) if predicate(target_atom) => {
+                alloc::vec![Box::<[usize]>::from([target_atom])].into_boxed_slice()
+            }
+            Self::One(_) => Box::default(),
+            Self::Anchored(target_atoms) => target_atoms
+                .iter()
+                .copied()
+                .filter(|&target_atom| predicate(target_atom))
+                .map(|target_atom| Box::<[usize]>::from([target_atom]))
+                .collect::<alloc::vec::Vec<_>>()
+                .into_boxed_slice(),
+            Self::All(target_atoms) => target_atoms
+                .filter(|&target_atom| predicate(target_atom))
+                .map(|target_atom| Box::<[usize]>::from([target_atom]))
+                .collect::<alloc::vec::Vec<_>>()
+                .into_boxed_slice(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -348,6 +437,7 @@ impl RecursiveMatchCache {
 /// Reusable per-thread workspace for repeated boolean matching.
 #[derive(Debug, Clone)]
 pub struct MatchScratch {
+    query_atom_anchor_widths: alloc::vec::Vec<usize>,
     query_to_target: alloc::vec::Vec<Option<usize>>,
     used_target_atoms: alloc::vec::Vec<u32>,
     used_target_generation: u32,
@@ -366,6 +456,7 @@ impl MatchScratch {
     #[must_use]
     pub fn new() -> Self {
         Self {
+            query_atom_anchor_widths: alloc::vec::Vec::new(),
             query_to_target: alloc::vec::Vec::new(),
             used_target_atoms: alloc::vec::Vec::new(),
             used_target_generation: 0,
@@ -376,6 +467,7 @@ impl MatchScratch {
 
     fn prepare(&mut self, query: &CompiledQuery, target: &PreparedTarget) {
         let query_atom_count = query.query.atom_count();
+        prepare_query_atom_anchor_widths(&mut self.query_atom_anchor_widths, query, target);
         if self.query_to_target.len() == query_atom_count {
             self.query_to_target.fill(None);
         } else {
@@ -1231,6 +1323,7 @@ fn query_matches_with_scratch(
         &mut scratch.atom_stereo_cache,
         &mut scratch.recursive_cache,
         SearchScratchView {
+            query_atom_anchor_widths: &scratch.query_atom_anchor_widths,
             query_to_target: &mut scratch.query_to_target,
             used_target_atoms: &mut scratch.used_target_atoms,
             used_target_generation: scratch.used_target_generation,
@@ -1301,18 +1394,13 @@ fn query_matches_with_mapping(
         );
     }
 
-    let mut query_to_target = alloc::vec![None; query.query.atom_count()];
-    let mut used_target_atoms = alloc::vec![0; target.atom_count()];
+    let mut scratch = FreshSearchBuffers::new(query, target);
     query_matches_with_mapping_state(
         query,
         target,
         atom_stereo_cache,
         recursive_cache,
-        SearchScratchView {
-            query_to_target: &mut query_to_target,
-            used_target_atoms: &mut used_target_atoms,
-            used_target_generation: 1,
-        },
+        scratch.view(),
         initial_mapping,
     )
 }
@@ -1332,6 +1420,22 @@ fn query_matches_with_mapping_state(
     };
 
     search_mapping(&query.query, target, &mut context, mapped_count)
+}
+
+fn with_fresh_bound_search_context<R>(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    atom_stereo_cache: &mut AtomStereoCache,
+    recursive_cache: &mut RecursiveMatchCache,
+    initial_mapping: InitialAtomMapping,
+    run: impl FnOnce(&mut SearchContext<'_>, usize) -> R,
+) -> Option<R> {
+    let mut scratch = FreshSearchBuffers::new(query, target);
+    let mut context = scratch
+        .view()
+        .into_context(query, atom_stereo_cache, recursive_cache);
+    let mapped_count = bind_initial_mapping(query, target, &mut context, initial_mapping)?;
+    Some(run(&mut context, mapped_count))
 }
 
 fn bind_initial_mapping(
@@ -1427,31 +1531,22 @@ fn query_substructure_matches_with_mapping(
         );
     }
 
-    let mut query_to_target = alloc::vec![None; query.query.atom_count()];
-    let mut used_target_atoms = alloc::vec![0; target.atom_count()];
-    let mut context = SearchScratchView {
-        query_to_target: &mut query_to_target,
-        used_target_atoms: &mut used_target_atoms,
-        used_target_generation: 1,
-    }
-    .into_context(query, atom_stereo_cache, recursive_cache);
-    let Some(mapped_count) = bind_initial_mapping(query, target, &mut context, initial_mapping)
-    else {
-        return Box::default();
-    };
-
-    let mut matches = UniqueMatches::new();
-    collect_mappings(
-        &query.query,
+    with_fresh_bound_search_context(
+        query,
         target,
-        &mut context,
-        mapped_count,
-        &mut matches,
-    );
-    matches
-        .into_values()
-        .collect::<alloc::vec::Vec<_>>()
-        .into_boxed_slice()
+        atom_stereo_cache,
+        recursive_cache,
+        initial_mapping,
+        |context, mapped_count| {
+            let mut matches = UniqueMatches::new();
+            collect_mappings(&query.query, target, context, mapped_count, &mut matches);
+            matches
+                .into_values()
+                .collect::<alloc::vec::Vec<_>>()
+                .into_boxed_slice()
+        },
+    )
+    .unwrap_or_default()
 }
 
 fn query_match_count_with_mapping(
@@ -1485,30 +1580,21 @@ fn query_match_count_with_mapping(
         );
     }
 
-    let mut query_to_target = alloc::vec![None; query.query.atom_count()];
-    let mut used_target_atoms = alloc::vec![0; target.atom_count()];
-    let mut context = SearchScratchView {
-        query_to_target: &mut query_to_target,
-        used_target_atoms: &mut used_target_atoms,
-        used_target_generation: 1,
-    }
-    .into_context(query, atom_stereo_cache, recursive_cache);
-    let Some(mapped_count) = bind_initial_mapping(query, target, &mut context, initial_mapping)
-    else {
-        return 0;
-    };
-
-    let mut matches = MatchKeys::new();
-    collect_match_keys(
-        &query.query,
+    with_fresh_bound_search_context(
+        query,
         target,
-        &mut context,
-        mapped_count,
-        &mut matches,
-    );
-    matches.sort_unstable();
-    matches.dedup();
-    matches.len()
+        atom_stereo_cache,
+        recursive_cache,
+        initial_mapping,
+        |context, mapped_count| {
+            let mut matches = MatchKeys::new();
+            collect_match_keys(&query.query, target, context, mapped_count, &mut matches);
+            matches.sort_unstable();
+            matches.dedup();
+            matches.len()
+        },
+    )
+    .unwrap_or(0)
 }
 
 fn single_atom_query_matches(
@@ -1517,23 +1603,14 @@ fn single_atom_query_matches(
     recursive_cache: &mut RecursiveMatchCache,
     initial_target_atom: Option<usize>,
 ) -> bool {
-    let atom_matcher = &query.atom_matchers[0];
-    match initial_target_atom {
-        Some(target_atom) => {
-            compiled_query_atom_matches(query, target, recursive_cache, 0, target_atom)
-        }
-        None => {
-            if let Some(target_atoms) = atom_matcher_anchor_candidates(atom_matcher, target) {
-                target_atoms.iter().copied().any(|target_atom| {
-                    compiled_query_atom_matches(query, target, recursive_cache, 0, target_atom)
-                })
-            } else {
-                (0..target.atom_count()).any(|target_atom| {
-                    compiled_query_atom_matches(query, target, recursive_cache, 0, target_atom)
-                })
-            }
-        }
-    }
+    let mut anchored_target_atoms = alloc::vec::Vec::new();
+    single_atom_candidates(
+        &query.atom_matchers[0],
+        target,
+        initial_target_atom,
+        &mut anchored_target_atoms,
+    )
+    .any(|target_atom| compiled_query_atom_matches(query, target, recursive_cache, 0, target_atom))
 }
 
 fn single_atom_query_substructure_matches(
@@ -1542,36 +1619,16 @@ fn single_atom_query_substructure_matches(
     recursive_cache: &mut RecursiveMatchCache,
     initial_target_atom: Option<usize>,
 ) -> Box<[Box<[usize]>]> {
-    let atom_matcher = &query.atom_matchers[0];
-    match initial_target_atom {
-        Some(target_atom)
-            if compiled_query_atom_matches(query, target, recursive_cache, 0, target_atom) =>
-        {
-            alloc::vec![Box::<[usize]>::from([target_atom])].into_boxed_slice()
-        }
-        Some(_) => Box::default(),
-        None => {
-            if let Some(target_atoms) = atom_matcher_anchor_candidates(atom_matcher, target) {
-                target_atoms
-                    .iter()
-                    .copied()
-                    .filter(|&target_atom| {
-                        compiled_query_atom_matches(query, target, recursive_cache, 0, target_atom)
-                    })
-                    .map(|target_atom| Box::<[usize]>::from([target_atom]))
-                    .collect::<alloc::vec::Vec<_>>()
-                    .into_boxed_slice()
-            } else {
-                (0..target.atom_count())
-                    .filter(|&target_atom| {
-                        compiled_query_atom_matches(query, target, recursive_cache, 0, target_atom)
-                    })
-                    .map(|target_atom| Box::<[usize]>::from([target_atom]))
-                    .collect::<alloc::vec::Vec<_>>()
-                    .into_boxed_slice()
-            }
-        }
-    }
+    let mut anchored_target_atoms = alloc::vec::Vec::new();
+    single_atom_candidates(
+        &query.atom_matchers[0],
+        target,
+        initial_target_atom,
+        &mut anchored_target_atoms,
+    )
+    .collect_matches(|target_atom| {
+        compiled_query_atom_matches(query, target, recursive_cache, 0, target_atom)
+    })
 }
 
 fn single_atom_query_match_count(
@@ -1580,33 +1637,16 @@ fn single_atom_query_match_count(
     recursive_cache: &mut RecursiveMatchCache,
     initial_target_atom: Option<usize>,
 ) -> usize {
-    let atom_matcher = &query.atom_matchers[0];
-    match initial_target_atom {
-        Some(target_atom) => usize::from(compiled_query_atom_matches(
-            query,
-            target,
-            recursive_cache,
-            0,
-            target_atom,
-        )),
-        None => {
-            if let Some(target_atoms) = atom_matcher_anchor_candidates(atom_matcher, target) {
-                target_atoms
-                    .iter()
-                    .copied()
-                    .filter(|&target_atom| {
-                        compiled_query_atom_matches(query, target, recursive_cache, 0, target_atom)
-                    })
-                    .count()
-            } else {
-                (0..target.atom_count())
-                    .filter(|&target_atom| {
-                        compiled_query_atom_matches(query, target, recursive_cache, 0, target_atom)
-                    })
-                    .count()
-            }
-        }
-    }
+    let mut anchored_target_atoms = alloc::vec::Vec::new();
+    single_atom_candidates(
+        &query.atom_matchers[0],
+        target,
+        initial_target_atom,
+        &mut anchored_target_atoms,
+    )
+    .count(|target_atom| {
+        compiled_query_atom_matches(query, target, recursive_cache, 0, target_atom)
+    })
 }
 
 fn is_two_atom_edge_query(query: &QueryMol) -> bool {
@@ -2865,11 +2905,7 @@ fn search_mapping(
         );
     }
 
-    let next_query_atom = select_next_query_atom(
-        context.query_neighbors,
-        context.query_atom_scores,
-        context.query_to_target,
-    );
+    let next_query_atom = select_next_query_atom_for_target(context);
     search_mapping_candidates(query, target, context, mapped_count, next_query_atom)
 }
 
@@ -2881,25 +2917,17 @@ fn search_mapping_candidates(
     query_atom: QueryAtomId,
 ) -> bool {
     let query_degree = context.query_neighbors[query_atom].len();
-    let mut seed = None;
-    let mut has_mapped_neighbor = false;
-    for (neighbor, bond_id) in &context.query_neighbors[query_atom] {
-        let Some(mapped_target_atom) = context.query_to_target[*neighbor] else {
-            continue;
-        };
-        has_mapped_neighbor = true;
-        let mapped_target_degree = target.degree(mapped_target_atom).unwrap_or(usize::MAX);
-        if seed.is_none_or(|(best_target_atom, _, _): (usize, usize, usize)| {
-            mapped_target_degree < target.degree(best_target_atom).unwrap_or(usize::MAX)
-        }) {
-            seed = Some((mapped_target_atom, *bond_id, *neighbor));
-        }
-    }
-
-    if !has_mapped_neighbor {
-        if let Some(target_atoms) = atom_matcher_anchor_candidates(
+    let Some(MappedNeighborSeed {
+        target_atom: seed_target_atom,
+        bond_id: seed_bond_id,
+        query_neighbor: seed_query_neighbor,
+    }) = best_mapped_neighbor_seed(query_atom, target, context)
+    else {
+        let mut target_atoms = alloc::vec::Vec::new();
+        if collect_atom_matcher_anchor_candidates(
             &context.compiled_query.atom_matchers[query_atom],
             target,
+            &mut target_atoms,
         ) {
             return search_mapping_unanchored_candidates(
                 query,
@@ -2907,7 +2935,7 @@ fn search_mapping_candidates(
                 context,
                 mapped_count,
                 query_atom,
-                target_atoms.iter().copied(),
+                target_atoms.into_iter(),
             );
         }
         return search_mapping_unanchored_candidates(
@@ -2918,10 +2946,7 @@ fn search_mapping_candidates(
             query_atom,
             0..target.atom_count(),
         );
-    }
-
-    let (seed_target_atom, seed_bond_id, seed_query_neighbor) =
-        seed.expect("mapped neighbors must be non-empty");
+    };
     for (neighbor_atom, bond_label) in target.neighbors(seed_target_atom) {
         if context.target_atom_is_used(neighbor_atom)
             || target_degree_too_small(target, neighbor_atom, query_degree)
@@ -3066,13 +3091,8 @@ fn collect_mappings(
         return;
     }
 
-    let next_query_atom = select_next_query_atom(
-        context.query_neighbors,
-        context.query_atom_scores,
-        context.query_to_target,
-    );
-    let candidate_target_atoms = candidate_target_atoms(next_query_atom, target, context);
-    for target_atom in candidate_target_atoms {
+    let next_query_atom = select_next_query_atom_for_target(context);
+    for target_atom in candidate_target_atoms(next_query_atom, target, context) {
         if context.compiled_query.has_component_constraints
             && !component_constraints_match(
                 next_query_atom,
@@ -3123,13 +3143,8 @@ fn collect_match_keys(
         return;
     }
 
-    let next_query_atom = select_next_query_atom(
-        context.query_neighbors,
-        context.query_atom_scores,
-        context.query_to_target,
-    );
-    let candidate_target_atoms = candidate_target_atoms(next_query_atom, target, context);
-    for target_atom in candidate_target_atoms {
+    let next_query_atom = select_next_query_atom_for_target(context);
+    for target_atom in candidate_target_atoms(next_query_atom, target, context) {
         if context.compiled_query.has_component_constraints
             && !component_constraints_match(
                 next_query_atom,
@@ -3242,6 +3257,7 @@ fn component_constraints_match(
     true
 }
 
+#[cfg(test)]
 fn select_next_query_atom(
     query_neighbors: &[alloc::vec::Vec<(QueryAtomId, usize)>],
     query_atom_scores: &[usize],
@@ -3273,40 +3289,105 @@ fn select_next_query_atom(
     best_atom.expect("at least one unmapped query atom must remain")
 }
 
+fn select_next_query_atom_for_target(context: &SearchContext<'_>) -> QueryAtomId {
+    let mut best_atom = None;
+    let mut best_key = (
+        0usize,
+        core::cmp::Reverse(usize::MAX),
+        0usize,
+        0usize,
+        core::cmp::Reverse(usize::MAX),
+    );
+
+    for (query_atom, neighbors) in context.query_neighbors.iter().enumerate() {
+        if context.query_to_target[query_atom].is_some() {
+            continue;
+        }
+        let mapped_neighbors = neighbors
+            .iter()
+            .filter(|(neighbor, _)| context.query_to_target[*neighbor].is_some())
+            .count();
+        let search_width_estimate = if mapped_neighbors == 0 {
+            context.query_atom_anchor_widths[query_atom]
+        } else {
+            usize::MAX
+        };
+        let key = (
+            mapped_neighbors,
+            core::cmp::Reverse(search_width_estimate),
+            context.query_atom_scores[query_atom],
+            neighbors.len(),
+            core::cmp::Reverse(query_atom),
+        );
+        if best_atom.is_none() || key > best_key {
+            best_atom = Some(query_atom);
+            best_key = key;
+        }
+    }
+
+    best_atom.expect("at least one unmapped query atom must remain")
+}
+
+fn best_mapped_neighbor_seed(
+    query_atom: QueryAtomId,
+    target: &PreparedTarget,
+    context: &SearchContext<'_>,
+) -> Option<MappedNeighborSeed> {
+    let mut best = None;
+
+    for (query_neighbor, bond_id) in &context.query_neighbors[query_atom] {
+        let Some(target_atom) = context.query_to_target[*query_neighbor] else {
+            continue;
+        };
+        let degree = target.degree(target_atom).unwrap_or(usize::MAX);
+        let seed = MappedNeighborSeed {
+            target_atom,
+            bond_id: *bond_id,
+            query_neighbor: *query_neighbor,
+        };
+        if best.is_none_or(|(best_degree, _): (usize, MappedNeighborSeed)| degree < best_degree) {
+            best = Some((degree, seed));
+        }
+    }
+
+    best.map(|(_, seed)| seed)
+}
+
+fn prepare_query_atom_anchor_widths(
+    widths: &mut alloc::vec::Vec<usize>,
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+) {
+    let fallback = target.atom_count();
+    widths.clear();
+    widths.extend(query.atom_matchers.iter().map(|atom_matcher| {
+        atom_matcher_anchor_candidates(atom_matcher, target).map_or(fallback, <[usize]>::len)
+    }));
+}
+
 fn candidate_target_atoms(
     query_atom: QueryAtomId,
     target: &PreparedTarget,
     context: &SearchContext<'_>,
 ) -> alloc::vec::Vec<usize> {
     let query_degree = context.query_neighbors[query_atom].len();
-    let mut seed = None;
-    let mut has_mapped_neighbor = false;
-    for (neighbor, bond_id) in &context.query_neighbors[query_atom] {
-        let Some(mapped_target_atom) = context.query_to_target[*neighbor] else {
-            continue;
-        };
-        has_mapped_neighbor = true;
-        let mapped_target_degree = target.degree(mapped_target_atom).unwrap_or(usize::MAX);
-        if seed.is_none_or(|(best_target_atom, _, _): (usize, usize, usize)| {
-            mapped_target_degree < target.degree(best_target_atom).unwrap_or(usize::MAX)
-        }) {
-            seed = Some((mapped_target_atom, *bond_id, *neighbor));
-        }
-    }
-
-    if !has_mapped_neighbor {
-        if let Some(target_atoms) = atom_matcher_anchor_candidates(
+    let Some(MappedNeighborSeed {
+        target_atom: seed_target_atom,
+        bond_id: seed_bond_id,
+        query_neighbor: seed_query_neighbor,
+    }) = best_mapped_neighbor_seed(query_atom, target, context)
+    else {
+        let mut target_atoms = alloc::vec::Vec::new();
+        if collect_atom_matcher_anchor_candidates(
             &context.compiled_query.atom_matchers[query_atom],
             target,
+            &mut target_atoms,
         ) {
-            return target_atoms
-                .iter()
-                .copied()
-                .filter(|&target_atom| {
-                    !context.target_atom_is_used(target_atom)
-                        && !target_degree_too_small(target, target_atom, query_degree)
-                })
-                .collect();
+            target_atoms.retain(|&target_atom| {
+                !context.target_atom_is_used(target_atom)
+                    && !target_degree_too_small(target, target_atom, query_degree)
+            });
+            return target_atoms;
         }
         return (0..target.atom_count())
             .filter(|&target_atom| {
@@ -3314,10 +3395,7 @@ fn candidate_target_atoms(
                     && !target_degree_too_small(target, target_atom, query_degree)
             })
             .collect();
-    }
-
-    let (seed_target_atom, seed_bond_id, seed_query_neighbor) =
-        seed.expect("mapped neighbors must be non-empty");
+    };
     let mut candidates = alloc::vec::Vec::new();
     for (neighbor_atom, bond_label) in target.neighbors(seed_target_atom) {
         if context.target_atom_is_used(neighbor_atom)
@@ -3377,6 +3455,54 @@ fn atom_matcher_anchor_candidates<'a>(
     best
 }
 
+fn single_atom_candidates<'a>(
+    atom_matcher: &CompiledAtomMatcher,
+    target: &PreparedTarget,
+    initial_target_atom: Option<usize>,
+    anchored_target_atoms: &'a mut alloc::vec::Vec<usize>,
+) -> SingleAtomCandidates<'a> {
+    if let Some(target_atom) = initial_target_atom {
+        return SingleAtomCandidates::One(target_atom);
+    }
+    if collect_atom_matcher_anchor_candidates(atom_matcher, target, anchored_target_atoms) {
+        SingleAtomCandidates::Anchored(anchored_target_atoms)
+    } else {
+        SingleAtomCandidates::All(0..target.atom_count())
+    }
+}
+
+fn collect_atom_matcher_anchor_candidates(
+    atom_matcher: &CompiledAtomMatcher,
+    target: &PreparedTarget,
+    out: &mut alloc::vec::Vec<usize>,
+) -> bool {
+    let Some(best_candidates) = atom_matcher_anchor_candidates(atom_matcher, target) else {
+        out.clear();
+        return false;
+    };
+
+    out.clear();
+    out.extend_from_slice(best_candidates);
+    if out.len() <= 1 {
+        return true;
+    }
+
+    for &predicate in &atom_matcher.predicates {
+        let Some(candidates) = atom_fast_predicate_anchor_candidates(predicate, target) else {
+            continue;
+        };
+        if core::ptr::eq(candidates, best_candidates) {
+            continue;
+        }
+        out.retain(|atom_id| candidates.binary_search(atom_id).is_ok());
+        if out.is_empty() {
+            break;
+        }
+    }
+
+    true
+}
+
 fn atom_fast_predicate_anchor_candidates(
     predicate: AtomFastPredicate,
     target: &PreparedTarget,
@@ -3384,6 +3510,9 @@ fn atom_fast_predicate_anchor_candidates(
     const EMPTY_ATOM_IDS: &[usize] = &[];
 
     match predicate {
+        AtomFastPredicate::Isotope(Some(mass_number)) => {
+            Some(target.atom_ids_with_isotope_mass_number(mass_number))
+        }
         AtomFastPredicate::Element(element) => {
             Some(target.atom_ids_with_atomic_number(u16::from(element.atomic_number())))
         }
@@ -3394,6 +3523,20 @@ fn atom_fast_predicate_anchor_candidates(
         AtomFastPredicate::Aromatic(false) => Some(target.aliphatic_atom_ids()),
         AtomFastPredicate::Degree(query) => exact_count_requirement(query, 1)
             .map(|degree| target.atom_ids_with_degree(usize::from(degree))),
+        AtomFastPredicate::Connectivity(query) => exact_count_requirement(query, 1)
+            .map(|count| target.atom_ids_with_connectivity(u8::try_from(count).unwrap_or(u8::MAX))),
+        AtomFastPredicate::Valence(query) => exact_count_requirement(query, 1).map(|count| {
+            target.atom_ids_with_total_valence(u8::try_from(count).unwrap_or(u8::MAX))
+        }),
+        AtomFastPredicate::Hybridization(query) => exact_count_requirement(Some(query), 1)
+            .map(|code| target.atom_ids_with_hybridization(u8::try_from(code).unwrap_or(u8::MAX))),
+        AtomFastPredicate::ImplicitHydrogen(query) => {
+            exact_count_requirement(query, 1).map(|count| {
+                u8::try_from(count).map_or(EMPTY_ATOM_IDS, |count| {
+                    target.atom_ids_with_implicit_hydrogen(count)
+                })
+            })
+        }
         AtomFastPredicate::TotalHydrogen(query) => {
             exact_count_requirement(query, 1).map(|hydrogens| {
                 u8::try_from(hydrogens).map_or(EMPTY_ATOM_IDS, |hydrogens| {
@@ -3401,25 +3544,41 @@ fn atom_fast_predicate_anchor_candidates(
                 })
             })
         }
-        AtomFastPredicate::RingMembership(query)
-        | AtomFastPredicate::RingSize(query)
-        | AtomFastPredicate::RingConnectivity(query)
-            if ring_query_requires_ring_atom(query) =>
-        {
-            Some(target.ring_atom_ids())
+        AtomFastPredicate::RingMembership(query) => {
+            exact_positive_ring_requirement(query).map(|count| {
+                u8::try_from(count).map_or(EMPTY_ATOM_IDS, |count| {
+                    target.atom_ids_with_ring_membership_count(count)
+                })
+            })
         }
-        AtomFastPredicate::HasElement
-        | AtomFastPredicate::Isotope(_)
-        | AtomFastPredicate::Connectivity(_)
-        | AtomFastPredicate::Valence(_)
-        | AtomFastPredicate::Hybridization(_)
-        | AtomFastPredicate::ImplicitHydrogen(_)
-        | AtomFastPredicate::RingMembership(_)
-        | AtomFastPredicate::RingSize(_)
-        | AtomFastPredicate::RingConnectivity(_)
-        | AtomFastPredicate::HeteroNeighbor(_)
-        | AtomFastPredicate::AliphaticHeteroNeighbor(_)
-        | AtomFastPredicate::Charge(_) => None,
+        AtomFastPredicate::RingSize(query) => exact_positive_ring_requirement(query).map(|size| {
+            u8::try_from(size).map_or(EMPTY_ATOM_IDS, |size| {
+                target.atom_ids_with_smallest_ring_size(size)
+            })
+        }),
+        AtomFastPredicate::RingConnectivity(query) => {
+            exact_positive_ring_requirement(query).map(|count| {
+                u8::try_from(count).map_or(EMPTY_ATOM_IDS, |count| {
+                    target.atom_ids_with_ring_bond_count(count)
+                })
+            })
+        }
+        AtomFastPredicate::HeteroNeighbor(query) => {
+            exact_count_requirement(query, 1).map(|count| {
+                u8::try_from(count).map_or(EMPTY_ATOM_IDS, |count| {
+                    target.atom_ids_with_hetero_neighbor_count(count)
+                })
+            })
+        }
+        AtomFastPredicate::AliphaticHeteroNeighbor(query) => {
+            exact_count_requirement(query, 1).map(|count| {
+                u8::try_from(count).map_or(EMPTY_ATOM_IDS, |count| {
+                    target.atom_ids_with_aliphatic_hetero_neighbor_count(count)
+                })
+            })
+        }
+        AtomFastPredicate::Charge(charge) => Some(target.atom_ids_with_formal_charge(charge)),
+        AtomFastPredicate::HasElement | AtomFastPredicate::Isotope(None) => None,
     }
 }
 
@@ -3434,11 +3593,14 @@ const fn exact_count_requirement(query: Option<NumericQuery>, omitted_default: u
     }
 }
 
-const fn ring_query_requires_ring_atom(query: Option<NumericQuery>) -> bool {
+const fn exact_positive_ring_requirement(query: Option<NumericQuery>) -> Option<u16> {
     match query {
-        None => true,
-        Some(NumericQuery::Exact(expected)) => expected > 0,
-        Some(NumericQuery::Range(range)) => matches!(range.min, Some(min) if min > 0),
+        Some(NumericQuery::Exact(expected)) if expected > 0 => Some(expected),
+        Some(NumericQuery::Range(range)) => match (range.min, range.max) {
+            (Some(min), Some(max)) if min == max && min > 0 => Some(min),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -3857,7 +4019,10 @@ mod tests {
 
     use smiles_parser::Smiles;
 
-    use super::{component_constraints_match, CompiledQuery, MatchScratch};
+    use super::{
+        component_constraints_match, select_next_query_atom, select_next_query_atom_for_target,
+        AtomStereoCache, CompiledQuery, FreshSearchBuffers, MatchScratch, RecursiveMatchCache,
+    };
     use crate::error::SmartsMatchError;
     use crate::prepared::PreparedTarget;
     use crate::QueryMol;
@@ -4024,6 +4189,48 @@ mod tests {
             compiled.matches(&prepared),
             compiled.match_count(&prepared) > 0
         );
+    }
+
+    #[test]
+    fn target_aware_root_selection_prefers_more_selective_unanchored_component() {
+        let compiled = CompiledQuery::new(QueryMol::from_str("C.[Cl-].[Na+]").unwrap()).unwrap();
+        let target = PreparedTarget::new(Smiles::from_str("CC.[Cl-].[Na+]").unwrap());
+        let mut scratch = FreshSearchBuffers::new(&compiled, &target);
+        let mut atom_stereo_cache = AtomStereoCache::new();
+        let mut recursive_cache =
+            RecursiveMatchCache::new(compiled.recursive_cache_slots, target.atom_count());
+        let context =
+            scratch
+                .view()
+                .into_context(&compiled, &mut atom_stereo_cache, &mut recursive_cache);
+
+        assert_eq!(
+            select_next_query_atom(
+                context.query_neighbors,
+                context.query_atom_scores,
+                context.query_to_target,
+            ),
+            0
+        );
+        assert_eq!(select_next_query_atom_for_target(&context), 1);
+    }
+
+    #[test]
+    fn anchored_complete_matchers_only_skip_rechecks_when_every_predicate_is_covered() {
+        let query = QueryMol::from_str("[A;X1-2].O").unwrap();
+        assert!(!query.matches("CC(C)C.O").unwrap());
+        assert_eq!(query.match_count("CC(C)C.O").unwrap(), 0);
+    }
+
+    #[test]
+    fn benchmark_screened_pair_does_not_regress_to_false_positive_match() {
+        let query =
+            QueryMol::from_str("[#6;D1;H3]-[#6;D2]-[#6;D3]=[#6;D3]-[#6;D3](=[#8;D1])-[#8;D1;H1]")
+                .unwrap();
+        let target = "C[C@@H]1C2[C@H](C(=O)N2C(=C1OC)C(=O)O)[C@@H](C)O";
+
+        assert!(!query.matches(target).unwrap());
+        assert_eq!(query.match_count(target).unwrap(), 0);
     }
 
     #[test]

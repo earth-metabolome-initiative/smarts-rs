@@ -6,8 +6,8 @@ use serde::Deserialize;
 use smiles_parser::Smiles;
 
 use super::{
-    AtomFeature, BondCountScreen, EdgeBondFeature, EdgeFeature, QueryScreen, TargetCorpusIndex,
-    TargetCorpusScratch, TargetScreen,
+    AtomFeature, BondCountScreen, EdgeBondFeature, EdgeFeature, QueryFeatureFilter, QueryScreen,
+    TargetCorpusIndex, TargetCorpusScratch, TargetScreen,
 };
 use crate::prepared::PreparedTarget;
 use crate::{CompiledQuery, MatchScratch};
@@ -371,6 +371,21 @@ fn path4_feature_count_filter_respects_required_multiplicity() {
     assert_eq!(query.required_path4_features.len(), 1);
     assert_eq!(query.required_path4_feature_counts.len(), 1);
     assert_eq!(index.candidate_ids(&query), alloc::vec![1, 2]);
+}
+
+#[test]
+fn query_screen_plans_more_specific_local_filters_first() {
+    let query = QueryScreen::new(&QueryMol::from_str("COCO").unwrap());
+
+    assert!(matches!(
+        query.planned_feature_filters.first(),
+        Some(QueryFeatureFilter::Path4 { .. })
+    ));
+    assert!(query
+        .planned_feature_filters
+        .iter()
+        .skip(1)
+        .any(|filter| matches!(filter, QueryFeatureFilter::Edge { .. })));
 }
 
 #[test]
