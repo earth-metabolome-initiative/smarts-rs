@@ -33,7 +33,6 @@ struct SearchContext<'a> {
     query_to_target: &'a mut [Option<usize>],
     used_target_atoms: &'a mut [u32],
     used_target_generation: u32,
-    stereo_plan: &'a QueryStereoPlan,
     atom_stereo_cache: &'a mut AtomStereoCache,
     recursive_cache: &'a mut RecursiveMatchCache,
 }
@@ -110,7 +109,6 @@ impl<'a> SearchScratchView<'a> {
             query_to_target: self.query_to_target,
             used_target_atoms: self.used_target_atoms,
             used_target_generation: self.used_target_generation,
-            stereo_plan: &query.stereo_plan,
             atom_stereo_cache,
             recursive_cache,
         }
@@ -466,8 +464,17 @@ impl MatchScratch {
     }
 
     fn prepare(&mut self, query: &CompiledQuery, target: &PreparedTarget) {
+        self.prepare_search_buffers(query, target);
+        self.prepare_caches(query, target);
+    }
+
+    fn prepare_search_buffers(&mut self, query: &CompiledQuery, target: &PreparedTarget) {
         let query_atom_count = query.query.atom_count();
         prepare_query_atom_anchor_widths(&mut self.query_atom_anchor_widths, query, target);
+        self.prepare_mapping_buffers(query_atom_count, target);
+    }
+
+    fn prepare_mapping_buffers(&mut self, query_atom_count: usize, target: &PreparedTarget) {
         if self.query_to_target.len() == query_atom_count {
             self.query_to_target.fill(None);
         } else {
@@ -483,7 +490,10 @@ impl MatchScratch {
             self.used_target_atoms.fill(0);
             self.used_target_generation = 1;
         }
+    }
 
+    fn prepare_caches(&mut self, query: &CompiledQuery, target: &PreparedTarget) {
+        let target_atom_count = target.atom_count();
         self.atom_stereo_cache.clear();
         self.recursive_cache
             .reset(query.recursive_cache_slots, target_atom_count);
@@ -631,6 +641,7 @@ pub struct CompiledQuery {
     query_degrees: alloc::vec::Vec<usize>,
     query_atom_scores: QueryAtomScores,
     stereo_plan: QueryStereoPlan,
+    has_stereo_constraints: bool,
     atom_matchers: Box<[CompiledAtomMatcher]>,
     bond_matchers: Box<[CompiledBondMatcher]>,
     has_component_constraints: bool,
@@ -662,6 +673,7 @@ impl CompiledQuery {
             compile_query_parts(&query)?;
         let atom_matchers = compile_atom_matchers(&query);
         let bond_matchers = compile_bond_matchers(&query, &stereo_plan);
+        let has_stereo_constraints = query_has_stereo_constraints(&query, &stereo_plan);
         let has_component_constraints = query.component_groups().iter().any(Option::is_some);
         let recursive_queries = compile_recursive_queries(&query, next_recursive_cache_slot)?;
         let recursive_query_lookup = recursive_queries
@@ -675,6 +687,7 @@ impl CompiledQuery {
             query_degrees,
             query_atom_scores,
             stereo_plan,
+            has_stereo_constraints,
             atom_matchers,
             bond_matchers,
             has_component_constraints,
@@ -1076,6 +1089,14 @@ fn compile_bond_matchers(
         .collect()
 }
 
+fn query_has_stereo_constraints(query: &QueryMol, stereo_plan: &QueryStereoPlan) -> bool {
+    !stereo_plan.double_bond_constraints.is_empty()
+        || query
+            .atoms()
+            .iter()
+            .any(|atom| extract_query_chirality(&atom.expr).is_some())
+}
+
 const BOND_LABEL_STATE_COUNT: usize = 7;
 const BOND_STATE_MASK_ALL: u16 = (1u16 << (BOND_LABEL_STATE_COUNT * 2)) - 1;
 
@@ -1316,6 +1337,31 @@ fn query_matches_with_scratch(
     target: &PreparedTarget,
     scratch: &mut MatchScratch,
 ) -> bool {
+    let initial_mapping = InitialAtomMapping::default();
+    if query.query.atom_count() == 1 {
+        scratch.prepare_caches(query, target);
+        return single_atom_query_matches(query, target, &mut scratch.recursive_cache, None);
+    }
+    if is_two_atom_edge_query(&query.query) {
+        scratch.prepare_caches(query, target);
+        return two_atom_query_matches(
+            query,
+            target,
+            &mut scratch.recursive_cache,
+            initial_mapping,
+        );
+    }
+    if let Some(layout) = three_atom_tree_layout(query) {
+        scratch.prepare_caches(query, target);
+        return three_atom_query_matches(
+            query,
+            target,
+            &mut scratch.atom_stereo_cache,
+            &mut scratch.recursive_cache,
+            layout,
+            initial_mapping,
+        );
+    }
     scratch.prepare(query, target);
     query_matches_with_mapping_state(
         query,
@@ -1328,7 +1374,7 @@ fn query_matches_with_scratch(
             used_target_atoms: &mut scratch.used_target_atoms,
             used_target_generation: scratch.used_target_generation,
         },
-        InitialAtomMapping::default(),
+        initial_mapping,
     )
 }
 
@@ -1845,14 +1891,7 @@ fn three_atom_query_matches(
         layout,
         initial_mapping,
         |mapping| {
-            stereo_constraints_match(
-                &query.query,
-                &query.stereo_plan,
-                &query.query_neighbors,
-                target,
-                mapping,
-                atom_stereo_cache,
-            )
+            compiled_query_stereo_constraints_match(query, target, mapping, atom_stereo_cache)
         },
     )
 }
@@ -1873,14 +1912,7 @@ fn three_atom_query_substructure_matches(
         layout,
         initial_mapping,
         |mapping| {
-            if !stereo_constraints_match(
-                &query.query,
-                &query.stereo_plan,
-                &query.query_neighbors,
-                target,
-                mapping,
-                atom_stereo_cache,
-            ) {
+            if !compiled_query_stereo_constraints_match(query, target, mapping, atom_stereo_cache) {
                 return false;
             }
 
@@ -1922,14 +1954,7 @@ fn three_atom_query_match_count(
         layout,
         initial_mapping,
         |mapping| {
-            if !stereo_constraints_match(
-                &query.query,
-                &query.stereo_plan,
-                &query.query_neighbors,
-                target,
-                mapping,
-                atom_stereo_cache,
-            ) {
+            if !compiled_query_stereo_constraints_match(query, target, mapping, atom_stereo_cache) {
                 return false;
             }
             matches.push(three_atom_canonical_key(
@@ -2895,10 +2920,8 @@ fn search_mapping(
     mapped_count: usize,
 ) -> bool {
     if mapped_count == query.atom_count() {
-        return stereo_constraints_match(
-            query,
-            context.stereo_plan,
-            context.query_neighbors,
+        return compiled_query_stereo_constraints_match(
+            context.compiled_query,
             target,
             context.query_to_target,
             context.atom_stereo_cache,
@@ -3070,10 +3093,8 @@ fn collect_mappings(
     matches: &mut UniqueMatches,
 ) {
     if mapped_count == query.atom_count() {
-        if stereo_constraints_match(
-            query,
-            context.stereo_plan,
-            context.query_neighbors,
+        if compiled_query_stereo_constraints_match(
+            context.compiled_query,
             target,
             context.query_to_target,
             context.atom_stereo_cache,
@@ -3130,10 +3151,8 @@ fn collect_match_keys(
     matches: &mut MatchKeys,
 ) {
     if mapped_count == query.atom_count() {
-        if stereo_constraints_match(
-            query,
-            context.stereo_plan,
-            context.query_neighbors,
+        if compiled_query_stereo_constraints_match(
+            context.compiled_query,
             target,
             context.query_to_target,
             context.atom_stereo_cache,
@@ -3907,6 +3926,23 @@ fn atom_chirality_matches(
     expected_chirality == Some(actual_target_chirality)
 }
 
+fn compiled_query_stereo_constraints_match(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    query_to_target: &[Option<usize>],
+    atom_stereo_cache: &mut AtomStereoCache,
+) -> bool {
+    !query.has_stereo_constraints
+        || stereo_constraints_match(
+            &query.query,
+            &query.stereo_plan,
+            &query.query_neighbors,
+            target,
+            query_to_target,
+            atom_stereo_cache,
+        )
+}
+
 fn stereo_constraints_match(
     query: &QueryMol,
     stereo_plan: &QueryStereoPlan,
@@ -4095,6 +4131,35 @@ mod tests {
             compiled.matches(&good),
             compiled.matches_with_scratch(&good, &mut scratch)
         );
+    }
+
+    #[test]
+    fn reusable_scratch_matches_fast_path_query_shapes() {
+        let cases = [
+            ("O", "CCO", true),
+            ("O", "CCC", false),
+            ("C=O", "CC(=O)O", true),
+            ("C=O", "CCO", false),
+            ("COC", "CCOC", true),
+            ("COC", "CCO", false),
+            ("COCO", "CCOCO", true),
+            ("COCO", "CCOCC", false),
+            ("[#6]-[#6]-[#8]-[#6]-[#8]", "CCOCO", true),
+            ("[#6]-[#6]-[#8]-[#6]-[#8]", "CCOCC", false),
+        ];
+        let mut scratch = MatchScratch::new();
+
+        for (smarts, smiles, expected) in cases {
+            let compiled = CompiledQuery::new(QueryMol::from_str(smarts).unwrap()).unwrap();
+            let target = PreparedTarget::new(Smiles::from_str(smiles).unwrap());
+
+            assert_eq!(compiled.matches(&target), expected);
+            assert_eq!(
+                compiled.matches_with_scratch(&target, &mut scratch),
+                expected,
+                "scratch mismatch for {smarts} against {smiles}"
+            );
+        }
     }
 
     #[test]

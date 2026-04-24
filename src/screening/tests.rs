@@ -431,6 +431,50 @@ fn path4_feature_count_filter_respects_required_multiplicity() {
 }
 
 #[test]
+fn path4_and_star3_features_use_exact_local_atom_identity() {
+    let path4 = QueryScreen::new(&QueryMol::from_str("[C;D1;H3]-[C;D2]-[C;D2]-[O;D1;H1]").unwrap());
+    let path4_atoms = path4
+        .required_path4_features
+        .iter()
+        .flat_map(|feature| {
+            [
+                feature.left,
+                feature.left_middle,
+                feature.right_middle,
+                feature.right,
+            ]
+        })
+        .collect::<alloc::vec::Vec<_>>();
+
+    assert!(path4_atoms.iter().any(|atom| {
+        atom.element == Some(elements_rs::Element::C)
+            && atom.aromatic == Some(false)
+            && atom.degree == Some(1)
+            && atom.total_hydrogens == Some(3)
+    }));
+    assert!(path4_atoms.iter().any(|atom| {
+        atom.element == Some(elements_rs::Element::O)
+            && atom.aromatic == Some(false)
+            && atom.degree == Some(1)
+            && atom.total_hydrogens == Some(1)
+    }));
+
+    let star3 = QueryScreen::new(&QueryMol::from_str("[C;D3]([O;D1;H1])([N;D1])-[C;D1]").unwrap());
+    let star3_feature = star3
+        .required_star3_features
+        .first()
+        .expect("query should have one star3 feature");
+
+    assert_eq!(star3_feature.center.element, Some(elements_rs::Element::C));
+    assert_eq!(star3_feature.center.degree, Some(3));
+    assert!(star3_feature.arms.iter().any(|arm| {
+        arm.atom.element == Some(elements_rs::Element::O)
+            && arm.atom.degree == Some(1)
+            && arm.atom.total_hydrogens == Some(1)
+    }));
+}
+
+#[test]
 fn query_screen_plans_more_specific_local_filters_first() {
     let query = QueryScreen::new(&QueryMol::from_str("COCO").unwrap());
 

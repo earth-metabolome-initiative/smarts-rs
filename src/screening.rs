@@ -3395,20 +3395,7 @@ fn count_query_path4_features(
 }
 
 fn query_atom_feature(query: &QueryMol, atom_id: usize) -> Option<AtomFeature> {
-    let requirement = exact_atom_requirement(&query.atom(atom_id)?.expr);
-    let count_requirement = forced_atom_count_requirement(&query.atom(atom_id)?.expr);
-    let (degree, total_hydrogens) = if requirement.element.is_some() {
-        (count_requirement.degree, count_requirement.total_hydrogens)
-    } else {
-        (None, None)
-    };
-    Some(AtomFeature {
-        element: requirement.element,
-        aromatic: requirement.aromatic,
-        requires_ring: requirement.requires_ring,
-        degree,
-        total_hydrogens,
-    })
+    Some(query_local_atom_feature(&query.atom(atom_id)?.expr))
 }
 
 fn query_edge_feature(query: &QueryMol, bond_id: usize) -> Option<EdgeFeature> {
@@ -3658,28 +3645,31 @@ fn target_atom_feature(target: &PreparedTarget, atom_id: usize) -> Option<AtomFe
 }
 
 fn query_path3_atom_feature(expr: &AtomExpr) -> AtomFeature {
-    let atom_requirement = forced_atom_requirement(expr);
-    let count_requirement = forced_atom_count_requirement(expr);
-    let degree = atom_requirement.element.and(count_requirement.degree);
-    AtomFeature {
-        element: atom_requirement.element,
-        requires_ring: atom_requirement.element.is_some() && atom_requirement.requires_ring,
-        degree,
-        ..AtomFeature::default()
-    }
+    query_local_atom_feature(expr)
 }
 
 fn query_path4_atom_feature(expr: &AtomExpr) -> AtomFeature {
-    AtomFeature {
-        element: forced_atom_requirement(expr).element,
-        ..AtomFeature::default()
-    }
+    query_local_atom_feature(expr)
 }
 
 fn query_star3_atom_feature(expr: &AtomExpr) -> AtomFeature {
+    query_local_atom_feature(expr)
+}
+
+fn query_local_atom_feature(expr: &AtomExpr) -> AtomFeature {
+    let requirement = exact_atom_requirement(expr);
+    let count_requirement = forced_atom_count_requirement(expr);
+    let (degree, total_hydrogens) = if requirement.element.is_some() {
+        (count_requirement.degree, count_requirement.total_hydrogens)
+    } else {
+        (None, None)
+    };
     AtomFeature {
-        element: forced_atom_requirement(expr).element,
-        ..AtomFeature::default()
+        element: requirement.element,
+        aromatic: requirement.aromatic,
+        requires_ring: requirement.requires_ring,
+        degree,
+        total_hydrogens,
     }
 }
 
