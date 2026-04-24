@@ -792,11 +792,11 @@ fn canonical_atom_primitive(primitive: AtomPrimitive) -> AtomPrimitive {
             canonical_count_primitive(query, |query| AtomPrimitive::Hydrogen(kind, query))
         }
         AtomPrimitive::RingMembership(query) => {
-            canonical_range_primitive(query, AtomPrimitive::RingMembership)
+            canonical_ring_primitive(query, AtomPrimitive::RingMembership)
         }
-        AtomPrimitive::RingSize(query) => canonical_range_primitive(query, AtomPrimitive::RingSize),
+        AtomPrimitive::RingSize(query) => canonical_ring_primitive(query, AtomPrimitive::RingSize),
         AtomPrimitive::RingConnectivity(query) => {
-            canonical_range_primitive(query, AtomPrimitive::RingConnectivity)
+            canonical_ring_primitive(query, AtomPrimitive::RingConnectivity)
         }
         AtomPrimitive::Hybridization(query) => {
             AtomPrimitive::Hybridization(canonical_numeric_query(query))
@@ -826,13 +826,15 @@ fn canonical_count_primitive(
     }
 }
 
-fn canonical_range_primitive(
+fn canonical_ring_primitive(
     query: Option<NumericQuery>,
     build: impl FnOnce(Option<NumericQuery>) -> AtomPrimitive,
 ) -> AtomPrimitive {
     let query = query.map(canonical_numeric_query);
     if optional_numeric_query_is_unbounded_from_zero(query) {
         AtomPrimitive::Wildcard
+    } else if optional_numeric_query_is_unbounded_from_one(query) {
+        build(None)
     } else {
         build(query)
     }
@@ -843,6 +845,16 @@ const fn optional_numeric_query_is_unbounded_from_zero(query: Option<NumericQuer
         query,
         Some(NumericQuery::Range(NumericRange {
             min: None,
+            max: None
+        }))
+    )
+}
+
+const fn optional_numeric_query_is_unbounded_from_one(query: Option<NumericQuery>) -> bool {
+    matches!(
+        query,
+        Some(NumericQuery::Range(NumericRange {
+            min: Some(1),
             max: None
         }))
     )
@@ -879,6 +891,9 @@ fn canonical_numeric_range(mut range: NumericRange) -> NumericRange {
 
 fn simplify_bracket_tree(tree: BracketExprTree) -> BracketExprTree {
     match tree {
+        BracketExprTree::Primitive(AtomPrimitive::RecursiveQuery(query)) => {
+            simplify_single_atom_recursive_query(*query)
+        }
         BracketExprTree::Primitive(primitive) => BracketExprTree::Primitive(primitive),
         BracketExprTree::Not(inner) => simplify_bracket_not(simplify_bracket_tree(*inner)),
         BracketExprTree::HighAnd(items) => simplify_bracket_and(items, BracketAndKind::High),
@@ -887,11 +902,43 @@ fn simplify_bracket_tree(tree: BracketExprTree) -> BracketExprTree {
     }
 }
 
+fn simplify_single_atom_recursive_query(query: QueryMol) -> BracketExprTree {
+    if query.atom_count() != 1 || query.bond_count() != 0 {
+        return BracketExprTree::Primitive(AtomPrimitive::RecursiveQuery(Box::new(query)));
+    }
+
+    single_atom_recursive_query_equivalent(&query).map_or_else(
+        || BracketExprTree::Primitive(AtomPrimitive::RecursiveQuery(Box::new(query))),
+        simplify_bracket_tree,
+    )
+}
+
+fn single_atom_recursive_query_equivalent(query: &QueryMol) -> Option<BracketExprTree> {
+    match &query.atoms()[0].expr {
+        AtomExpr::Wildcard => Some(BracketExprTree::Primitive(AtomPrimitive::Wildcard)),
+        AtomExpr::Bare { element, aromatic } => {
+            Some(BracketExprTree::Primitive(AtomPrimitive::Symbol {
+                element: *element,
+                aromatic: *aromatic,
+            }))
+        }
+        AtomExpr::Bracket(expr) if expr.atom_map.is_none() => Some(expr.tree.clone()),
+        AtomExpr::Bracket(_) => None,
+    }
+}
+
 fn simplify_bracket_not(inner: BracketExprTree) -> BracketExprTree {
     if is_false_bracket_tree(&inner) {
         BracketExprTree::Primitive(AtomPrimitive::Wildcard)
     } else if let BracketExprTree::Not(grandchild) = inner {
         *grandchild
+    } else if let BracketExprTree::HighAnd(items) | BracketExprTree::LowAnd(items) = inner {
+        simplify_bracket_or(items.into_iter().map(simplify_bracket_not).collect())
+    } else if let BracketExprTree::Or(items) = inner {
+        simplify_bracket_and(
+            items.into_iter().map(simplify_bracket_not).collect(),
+            BracketAndKind::High,
+        )
     } else if matches!(
         inner,
         BracketExprTree::Primitive(AtomPrimitive::AliphaticAny)
@@ -1033,6 +1080,9 @@ fn prune_bracket_disjunctions_against_conjunction_terms(
         let BracketExprTree::Or(alternatives) = &items[disjunction_index] else {
             continue;
         };
+        let conjunction_contains_negation = items.iter().enumerate().any(|(other_index, other)| {
+            other_index != disjunction_index && bracket_tree_contains_negation(other)
+        });
         let retained = alternatives
             .iter()
             .filter(|alternative| {
@@ -1043,6 +1093,7 @@ fn prune_bracket_disjunctions_against_conjunction_terms(
                     alternative,
                     items,
                     disjunction_index,
+                    conjunction_contains_negation,
                 )
             })
             .cloned()
@@ -1065,7 +1116,12 @@ fn bracket_alternative_is_inconsistent_with_conjunction(
     alternative: &BracketExprTree,
     items: &[BracketExprTree],
     disjunction_index: usize,
+    conjunction_contains_negation: bool,
 ) -> bool {
+    if !conjunction_contains_negation && !bracket_tree_contains_negation(alternative) {
+        return false;
+    }
+
     let mut conjunction = items
         .iter()
         .enumerate()
@@ -1081,6 +1137,16 @@ fn bracket_alternative_is_inconsistent_with_conjunction(
     }
 
     is_false_bracket_tree(&simplify_bracket_and(conjunction, BracketAndKind::High))
+}
+
+fn bracket_tree_contains_negation(tree: &BracketExprTree) -> bool {
+    match tree {
+        BracketExprTree::Not(_) => true,
+        BracketExprTree::HighAnd(items)
+        | BracketExprTree::Or(items)
+        | BracketExprTree::LowAnd(items) => items.iter().any(bracket_tree_contains_negation),
+        BracketExprTree::Primitive(_) => false,
+    }
 }
 
 fn factor_common_bracket_conjunction_disjunction_terms(items: &mut Vec<BracketExprTree>) -> bool {
@@ -5022,7 +5088,7 @@ mod tests {
             "#7", "C", "c", "N", "n", "R", "r6", "+0", "H0", "D3", "X4", "v4", "x2", "A", "a",
             "$([#6])",
         ] {
-            let expected = format!("[{term}]");
+            let expected = canonical_string(&format!("[{term}]"));
             assert_eq!(canonical_string(&format!("[{term}&{term}]")), expected);
             assert_eq!(canonical_string(&format!("[{term};{term}]")), expected);
             assert_eq!(canonical_string(&format!("[{term},{term}]")), expected);
@@ -5118,13 +5184,13 @@ mod tests {
             ("[#6&12*&!12C]", "[12c]"),
             ("[#6&R,#6&R&X4]", "[#6&R]"),
             ("[#6&R,#6&R&X4,#7]", "[#6&R,#7]"),
-            ("[$([#6])&R,$([#6])&!R]", "[$([#6])]"),
+            ("[$([#6])&R,$([#6])&!R]", "[#6]"),
             ("[C&R,c&R]", "[#6&R]"),
             ("[#6&R&C,#6&R&!C]", "[#6&R]"),
             ("[#6&+0&C,#6&+0&!C]", "[#6&+0]"),
             ("[#6&H0&C,#6&H0&!C]", "[#6&H0]"),
             ("[#7&R&N,#7&R&!N]", "[#7&R]"),
-            ("[$([#6])&#6&C,$([#6])&#6&!C]", "[#6&$([#6])]"),
+            ("[$([#6])&#6&C,$([#6])&#6&!C]", "[#6]"),
         ] {
             assert_eq!(canonical_string(source), expected, "{source}");
         }
@@ -5170,10 +5236,7 @@ mod tests {
             ("[#6&R,!#6&H0,R&H0]", "[!#6&H0,#6&R]"),
             ("[#6&R&X4,!#6&H0&X4,R&H0&X4]", "[!#6&H0,#6&R;X4]"),
             ("[#6&R&H0,!#6&X4,!R&X4,!H0&X4]", "[#6&H0&R,X4]"),
-            (
-                "[$([#6])&R&H0,!$([#6])&X4,!R&X4,!H0&X4]",
-                "[$([#6])&H0&R,X4]",
-            ),
+            ("[$([#6])&R&H0,!$([#6])&X4,!R&X4,!H0&X4]", "[#6&H0&R,X4]"),
             ("[#6,!C&!c]", "*"),
             ("[#7,!N&!n]", "*"),
             ("[#6&12*,!12C&!12c]", "*"),
@@ -5314,6 +5377,11 @@ mod tests {
             ("[r{0-}]", "*"),
             ("[z{0-}]", "*"),
             ("[Z{0-}]", "*"),
+            ("[R{1-}]", "[R]"),
+            ("[r{1-}]", "[r]"),
+            ("[x{1-}]", "[x]"),
+            ("[R&R{1-}]", "[R]"),
+            ("[R,R{1-}]", "[R]"),
             ("[#6&D{0-}]", "[#6]"),
             ("[#6,D{0-}]", "*"),
             ("[X1]", "[X]"),
@@ -5473,10 +5541,10 @@ mod tests {
             ("[#6&12*;!12C&!12c,R]", "[#6&12*&R]"),
             ("[C,R;!C,H0;!R,H0]", "[C,R;H0]"),
             ("[#7,D2;!#7,X4;!D2,X4]", "[#7,D2;X4]"),
-            ("[$([#6]),R;!$([#6]),H0;!R,H0]", "[$([#6]),R;H0]"),
+            ("[$([#6]),R;!$([#6]),H0;!R,H0]", "[#6,R;H0]"),
             ("[C,R;C,H0]", "[C,H0&R]"),
             ("[D2,R;D2,X4]", "[D2,R&X4]"),
-            ("[$([#6]),R;$([#6]),H0]", "[$([#6]),H0&R]"),
+            ("[$([#6]),R;$([#6]),H0]", "[#6,H0&R]"),
             ("[#6]-,@;-,=[#7]", "[#6]-,=&@[#7]"),
             ("[#6]-,@;-,!@[#7]", "[#6]-[#7]"),
             ("[#6]-,@;!-,@[#7]", "[#6]@[#7]"),
@@ -5508,10 +5576,18 @@ mod tests {
         );
         assert_same_canonical_group(&["[$(OC)]", "[$(CO)]"]);
         assert_eq!(canonical_string("[$((CO))]"), "[$(CO)]");
-        assert_eq!(canonical_string("[$([#6]),$([#6;R])]"), "[$([#6])]");
-        assert_eq!(canonical_string("[$([#6]),$([C])]"), "[$([#6])]");
-        assert_eq!(canonical_string("[$([C]),$([C;R])]"), "[$([C])]");
-        assert_eq!(canonical_string("[$([#6&R]),$([#6&R;X4])]"), "[$([#6&R])]");
+        assert_eq!(canonical_string("[$(*)]"), "*");
+        assert_eq!(canonical_string("[$([#6])]"), "[#6]");
+        assert_eq!(canonical_string("[$([C])]"), "[C]");
+        assert_eq!(canonical_string("[$([#6])&R]"), "[#6&R]");
+        assert_eq!(canonical_string("[#6&$([#6])]"), "[#6]");
+        assert_eq!(canonical_string("[$([#6:1])]"), "[$([#6:1])]");
+        assert_eq!(canonical_string("[!$([#6&-])]"), "[!#6,!-]");
+        assert_eq!(canonical_string("[!$([#6,-])]"), "[!#6&!-]");
+        assert_eq!(canonical_string("[$([#6]),$([#6;R])]"), "[#6]");
+        assert_eq!(canonical_string("[$([#6]),$([C])]"), "[#6]");
+        assert_eq!(canonical_string("[$([C]),$([C;R])]"), "[C]");
+        assert_eq!(canonical_string("[$([#6&R]),$([#6&R;X4])]"), "[#6&R]");
         assert_all_atom_permutations_converge("[$(CO)]N");
         assert_all_atom_permutations_converge("C[$([O,N])]");
     }
@@ -5521,7 +5597,7 @@ mod tests {
         assert_eq!(canonical_string("[!!#6]"), "[#6]");
         assert_eq!(canonical_string("[!!-2]"), "[-2]");
         assert_eq!(canonical_string("[!!h4&#51]"), "[#51&h4]");
-        assert_eq!(canonical_string("[$([!!#6;*])]"), "[$([#6])]");
+        assert_eq!(canonical_string("[$([!!#6;*])]"), "[#6]");
 
         let query = QueryMol::from_str("C-N").unwrap();
         let mut bonds = query.bonds().to_vec();
@@ -5589,7 +5665,7 @@ mod tests {
         let reparsed = QueryMol::from_str(&rendered).unwrap();
 
         assert!(canonical.is_canonical());
-        assert_eq!(rendered, "[!$([#1&-])]");
+        assert_eq!(rendered, "[!#1,!-]");
         assert_eq!(canonical, reparsed.canonicalize());
     }
 
