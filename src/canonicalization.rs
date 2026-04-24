@@ -858,6 +858,8 @@ fn simplify_bracket_tree(tree: BracketExprTree) -> BracketExprTree {
 fn simplify_bracket_not(inner: BracketExprTree) -> BracketExprTree {
     if is_false_bracket_tree(&inner) {
         BracketExprTree::Primitive(AtomPrimitive::Wildcard)
+    } else if let BracketExprTree::Not(grandchild) = inner {
+        *grandchild
     } else {
         BracketExprTree::Not(Box::new(inner))
     }
@@ -886,6 +888,7 @@ fn simplify_bracket_and(items: Vec<BracketExprTree>, kind: BracketAndKind) -> Br
     merge_numeric_bracket_conjunctions(&mut items);
     synthesize_symbol_conjunctions(&mut items);
     synthesize_isotope_conjunctions(&mut items);
+    synthesize_negated_symbol_conjunctions(&mut items);
     while let Some(changed) = prune_bracket_disjunctions_against_conjunction_terms(&mut items) {
         if !changed {
             break;
@@ -898,6 +901,34 @@ fn simplify_bracket_and(items: Vec<BracketExprTree>, kind: BracketAndKind) -> Br
         || bracket_and_contains_mutually_exclusive_pair(&items)
     {
         return false_bracket_tree();
+    }
+    if kind == BracketAndKind::Low {
+        loop {
+            let mut changed = false;
+            while remove_redundant_bracket_conjunction_consensus_terms(&mut items) {
+                changed = true;
+            }
+            while factor_common_bracket_conjunction_disjunction_terms(&mut items) {
+                changed = true;
+            }
+            while distribute_bracket_conjunction_term_into_disjunction(&mut items) {
+                changed = true;
+            }
+            while let Some(pruned) =
+                prune_bracket_disjunctions_against_conjunction_terms(&mut items)
+            {
+                if !pruned {
+                    break;
+                }
+                changed = true;
+            }
+            if !changed {
+                break;
+            }
+            if items.iter().any(is_false_bracket_tree) {
+                return false_bracket_tree();
+            }
+        }
     }
     remove_implied_bracket_conjunction_terms(&mut items);
     items.sort_by_cached_key(BracketExprTree::to_string);
@@ -956,6 +987,202 @@ fn prune_bracket_disjunctions_against_conjunction_terms(
     }
 
     Some(false)
+}
+
+fn factor_common_bracket_conjunction_disjunction_terms(items: &mut Vec<BracketExprTree>) -> bool {
+    for left_index in 0..items.len() {
+        let left_alternatives = bracket_disjunction_factor_items(&items[left_index]);
+        if left_alternatives.len() < 2 {
+            continue;
+        }
+
+        for right_index in (left_index + 1)..items.len() {
+            let right_alternatives = bracket_disjunction_factor_items(&items[right_index]);
+            if right_alternatives.len() < 2 {
+                continue;
+            }
+
+            let common = left_alternatives
+                .iter()
+                .filter(|item| right_alternatives.contains(item))
+                .cloned()
+                .collect::<Vec<_>>();
+            if common.is_empty() {
+                continue;
+            }
+
+            let replacement =
+                factor_bracket_disjunction_pair(&left_alternatives, &right_alternatives, common);
+            items.remove(right_index);
+            items.remove(left_index);
+            items.push(replacement);
+            return true;
+        }
+    }
+
+    false
+}
+
+fn factor_bracket_disjunction_pair(
+    left_alternatives: &[BracketExprTree],
+    right_alternatives: &[BracketExprTree],
+    mut common: Vec<BracketExprTree>,
+) -> BracketExprTree {
+    let left_remainder = disjunction_remainder(left_alternatives, &common);
+    let right_remainder = disjunction_remainder(right_alternatives, &common);
+    if left_remainder.is_empty() || right_remainder.is_empty() {
+        return simplify_bracket_or(common);
+    }
+
+    let remainder = simplify_bracket_and(
+        vec![
+            simplify_bracket_or(left_remainder),
+            simplify_bracket_or(right_remainder),
+        ],
+        BracketAndKind::Low,
+    );
+    if !is_false_bracket_tree(&remainder) {
+        common.push(remainder);
+    }
+    simplify_bracket_or(common)
+}
+
+fn remove_redundant_bracket_conjunction_consensus_terms(items: &mut Vec<BracketExprTree>) -> bool {
+    for candidate_index in 0..items.len() {
+        for left_index in 0..items.len() {
+            if left_index == candidate_index {
+                continue;
+            }
+
+            for right_index in (left_index + 1)..items.len() {
+                if right_index == candidate_index
+                    || !bracket_conjunction_consensus_term_is_redundant(
+                        &items[left_index],
+                        &items[right_index],
+                        &items[candidate_index],
+                    )
+                {
+                    continue;
+                }
+
+                items.remove(candidate_index);
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn distribute_bracket_conjunction_term_into_disjunction(items: &mut Vec<BracketExprTree>) -> bool {
+    for disjunction_index in 0..items.len() {
+        let BracketExprTree::Or(alternatives) = &items[disjunction_index] else {
+            continue;
+        };
+        let alternatives = alternatives.clone();
+
+        for term_index in 0..items.len() {
+            if term_index == disjunction_index {
+                continue;
+            }
+            let term = items[term_index].clone();
+            let implied_by_alternative = alternatives
+                .iter()
+                .map(|alternative| bracket_tree_implies(alternative, &term))
+                .collect::<Vec<_>>();
+
+            if !implied_by_alternative.iter().any(|implied| *implied)
+                || implied_by_alternative.iter().all(|implied| *implied)
+            {
+                continue;
+            }
+
+            let replacement = alternatives
+                .into_iter()
+                .zip(implied_by_alternative)
+                .map(|(alternative, implied)| {
+                    if implied {
+                        alternative
+                    } else {
+                        simplify_bracket_conjunction_pair(term.clone(), alternative)
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            remove_indices_descending(items, &[disjunction_index, term_index]);
+            items.push(simplify_bracket_or(replacement));
+            return true;
+        }
+    }
+
+    false
+}
+
+fn simplify_bracket_conjunction_pair(
+    left: BracketExprTree,
+    right: BracketExprTree,
+) -> BracketExprTree {
+    let items = vec![left, right];
+    let kind = if can_render_bracket_and_as_high_and(&items) {
+        BracketAndKind::High
+    } else {
+        BracketAndKind::Low
+    };
+    simplify_bracket_and(items, kind)
+}
+
+fn bracket_conjunction_consensus_term_is_redundant(
+    left: &BracketExprTree,
+    right: &BracketExprTree,
+    candidate: &BracketExprTree,
+) -> bool {
+    let left_alternatives = bracket_disjunction_factor_items(left);
+    let right_alternatives = bracket_disjunction_factor_items(right);
+    if left_alternatives.len() < 2 || right_alternatives.len() < 2 {
+        return false;
+    }
+
+    for left_complement_index in 0..left_alternatives.len() {
+        for right_complement_index in 0..right_alternatives.len() {
+            if !bracket_trees_are_complements(
+                &left_alternatives[left_complement_index],
+                &right_alternatives[right_complement_index],
+            ) {
+                continue;
+            }
+
+            let mut consensus =
+                bracket_items_without_index(&left_alternatives, left_complement_index);
+            consensus.extend(bracket_items_without_index(
+                &right_alternatives,
+                right_complement_index,
+            ));
+            sort_and_dedup_bracket_items(&mut consensus);
+            let consensus = simplify_bracket_or(consensus);
+            if bracket_tree_implies(&consensus, candidate) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn bracket_disjunction_factor_items(tree: &BracketExprTree) -> Vec<BracketExprTree> {
+    let mut alternatives = match tree {
+        BracketExprTree::Or(items) => items.clone(),
+        other => vec![other.clone()],
+    };
+    sort_and_dedup_bracket_items(&mut alternatives);
+    alternatives
+}
+
+fn disjunction_remainder<T: Clone + PartialEq>(items: &[T], common: &[T]) -> Vec<T> {
+    items
+        .iter()
+        .filter(|item| !common.contains(item))
+        .cloned()
+        .collect()
 }
 
 fn subtract_negated_isotope_conjunction_terms(items: &mut Vec<BracketExprTree>) -> bool {
@@ -1350,6 +1577,76 @@ fn find_isotope_conjunction_pair(
         }
     }
     None
+}
+
+fn synthesize_negated_symbol_conjunctions(items: &mut Vec<BracketExprTree>) {
+    while let Some((left_index, right_index, replacement)) =
+        find_negated_symbol_conjunction_pair(items)
+    {
+        remove_indices_descending(items, &[left_index, right_index]);
+        items.push(replacement);
+    }
+}
+
+fn find_negated_symbol_conjunction_pair(
+    items: &[BracketExprTree],
+) -> Option<(usize, usize, BracketExprTree)> {
+    for (left_index, left) in items.iter().enumerate() {
+        for (right_index, right) in items.iter().enumerate().skip(left_index + 1) {
+            let Some(replacement) = negated_symbol_conjunction_replacement(left, right) else {
+                continue;
+            };
+            return Some((left_index, right_index, replacement));
+        }
+    }
+    None
+}
+
+fn negated_symbol_conjunction_replacement(
+    left: &BracketExprTree,
+    right: &BracketExprTree,
+) -> Option<BracketExprTree> {
+    let left = negated_bracket_primitive(left)?;
+    let right = negated_bracket_primitive(right)?;
+    match (left, right) {
+        (AtomPrimitive::AliphaticAny, AtomPrimitive::AromaticAny)
+        | (AtomPrimitive::AromaticAny, AtomPrimitive::AliphaticAny) => Some(false_bracket_tree()),
+        (
+            AtomPrimitive::Symbol {
+                element: left_element,
+                aromatic: false,
+            },
+            AtomPrimitive::Symbol {
+                element: right_element,
+                aromatic: true,
+            },
+        )
+        | (
+            AtomPrimitive::Symbol {
+                element: right_element,
+                aromatic: true,
+            },
+            AtomPrimitive::Symbol {
+                element: left_element,
+                aromatic: false,
+            },
+        ) if left_element == right_element => {
+            Some(simplify_bracket_not(BracketExprTree::Primitive(
+                AtomPrimitive::AtomicNumber(u16::from(left_element.atomic_number())),
+            )))
+        }
+        _ => None,
+    }
+}
+
+fn negated_bracket_primitive(tree: &BracketExprTree) -> Option<&AtomPrimitive> {
+    let BracketExprTree::Not(inner) = tree else {
+        return None;
+    };
+    let BracketExprTree::Primitive(primitive) = inner.as_ref() else {
+        return None;
+    };
+    Some(primitive)
 }
 
 fn element_for_symbol_conjunction(
@@ -1826,7 +2123,15 @@ fn simplify_bracket_or(items: Vec<BracketExprTree>) -> BracketExprTree {
     }
 
     while relax_complemented_bracket_disjunction_terms(&mut items) {}
+    while relax_negated_bracket_conjunction_terms(&mut items) {}
+    while relax_negated_broader_bracket_disjunction_terms(&mut items) {}
+    while relax_covered_negated_bracket_disjunction_terms(&mut items) {}
+    while relax_conjunctive_complement_bracket_disjunction_terms(&mut items) {}
+    while remove_redundant_bracket_disjunction_consensus_terms(&mut items) {}
     while collapse_bracket_disjunction_consensus_terms(&mut items) {}
+    if let Some(factored) = factor_common_bracket_disjunction_terms(&items) {
+        return simplify_bracket_tree(factored);
+    }
     remove_absorbed_bracket_disjunction_terms(&mut items);
     items.sort_by_cached_key(BracketExprTree::to_string);
     items.dedup();
@@ -1945,9 +2250,84 @@ fn bracket_or_contains_implied_complement_pair(items: &[BracketExprTree]) -> boo
     items.iter().any(|item| {
         items.iter().any(|other| match other {
             BracketExprTree::Not(inner) => bracket_tree_implies(inner, item),
-            _ => false,
+            _ => bracket_tree_is_conjunctive_complement(item, other),
         })
     })
+}
+
+fn bracket_tree_is_conjunctive_complement(
+    candidate: &BracketExprTree,
+    complement: &BracketExprTree,
+) -> bool {
+    let Some(excluded) = negated_bracket_conjunction_items(complement) else {
+        return false;
+    };
+    let (excluded, residual) = split_negated_bracket_conjunction_items(&excluded);
+    if excluded.len() < 2 || !residual.is_empty() {
+        return false;
+    }
+    let excluded = simplify_bracket_or(excluded);
+    bracket_tree_implies(candidate, &excluded) && bracket_tree_implies(&excluded, candidate)
+}
+
+fn negated_bracket_conjunction_items(tree: &BracketExprTree) -> Option<Vec<BracketExprTree>> {
+    let (BracketExprTree::HighAnd(items) | BracketExprTree::LowAnd(items)) = tree else {
+        return None;
+    };
+    Some(items.clone())
+}
+
+fn relax_conjunctive_complement_bracket_disjunction_terms(items: &mut [BracketExprTree]) -> bool {
+    for base_index in 0..items.len() {
+        for candidate_index in 0..items.len() {
+            if base_index == candidate_index {
+                continue;
+            }
+            let Some(candidate_items) = negated_bracket_conjunction_items(&items[candidate_index])
+            else {
+                continue;
+            };
+            let (excluded, residual) = split_negated_bracket_conjunction_items(&candidate_items);
+            if excluded.len() < 2 || residual.is_empty() {
+                continue;
+            }
+            let excluded = simplify_bracket_or(excluded);
+            if !bracket_trees_are_equivalent(&items[base_index], &excluded) {
+                continue;
+            }
+            items[candidate_index] = simplify_bracket_residual_conjunction(residual);
+            return true;
+        }
+    }
+
+    false
+}
+
+fn split_negated_bracket_conjunction_items(
+    items: &[BracketExprTree],
+) -> (Vec<BracketExprTree>, Vec<BracketExprTree>) {
+    let mut excluded = Vec::new();
+    let mut residual = Vec::new();
+    for item in items {
+        match item {
+            BracketExprTree::Not(inner) => excluded.push(inner.as_ref().clone()),
+            _ => residual.push(item.clone()),
+        }
+    }
+    (excluded, residual)
+}
+
+fn bracket_trees_are_equivalent(left: &BracketExprTree, right: &BracketExprTree) -> bool {
+    bracket_tree_implies(left, right) && bracket_tree_implies(right, left)
+}
+
+fn simplify_bracket_residual_conjunction(items: Vec<BracketExprTree>) -> BracketExprTree {
+    let kind = if can_render_bracket_and_as_high_and(&items) {
+        BracketAndKind::High
+    } else {
+        BracketAndKind::Low
+    };
+    simplify_bracket_and(items, kind)
 }
 
 fn bracket_or_contains_negated_mutually_exclusive_pair(items: &[BracketExprTree]) -> bool {
@@ -1979,6 +2359,161 @@ fn relax_complemented_bracket_disjunction_terms(items: &mut [BracketExprTree]) -
         }
     }
     false
+}
+
+fn relax_negated_bracket_conjunction_terms(items: &mut [BracketExprTree]) -> bool {
+    for negated_index in 0..items.len() {
+        let BracketExprTree::Not(general) = &items[negated_index] else {
+            continue;
+        };
+        let mut candidate_index = 0;
+        while candidate_index < items.len() {
+            if candidate_index == negated_index {
+                candidate_index += 1;
+                continue;
+            }
+            let Some(relaxed) =
+                remove_bracket_term_from_conjunction(&items[candidate_index], general)
+            else {
+                candidate_index += 1;
+                continue;
+            };
+            items[candidate_index] = relaxed;
+            return true;
+        }
+    }
+
+    false
+}
+
+fn remove_bracket_term_from_conjunction(
+    candidate: &BracketExprTree,
+    removed: &BracketExprTree,
+) -> Option<BracketExprTree> {
+    let (items, kind) = match candidate {
+        BracketExprTree::HighAnd(items) => (items, BracketAndKind::High),
+        BracketExprTree::LowAnd(items) => (items, BracketAndKind::Low),
+        _ => return None,
+    };
+    let removed_index = items.iter().position(|item| item == removed)?;
+    Some(simplify_bracket_and(
+        bracket_items_without_index(items, removed_index),
+        kind,
+    ))
+}
+
+fn relax_negated_broader_bracket_disjunction_terms(items: &mut Vec<BracketExprTree>) -> bool {
+    for specific_index in 0..items.len() {
+        for negated_index in 0..items.len() {
+            if specific_index == negated_index {
+                continue;
+            }
+            let BracketExprTree::Not(general) = &items[negated_index] else {
+                continue;
+            };
+            if !bracket_tree_implies(&items[specific_index], general) {
+                continue;
+            }
+            let Some(residual) = subtract_bracket_tree(general, &items[specific_index]) else {
+                continue;
+            };
+            let Some(relaxed) = complement_subtracted_bracket_tree(residual) else {
+                continue;
+            };
+
+            remove_indices_descending(items, &[specific_index, negated_index]);
+            items.push(relaxed);
+            return true;
+        }
+    }
+
+    false
+}
+
+fn relax_covered_negated_bracket_disjunction_terms(items: &mut Vec<BracketExprTree>) -> bool {
+    for base_index in 0..items.len() {
+        let (mut base_terms, _) = bracket_consensus_items(&items[base_index]);
+        sort_and_dedup_bracket_items(&mut base_terms);
+        if base_terms.len() < 2 {
+            continue;
+        }
+
+        let mut coverages: Vec<(Vec<BracketExprTree>, Vec<usize>, Vec<usize>)> = Vec::new();
+        for (alternative_index, alternative) in items.iter().enumerate() {
+            if alternative_index == base_index {
+                continue;
+            }
+
+            let (alternative_terms, _) = bracket_consensus_items(alternative);
+            for (base_term_index, base_term) in base_terms.iter().enumerate() {
+                let Some(complement_index) = alternative_terms
+                    .iter()
+                    .position(|term| bracket_trees_are_complements(term, base_term))
+                else {
+                    continue;
+                };
+                let mut residual =
+                    bracket_items_without_index(&alternative_terms, complement_index);
+                sort_and_dedup_bracket_items(&mut residual);
+
+                if let Some((_, covered_terms, alternative_indices)) = coverages
+                    .iter_mut()
+                    .find(|(known_residual, _, _)| known_residual.as_slice() == residual.as_slice())
+                {
+                    if !covered_terms.contains(&base_term_index) {
+                        covered_terms.push(base_term_index);
+                    }
+                    if !alternative_indices.contains(&alternative_index) {
+                        alternative_indices.push(alternative_index);
+                    }
+                } else {
+                    coverages.push((residual, vec![base_term_index], vec![alternative_index]));
+                }
+            }
+        }
+
+        let Some((residual, _, alternative_indices)) =
+            coverages.into_iter().find(|(_, covered_terms, _)| {
+                (0..base_terms.len())
+                    .all(|base_term_index| covered_terms.contains(&base_term_index))
+            })
+        else {
+            continue;
+        };
+
+        remove_indices_descending(items, &alternative_indices);
+        let kind = if can_render_bracket_and_as_high_and(&residual) {
+            BracketAndKind::High
+        } else {
+            BracketAndKind::Low
+        };
+        items.push(simplify_bracket_and(residual, kind));
+        return true;
+    }
+
+    false
+}
+
+fn complement_subtracted_bracket_tree(residual: BracketExprTree) -> Option<BracketExprTree> {
+    let residual = simplify_bracket_tree(residual);
+    if is_false_bracket_tree(&residual) {
+        return Some(BracketExprTree::Primitive(AtomPrimitive::Wildcard));
+    }
+
+    match residual {
+        BracketExprTree::Primitive(_) => Some(simplify_bracket_not(residual)),
+        BracketExprTree::Or(items)
+            if items
+                .iter()
+                .all(|item| matches!(item, BracketExprTree::Primitive(_))) =>
+        {
+            Some(simplify_bracket_and(
+                items.into_iter().map(simplify_bracket_not).collect(),
+                BracketAndKind::High,
+            ))
+        }
+        _ => None,
+    }
 }
 
 fn remove_negated_bracket_term_from_conjunction(
@@ -2018,6 +2553,133 @@ fn collapse_bracket_disjunction_consensus_terms(items: &mut Vec<BracketExprTree>
     }
 
     false
+}
+
+fn remove_redundant_bracket_disjunction_consensus_terms(items: &mut Vec<BracketExprTree>) -> bool {
+    for candidate_index in 0..items.len() {
+        for left_index in 0..items.len() {
+            if left_index == candidate_index {
+                continue;
+            }
+            for right_index in (left_index + 1)..items.len() {
+                if right_index == candidate_index
+                    || !bracket_disjunction_consensus_term_is_redundant(
+                        &items[left_index],
+                        &items[right_index],
+                        &items[candidate_index],
+                    )
+                {
+                    continue;
+                }
+
+                items.remove(candidate_index);
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn bracket_disjunction_consensus_term_is_redundant(
+    left: &BracketExprTree,
+    right: &BracketExprTree,
+    candidate: &BracketExprTree,
+) -> bool {
+    let (left_items, left_kind) = bracket_consensus_items(left);
+    let (right_items, right_kind) = bracket_consensus_items(right);
+    let kind = if left_kind == BracketAndKind::Low || right_kind == BracketAndKind::Low {
+        BracketAndKind::Low
+    } else {
+        BracketAndKind::High
+    };
+
+    for left_complement_index in 0..left_items.len() {
+        for right_complement_index in 0..right_items.len() {
+            if !bracket_trees_are_complements(
+                &left_items[left_complement_index],
+                &right_items[right_complement_index],
+            ) {
+                continue;
+            }
+
+            let mut consensus = bracket_items_without_index(&left_items, left_complement_index);
+            consensus.extend(bracket_items_without_index(
+                &right_items,
+                right_complement_index,
+            ));
+            sort_and_dedup_bracket_items(&mut consensus);
+            let consensus = simplify_bracket_and(consensus, kind);
+            if bracket_tree_implies(candidate, &consensus) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn factor_common_bracket_disjunction_terms(items: &[BracketExprTree]) -> Option<BracketExprTree> {
+    if items.len() < 2 {
+        return None;
+    }
+
+    let alternatives = items
+        .iter()
+        .map(|item| {
+            let (mut items, _) = bracket_consensus_items(item);
+            sort_and_dedup_bracket_items(&mut items);
+            items
+        })
+        .collect::<Vec<_>>();
+
+    let common = alternatives
+        .first()?
+        .iter()
+        .try_fold(Vec::new(), |mut common, candidate| {
+            if alternatives
+                .iter()
+                .all(|alternative| alternative.contains(candidate))
+            {
+                common.push(candidate.clone());
+            }
+            Some(common)
+        })?;
+    if common.is_empty() {
+        return None;
+    }
+
+    let mut reduced = Vec::new();
+    for alternative in alternatives {
+        let remainder = alternative
+            .into_iter()
+            .filter(|item| !common.contains(item))
+            .collect::<Vec<_>>();
+        if remainder.is_empty() {
+            return Some(simplify_bracket_and(common, BracketAndKind::High));
+        }
+        reduced.push(simplify_bracket_and(remainder, BracketAndKind::High));
+    }
+
+    let disjunction = simplify_bracket_or(reduced);
+    if matches!(
+        disjunction,
+        BracketExprTree::Primitive(AtomPrimitive::Wildcard)
+    ) {
+        return Some(simplify_bracket_and(common, BracketAndKind::High));
+    }
+
+    let kind = if matches!(
+        disjunction,
+        BracketExprTree::Or(_) | BracketExprTree::LowAnd(_)
+    ) {
+        BracketAndKind::Low
+    } else {
+        BracketAndKind::High
+    };
+    let mut factored = common;
+    factored.push(disjunction);
+    Some(simplify_bracket_and(factored, kind))
 }
 
 fn bracket_disjunction_consensus(
@@ -2127,6 +2789,15 @@ fn bracket_trees_are_complements(left: &BracketExprTree, right: &BracketExprTree
 }
 
 fn bracket_trees_are_mutually_exclusive(left: &BracketExprTree, right: &BracketExprTree) -> bool {
+    match (left, right) {
+        (BracketExprTree::Or(items), other) | (other, BracketExprTree::Or(items)) => {
+            return items
+                .iter()
+                .all(|item| bracket_trees_are_mutually_exclusive(item, other));
+        }
+        _ => {}
+    }
+
     let left_items = bracket_conjunction_items(left);
     let right_items = bracket_conjunction_items(right);
     left_items.iter().any(|left_item| {
@@ -2481,6 +3152,8 @@ fn simplify_bond_tree(tree: BondExprTree) -> BondExprTree {
 fn simplify_bond_not(inner: BondExprTree) -> BondExprTree {
     if is_false_bond_tree(&inner) {
         BondExprTree::Primitive(BondPrimitive::Any)
+    } else if let BondExprTree::Not(grandchild) = inner {
+        *grandchild
     } else {
         BondExprTree::Not(Box::new(inner))
     }
@@ -2511,6 +3184,32 @@ fn simplify_bond_and(items: Vec<BondExprTree>, kind: BondAndKind) -> BondExprTre
     if items.iter().any(is_false_bond_tree) || bond_and_contains_mutually_exclusive_pair(&items) {
         return false_bond_tree();
     }
+    if kind == BondAndKind::Low {
+        loop {
+            let mut changed = false;
+            while remove_redundant_bond_conjunction_consensus_terms(&mut items) {
+                changed = true;
+            }
+            while factor_common_bond_conjunction_disjunction_terms(&mut items) {
+                changed = true;
+            }
+            while distribute_bond_conjunction_term_into_disjunction(&mut items) {
+                changed = true;
+            }
+            while let Some(pruned) = prune_bond_disjunctions_against_conjunction_terms(&mut items) {
+                if !pruned {
+                    break;
+                }
+                changed = true;
+            }
+            if !changed {
+                break;
+            }
+            if items.iter().any(is_false_bond_tree) {
+                return false_bond_tree();
+            }
+        }
+    }
     remove_implied_bond_conjunction_terms(&mut items);
     items.sort_by_cached_key(BondExprTree::to_string);
     items.dedup();
@@ -2540,7 +3239,12 @@ fn simplify_bond_or(items: Vec<BondExprTree>) -> BondExprTree {
     {
         return BondExprTree::Primitive(BondPrimitive::Any);
     }
+    while relax_complemented_bond_disjunction_terms(&mut items) {}
     while collapse_bond_disjunction_consensus_terms(&mut items) {}
+    while relax_negated_bond_conjunction_terms(&mut items) {}
+    while relax_covered_negated_bond_disjunction_terms(&mut items) {}
+    while relax_conjunctive_complement_bond_disjunction_terms(&mut items) {}
+    while remove_redundant_bond_disjunction_consensus_terms(&mut items) {}
     remove_absorbed_bond_disjunction_terms(&mut items);
     items.sort_by_cached_key(BondExprTree::to_string);
     items.dedup();
@@ -2592,6 +3296,190 @@ fn prune_bond_disjunctions_against_conjunction_terms(items: &mut [BondExprTree])
     Some(false)
 }
 
+fn factor_common_bond_conjunction_disjunction_terms(items: &mut Vec<BondExprTree>) -> bool {
+    for left_index in 0..items.len() {
+        let left_alternatives = bond_disjunction_factor_items(&items[left_index]);
+        if left_alternatives.len() < 2 {
+            continue;
+        }
+
+        for right_index in (left_index + 1)..items.len() {
+            let right_alternatives = bond_disjunction_factor_items(&items[right_index]);
+            if right_alternatives.len() < 2 {
+                continue;
+            }
+
+            let common = left_alternatives
+                .iter()
+                .filter(|item| right_alternatives.contains(item))
+                .cloned()
+                .collect::<Vec<_>>();
+            if common.is_empty() {
+                continue;
+            }
+
+            let replacement =
+                factor_bond_disjunction_pair(&left_alternatives, &right_alternatives, common);
+            items.remove(right_index);
+            items.remove(left_index);
+            items.push(replacement);
+            return true;
+        }
+    }
+
+    false
+}
+
+fn factor_bond_disjunction_pair(
+    left_alternatives: &[BondExprTree],
+    right_alternatives: &[BondExprTree],
+    mut common: Vec<BondExprTree>,
+) -> BondExprTree {
+    let left_remainder = disjunction_remainder(left_alternatives, &common);
+    let right_remainder = disjunction_remainder(right_alternatives, &common);
+    if left_remainder.is_empty() || right_remainder.is_empty() {
+        return simplify_bond_or(common);
+    }
+
+    let remainder = simplify_bond_and(
+        vec![
+            simplify_bond_or(left_remainder),
+            simplify_bond_or(right_remainder),
+        ],
+        BondAndKind::Low,
+    );
+    if !is_false_bond_tree(&remainder) {
+        common.push(remainder);
+    }
+    simplify_bond_or(common)
+}
+
+fn remove_redundant_bond_conjunction_consensus_terms(items: &mut Vec<BondExprTree>) -> bool {
+    for candidate_index in 0..items.len() {
+        for left_index in 0..items.len() {
+            if left_index == candidate_index {
+                continue;
+            }
+
+            for right_index in (left_index + 1)..items.len() {
+                if right_index == candidate_index
+                    || !bond_conjunction_consensus_term_is_redundant(
+                        &items[left_index],
+                        &items[right_index],
+                        &items[candidate_index],
+                    )
+                {
+                    continue;
+                }
+
+                items.remove(candidate_index);
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn distribute_bond_conjunction_term_into_disjunction(items: &mut Vec<BondExprTree>) -> bool {
+    for disjunction_index in 0..items.len() {
+        let BondExprTree::Or(alternatives) = &items[disjunction_index] else {
+            continue;
+        };
+        let alternatives = alternatives.clone();
+
+        for term_index in 0..items.len() {
+            if term_index == disjunction_index {
+                continue;
+            }
+            let term = items[term_index].clone();
+            let implied_by_alternative = alternatives
+                .iter()
+                .map(|alternative| bond_tree_implies(alternative, &term))
+                .collect::<Vec<_>>();
+
+            if !implied_by_alternative.iter().any(|implied| *implied)
+                || implied_by_alternative.iter().all(|implied| *implied)
+            {
+                continue;
+            }
+
+            let replacement = alternatives
+                .into_iter()
+                .zip(implied_by_alternative)
+                .map(|(alternative, implied)| {
+                    if implied {
+                        alternative
+                    } else {
+                        simplify_bond_conjunction_pair(term.clone(), alternative)
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            remove_indices_descending(items, &[disjunction_index, term_index]);
+            items.push(simplify_bond_or(replacement));
+            return true;
+        }
+    }
+
+    false
+}
+
+fn simplify_bond_conjunction_pair(left: BondExprTree, right: BondExprTree) -> BondExprTree {
+    let items = vec![left, right];
+    let kind = if can_render_bond_and_as_high_and(&items) {
+        BondAndKind::High
+    } else {
+        BondAndKind::Low
+    };
+    simplify_bond_and(items, kind)
+}
+
+fn bond_conjunction_consensus_term_is_redundant(
+    left: &BondExprTree,
+    right: &BondExprTree,
+    candidate: &BondExprTree,
+) -> bool {
+    let left_alternatives = bond_disjunction_factor_items(left);
+    let right_alternatives = bond_disjunction_factor_items(right);
+    if left_alternatives.len() < 2 || right_alternatives.len() < 2 {
+        return false;
+    }
+
+    for left_complement_index in 0..left_alternatives.len() {
+        for right_complement_index in 0..right_alternatives.len() {
+            if !bond_trees_are_complements(
+                &left_alternatives[left_complement_index],
+                &right_alternatives[right_complement_index],
+            ) {
+                continue;
+            }
+
+            let mut consensus = bond_items_without_index(&left_alternatives, left_complement_index);
+            consensus.extend(bond_items_without_index(
+                &right_alternatives,
+                right_complement_index,
+            ));
+            sort_and_dedup_bond_items(&mut consensus);
+            let consensus = simplify_bond_or(consensus);
+            if bond_tree_implies(&consensus, candidate) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn bond_disjunction_factor_items(tree: &BondExprTree) -> Vec<BondExprTree> {
+    let mut alternatives = match tree {
+        BondExprTree::Or(items) => items.clone(),
+        other => vec![other.clone()],
+    };
+    sort_and_dedup_bond_items(&mut alternatives);
+    alternatives
+}
+
 fn remove_implied_bond_conjunction_terms(items: &mut Vec<BondExprTree>) {
     let mut index = 0usize;
     while index < items.len() {
@@ -2627,9 +3515,84 @@ fn bond_or_contains_implied_complement_pair(items: &[BondExprTree]) -> bool {
     items.iter().any(|item| {
         items.iter().any(|other| match other {
             BondExprTree::Not(inner) => bond_tree_implies(inner, item),
-            _ => false,
+            _ => bond_tree_is_conjunctive_complement(item, other),
         })
     })
+}
+
+fn bond_tree_is_conjunctive_complement(
+    candidate: &BondExprTree,
+    complement: &BondExprTree,
+) -> bool {
+    let Some(excluded) = negated_bond_conjunction_items(complement) else {
+        return false;
+    };
+    let (excluded, residual) = split_negated_bond_conjunction_items(&excluded);
+    if excluded.len() < 2 || !residual.is_empty() {
+        return false;
+    }
+    let excluded = simplify_bond_or(excluded);
+    bond_tree_implies(candidate, &excluded) && bond_tree_implies(&excluded, candidate)
+}
+
+fn negated_bond_conjunction_items(tree: &BondExprTree) -> Option<Vec<BondExprTree>> {
+    let (BondExprTree::HighAnd(items) | BondExprTree::LowAnd(items)) = tree else {
+        return None;
+    };
+    Some(items.clone())
+}
+
+fn relax_conjunctive_complement_bond_disjunction_terms(items: &mut [BondExprTree]) -> bool {
+    for base_index in 0..items.len() {
+        for candidate_index in 0..items.len() {
+            if base_index == candidate_index {
+                continue;
+            }
+            let Some(candidate_items) = negated_bond_conjunction_items(&items[candidate_index])
+            else {
+                continue;
+            };
+            let (excluded, residual) = split_negated_bond_conjunction_items(&candidate_items);
+            if excluded.len() < 2 || residual.is_empty() {
+                continue;
+            }
+            let excluded = simplify_bond_or(excluded);
+            if !bond_trees_are_equivalent(&items[base_index], &excluded) {
+                continue;
+            }
+            items[candidate_index] = simplify_bond_residual_conjunction(residual);
+            return true;
+        }
+    }
+
+    false
+}
+
+fn split_negated_bond_conjunction_items(
+    items: &[BondExprTree],
+) -> (Vec<BondExprTree>, Vec<BondExprTree>) {
+    let mut excluded = Vec::new();
+    let mut residual = Vec::new();
+    for item in items {
+        match item {
+            BondExprTree::Not(inner) => excluded.push(inner.as_ref().clone()),
+            _ => residual.push(item.clone()),
+        }
+    }
+    (excluded, residual)
+}
+
+fn bond_trees_are_equivalent(left: &BondExprTree, right: &BondExprTree) -> bool {
+    bond_tree_implies(left, right) && bond_tree_implies(right, left)
+}
+
+fn simplify_bond_residual_conjunction(items: Vec<BondExprTree>) -> BondExprTree {
+    let kind = if can_render_bond_and_as_high_and(&items) {
+        BondAndKind::High
+    } else {
+        BondAndKind::Low
+    };
+    simplify_bond_and(items, kind)
 }
 
 fn remove_absorbed_bond_disjunction_terms(items: &mut Vec<BondExprTree>) {
@@ -2658,6 +3621,211 @@ fn collapse_bond_disjunction_consensus_terms(items: &mut Vec<BondExprTree>) -> b
             items.remove(left_index);
             items.push(consensus);
             return true;
+        }
+    }
+
+    false
+}
+
+fn relax_negated_bond_conjunction_terms(items: &mut [BondExprTree]) -> bool {
+    for negated_index in 0..items.len() {
+        let BondExprTree::Not(general) = &items[negated_index] else {
+            continue;
+        };
+        let mut candidate_index = 0;
+        while candidate_index < items.len() {
+            if candidate_index == negated_index {
+                candidate_index += 1;
+                continue;
+            }
+            let Some(relaxed) = remove_bond_term_from_conjunction(&items[candidate_index], general)
+            else {
+                candidate_index += 1;
+                continue;
+            };
+            items[candidate_index] = relaxed;
+            return true;
+        }
+    }
+
+    false
+}
+
+fn relax_complemented_bond_disjunction_terms(items: &mut [BondExprTree]) -> bool {
+    for base_index in 0..items.len() {
+        for candidate_index in 0..items.len() {
+            if base_index == candidate_index {
+                continue;
+            }
+            let Some(relaxed) = remove_negated_bond_term_from_conjunction(
+                &items[candidate_index],
+                &items[base_index],
+            ) else {
+                continue;
+            };
+            items[candidate_index] = relaxed;
+            return true;
+        }
+    }
+    false
+}
+
+fn remove_negated_bond_term_from_conjunction(
+    candidate: &BondExprTree,
+    base: &BondExprTree,
+) -> Option<BondExprTree> {
+    let (items, kind) = match candidate {
+        BondExprTree::HighAnd(items) => (items, BondAndKind::High),
+        BondExprTree::LowAnd(items) => (items, BondAndKind::Low),
+        _ => return None,
+    };
+    let complement_index = items.iter().position(|item| match item {
+        BondExprTree::Not(inner) => inner.as_ref() == base,
+        _ => false,
+    })?;
+    Some(simplify_bond_and(
+        bond_items_without_index(items, complement_index),
+        kind,
+    ))
+}
+
+fn relax_covered_negated_bond_disjunction_terms(items: &mut Vec<BondExprTree>) -> bool {
+    for base_index in 0..items.len() {
+        let (mut base_terms, _) = bond_consensus_items(&items[base_index]);
+        sort_and_dedup_bond_items(&mut base_terms);
+        if base_terms.len() < 2 {
+            continue;
+        }
+
+        let mut coverages: Vec<(Vec<BondExprTree>, Vec<usize>, Vec<usize>)> = Vec::new();
+        for (alternative_index, alternative) in items.iter().enumerate() {
+            if alternative_index == base_index {
+                continue;
+            }
+
+            let (alternative_terms, _) = bond_consensus_items(alternative);
+            for (base_term_index, base_term) in base_terms.iter().enumerate() {
+                let Some(complement_index) = alternative_terms
+                    .iter()
+                    .position(|term| bond_trees_are_complements(term, base_term))
+                else {
+                    continue;
+                };
+                let mut residual = bond_items_without_index(&alternative_terms, complement_index);
+                sort_and_dedup_bond_items(&mut residual);
+
+                if let Some((_, covered_terms, alternative_indices)) = coverages
+                    .iter_mut()
+                    .find(|(known_residual, _, _)| known_residual.as_slice() == residual.as_slice())
+                {
+                    if !covered_terms.contains(&base_term_index) {
+                        covered_terms.push(base_term_index);
+                    }
+                    if !alternative_indices.contains(&alternative_index) {
+                        alternative_indices.push(alternative_index);
+                    }
+                } else {
+                    coverages.push((residual, vec![base_term_index], vec![alternative_index]));
+                }
+            }
+        }
+
+        let Some((residual, _, alternative_indices)) =
+            coverages.into_iter().find(|(_, covered_terms, _)| {
+                (0..base_terms.len())
+                    .all(|base_term_index| covered_terms.contains(&base_term_index))
+            })
+        else {
+            continue;
+        };
+
+        remove_indices_descending(items, &alternative_indices);
+        let kind = if can_render_bond_and_as_high_and(&residual) {
+            BondAndKind::High
+        } else {
+            BondAndKind::Low
+        };
+        items.push(simplify_bond_and(residual, kind));
+        return true;
+    }
+
+    false
+}
+
+fn remove_bond_term_from_conjunction(
+    candidate: &BondExprTree,
+    removed: &BondExprTree,
+) -> Option<BondExprTree> {
+    let (items, kind) = match candidate {
+        BondExprTree::HighAnd(items) => (items, BondAndKind::High),
+        BondExprTree::LowAnd(items) => (items, BondAndKind::Low),
+        _ => return None,
+    };
+    let removed_index = items.iter().position(|item| item == removed)?;
+    Some(simplify_bond_and(
+        bond_items_without_index(items, removed_index),
+        kind,
+    ))
+}
+
+fn remove_redundant_bond_disjunction_consensus_terms(items: &mut Vec<BondExprTree>) -> bool {
+    for candidate_index in 0..items.len() {
+        for left_index in 0..items.len() {
+            if left_index == candidate_index {
+                continue;
+            }
+            for right_index in (left_index + 1)..items.len() {
+                if right_index == candidate_index
+                    || !bond_disjunction_consensus_term_is_redundant(
+                        &items[left_index],
+                        &items[right_index],
+                        &items[candidate_index],
+                    )
+                {
+                    continue;
+                }
+
+                items.remove(candidate_index);
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn bond_disjunction_consensus_term_is_redundant(
+    left: &BondExprTree,
+    right: &BondExprTree,
+    candidate: &BondExprTree,
+) -> bool {
+    let (left_items, left_kind) = bond_consensus_items(left);
+    let (right_items, right_kind) = bond_consensus_items(right);
+    let kind = if left_kind == BondAndKind::Low || right_kind == BondAndKind::Low {
+        BondAndKind::Low
+    } else {
+        BondAndKind::High
+    };
+
+    for left_complement_index in 0..left_items.len() {
+        for right_complement_index in 0..right_items.len() {
+            if !bond_trees_are_complements(
+                &left_items[left_complement_index],
+                &right_items[right_complement_index],
+            ) {
+                continue;
+            }
+
+            let mut consensus = bond_items_without_index(&left_items, left_complement_index);
+            consensus.extend(bond_items_without_index(
+                &right_items,
+                right_complement_index,
+            ));
+            sort_and_dedup_bond_items(&mut consensus);
+            let consensus = simplify_bond_and(consensus, kind);
+            if bond_tree_implies(candidate, &consensus) {
+                return true;
+            }
         }
     }
 
@@ -2770,6 +3938,15 @@ fn bond_primitive_implies(specific: BondPrimitive, general: BondPrimitive) -> bo
 }
 
 fn bond_trees_are_mutually_exclusive(left: &BondExprTree, right: &BondExprTree) -> bool {
+    match (left, right) {
+        (BondExprTree::Or(items), other) | (other, BondExprTree::Or(items)) => {
+            return items
+                .iter()
+                .all(|item| bond_trees_are_mutually_exclusive(item, other));
+        }
+        _ => {}
+    }
+
     let left_items = bond_conjunction_items(left);
     let right_items = bond_conjunction_items(right);
     left_items.iter().any(|left_item| {
@@ -3772,6 +4949,42 @@ mod tests {
             ("[#6&R,#6&R&X4]", "[#6&R]"),
             ("[#6&R,#6&R&X4,#7]", "[#6&R,#7]"),
             ("[$([#6])&R,$([#6])&!R]", "[$([#6])]"),
+            ("[C&R,c&R]", "[#6&R]"),
+            ("[#6&R&C,#6&R&!C]", "[#6&R]"),
+            ("[#6&+0&C,#6&+0&!C]", "[#6&+0]"),
+            ("[#6&H0&C,#6&H0&!C]", "[#6&H0]"),
+            ("[#7&R&N,#7&R&!N]", "[#7&R]"),
+            ("[$([#6])&#6&C,$([#6])&#6&!C]", "[#6&$([#6])]"),
+        ] {
+            assert_eq!(canonical_string(source), expected, "{source}");
+        }
+    }
+
+    #[test]
+    fn canonicalize_simplifies_negated_general_atom_boolean_forms() {
+        for (source, expected) in [
+            ("[C,!#6]", "[!c]"),
+            ("[c,!#6]", "[!C]"),
+            ("[D3,!D{2-4}]", "[!D2&!D4]"),
+            ("[H0,!H{0-1}]", "[!H]"),
+            ("[R1,!R{1-2}]", "[!R2]"),
+            ("[#6&R,!R]", "[!R,#6]"),
+            ("[#6&R,!#6]", "[!#6,R]"),
+            ("[#6&R,!#6&H0,R&H0]", "[!#6&H0,#6&R]"),
+            ("[#6&R&X4,!#6&H0&X4,R&H0&X4]", "[!#6&H0,#6&R;X4]"),
+            ("[#6&R&H0,!#6&X4,!R&X4,!H0&X4]", "[#6&H0&R,X4]"),
+            (
+                "[$([#6])&R&H0,!$([#6])&X4,!R&X4,!H0&X4]",
+                "[$([#6])&H0&R,X4]",
+            ),
+            ("[#6,!C&!c]", "*"),
+            ("[#7,!N&!n]", "*"),
+            ("[#6&12*,!12C&!12c]", "*"),
+            ("[#6&X4,!C&X4,!c&X4]", "[X4]"),
+            ("[D{2-4},!D2&!D3&!D4&R]", "[D{2-4},R]"),
+            ("[D{2-5},!D{2-3}&!D{4-5}&R&H0]", "[D{2-5},H0&R]"),
+            ("[#6&12*,!12C&!12c&R]", "[#6&12*,R]"),
+            ("[#7&15*,!15N&!15n&H0]", "[#7&15*,H0]"),
         ] {
             assert_eq!(canonical_string(source), expected, "{source}");
         }
@@ -3822,6 +5035,11 @@ mod tests {
             ("[R&!R{1-}]", "[!*]"),
             ("[#6&A&!C]", "[!*]"),
             ("[#6&a&!c]", "[!*]"),
+            ("[#6&!C&!c]", "[!*]"),
+            ("[!A&!a]", "[!*]"),
+            ("[D{1-2}&!D1&!D2]", "[!*]"),
+            ("[D{2-4}&!D2&!D3&!D4]", "[!*]"),
+            ("[#6&12*&!12C&!12c]", "[!*]"),
             ("[12*&C&!12C]", "[!*]"),
             ("[D{2-4}&D3&!D3]", "[!*]"),
             ("[!*,#6]", "[#6]"),
@@ -3862,7 +5080,7 @@ mod tests {
             ("[12*&C,12*]", "[12*]"),
             ("[12C,12c,12*]", "[12*]"),
             ("[12C,12c,#6]", "[#6]"),
-            ("[12C,12c,!#6]", "[!#6,#6&12*]"),
+            ("[12C,12c,!#6]", "[!#6,12*]"),
             ("[D1]", "[D]"),
             ("[D{1-1}]", "[D]"),
             ("[D{-0}]", "[D0]"),
@@ -3934,6 +5152,13 @@ mod tests {
             ("[#6]-;=,!=[#7]", "[#6]-[#7]"),
             ("[#6]-&@,-&@&~[#7]", "[#6]-&@[#7]"),
             ("[#6]-&@&~,-&@[#7]", "[#6]-&@[#7]"),
+            ("[#6]-&@,!@[#7]", "[#6]!@,-[#7]"),
+            ("[#6]-&@,!~[#7]", "[#6]-&@[#7]"),
+            ("[#6]-&@,!-&:,@&:[#7]", "[#6]-&@,:[#7]"),
+            ("[#6]-,!-&@[#7]", "[#6]-,@[#7]"),
+            ("[#6]=,!=&@[#7]", "[#6]=,@[#7]"),
+            ("[#6]-,=;!-;!=[#7]", "[#6]!~[#7]"),
+            ("[#6]=,:;!=;!:[#7]", "[#6]!~[#7]"),
         ] {
             assert_eq!(canonical_string(source), expected, "{source}");
         }
@@ -3964,7 +5189,7 @@ mod tests {
             ("[C,c;#6]", "[#6]"),
             ("[C,c;A]", "[C]"),
             ("[C,c;!C]", "[c]"),
-            ("[12C,13C;#6]", "[12C,13C]"),
+            ("[12C,13C;#6]", "[12*,13*;C]"),
             ("[12C,13C;12*]", "[12C]"),
             ("[12C,13C;!12*]", "[13C]"),
             ("[12C,12c;12*]", "[#6&12*]"),
@@ -3982,6 +5207,35 @@ mod tests {
         ] {
             assert_eq!(canonical_string(source), expected, "{source}");
         }
+    }
+
+    #[test]
+    fn canonicalize_simplifies_low_precedence_distribution_forms() {
+        for (source, expected) in [
+            ("[#6,R;#6,H0]", "[#6,H0&R]"),
+            ("[#6,R;#6,H0;#6,X4]", "[#6,H0&R&X4]"),
+            ("[#6,R;#6,R,H0]", "[#6,R]"),
+            ("[#6,R;#6,!R]", "[#6]"),
+            ("[#6,R;!#6,R]", "[R]"),
+            ("[#6,R;!#6,H0;R,H0]", "[!#6,H0;#6,R]"),
+            ("[#6,R;!#6,H0;!R,H0]", "[#6,R;H0]"),
+            ("[D{1-3};!D4;#6,D2]", "[#6&D{1-3},D2]"),
+            ("[C,R;!C,H0;!R,H0]", "[C,R;H0]"),
+            ("[#7,D2;!#7,X4;!D2,X4]", "[#7,D2;X4]"),
+            ("[$([#6]),R;!$([#6]),H0;!R,H0]", "[$([#6]),R;H0]"),
+            ("[C,R;C,H0]", "[C,H0&R]"),
+            ("[D2,R;D2,X4]", "[D2,R&X4]"),
+            ("[$([#6]),R;$([#6]),H0]", "[$([#6]),H0&R]"),
+            ("[#6]-,@;-,=[#7]", "[#6]-,=&@[#7]"),
+            ("[#6]-,@;-,!@[#7]", "[#6]-[#7]"),
+            ("[#6]-,@;!-,@[#7]", "[#6]@[#7]"),
+            ("[#6]-,@;-,:[#7]", "[#6]-,:&@[#7]"),
+            ("[#6]=,@;=,#[#7]", "[#6]#&@,=[#7]"),
+        ] {
+            assert_eq!(canonical_string(source), expected, "{source}");
+        }
+
+        assert_same_canonical_group(&["[#6]-&@&=,:[#7]", "[#6]-&@&=,!-&:,!@&:,!=&:[#7]"]);
     }
 
     #[test]
@@ -4013,6 +5267,7 @@ mod tests {
     fn canonicalize_runs_expression_simplifications_through_recursion_and_bonds() {
         assert_eq!(canonical_string("[!!#6]"), "[#6]");
         assert_eq!(canonical_string("[!!-2]"), "[-2]");
+        assert_eq!(canonical_string("[!!h4&#51]"), "[#51&h4]");
         assert_eq!(canonical_string("[$([!!#6;*])]"), "[$([#6])]");
 
         let query = QueryMol::from_str("C-N").unwrap();
@@ -4028,6 +5283,16 @@ mod tests {
         );
 
         assert_eq!(query.canonicalize().to_string(), "C-N");
+    }
+
+    #[test]
+    fn canonicalize_handles_ga_reported_recursive_query() {
+        let source = "*~[!R&v11:62086](/[!!h4&#51&-3&@SP3&X,X10,a&^3&v5]~[!$([Fe]~[#8])&R:1432](*=[@SP1:39279]:[!#6&$(*)&H0])/[#6:42118]~[#6&@TH2&z{-16}:55558])=[#6:55558]~[#6&$(*):55558].*([!$([#8])&R:1432]~[@][R{-16}&h&z{-12}:24468])=[@SP1:39279]~[!R&z]=[@]";
+        let canonical = canonical_string(source);
+
+        assert!(!canonical.contains("!!"), "{canonical}");
+        let reparsed = QueryMol::from_str(&canonical).unwrap();
+        assert_eq!(reparsed.canonicalize().to_string(), canonical);
     }
 
     #[test]

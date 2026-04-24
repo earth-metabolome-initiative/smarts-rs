@@ -780,7 +780,7 @@ impl fmt::Display for AtomExpr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Wildcard => f.write_str("*"),
-            Self::Bare { element, aromatic } => write_smarts_element(f, *element, *aromatic),
+            Self::Bare { element, aromatic } => write_atom_expr_element(f, *element, *aromatic),
             Self::Bracket(expr) => write!(f, "[{expr}]"),
         }
     }
@@ -899,6 +899,34 @@ fn write_smarts_element(
     } else {
         write!(f, "{element}")
     }
+}
+
+fn write_atom_expr_element(
+    f: &mut fmt::Formatter<'_>,
+    element: Element,
+    aromatic: bool,
+) -> fmt::Result {
+    if can_write_bare_atom_expr_element(element, aromatic) {
+        return write_smarts_element(f, element, aromatic);
+    }
+
+    f.write_str("[")?;
+    write_smarts_element(f, element, aromatic)?;
+    f.write_str("]")
+}
+
+fn can_write_bare_atom_expr_element(element: Element, aromatic: bool) -> bool {
+    if aromatic {
+        return matches!(
+            element,
+            Element::B | Element::C | Element::N | Element::O | Element::P | Element::S
+        );
+    }
+
+    let symbol: &str = element.as_ref();
+    parse_supported_bare_element(symbol).is_some_and(|(bare_element, bare_aromatic, width)| {
+        bare_element == element && !bare_aromatic && width == symbol.len()
+    })
 }
 
 fn write_smarts_isotope(
@@ -1514,6 +1542,22 @@ mod tests {
                 }
                 .to_string(),
                 "Cl",
+            ),
+            (
+                AtomExpr::Bare {
+                    element: Element::Fe,
+                    aromatic: false,
+                }
+                .to_string(),
+                "[Fe]",
+            ),
+            (
+                AtomExpr::Bare {
+                    element: Element::As,
+                    aromatic: true,
+                }
+                .to_string(),
+                "[as]",
             ),
             (
                 AtomExpr::Bracket(BracketExpr {
