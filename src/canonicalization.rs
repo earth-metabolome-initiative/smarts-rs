@@ -1406,6 +1406,12 @@ fn bracket_tree_implies(specific: &BracketExprTree, general: &BracketExprTree) -
         (_, BracketExprTree::Not(excluded)) => {
             bracket_trees_are_mutually_exclusive(specific, excluded)
         }
+        (
+            BracketExprTree::HighAnd(_) | BracketExprTree::LowAnd(_),
+            BracketExprTree::HighAnd(general_items) | BracketExprTree::LowAnd(general_items),
+        ) => general_items
+            .iter()
+            .all(|general_item| bracket_tree_implies(specific, general_item)),
         (BracketExprTree::HighAnd(items) | BracketExprTree::LowAnd(items), _) => {
             items.iter().any(|item| bracket_tree_implies(item, general))
         }
@@ -2740,6 +2746,12 @@ fn bond_tree_implies(specific: &BondExprTree, general: &BondExprTree) -> bool {
         (BondExprTree::Or(items), _) => items.iter().all(|item| bond_tree_implies(item, general)),
         (_, BondExprTree::Or(items)) => items.iter().any(|item| bond_tree_implies(specific, item)),
         (_, BondExprTree::Not(excluded)) => bond_trees_are_mutually_exclusive(specific, excluded),
+        (
+            BondExprTree::HighAnd(_) | BondExprTree::LowAnd(_),
+            BondExprTree::HighAnd(general_items) | BondExprTree::LowAnd(general_items),
+        ) => general_items
+            .iter()
+            .all(|general_item| bond_tree_implies(specific, general_item)),
         (BondExprTree::HighAnd(items) | BondExprTree::LowAnd(items), _) => {
             items.iter().any(|item| bond_tree_implies(item, general))
         }
@@ -3757,6 +3769,9 @@ mod tests {
             ("[!#6&+0,!#6&!+0]", "[!#6]"),
             ("[#6&R,#6&!R,#7]", "[#6,#7]"),
             ("[#6&12*&!12C]", "[12c]"),
+            ("[#6&R,#6&R&X4]", "[#6&R]"),
+            ("[#6&R,#6&R&X4,#7]", "[#6&R,#7]"),
+            ("[$([#6])&R,$([#6])&!R]", "[$([#6])]"),
         ] {
             assert_eq!(canonical_string(source), expected, "{source}");
         }
@@ -3917,6 +3932,8 @@ mod tests {
             ("[#6]-;@,!@[#7]", "[#6]-[#7]"),
             ("[#6]@;-,!-[#7]", "[#6]@[#7]"),
             ("[#6]-;=,!=[#7]", "[#6]-[#7]"),
+            ("[#6]-&@,-&@&~[#7]", "[#6]-&@[#7]"),
+            ("[#6]-&@&~,-&@[#7]", "[#6]-&@[#7]"),
         ] {
             assert_eq!(canonical_string(source), expected, "{source}");
         }
@@ -3987,6 +4004,7 @@ mod tests {
         assert_eq!(canonical_string("[$([#6]),$([#6;R])]"), "[$([#6])]");
         assert_eq!(canonical_string("[$([#6]),$([C])]"), "[$([#6])]");
         assert_eq!(canonical_string("[$([C]),$([C;R])]"), "[$([C])]");
+        assert_eq!(canonical_string("[$([#6&R]),$([#6&R;X4])]"), "[$([#6&R])]");
         assert_all_atom_permutations_converge("[$(CO)]N");
         assert_all_atom_permutations_converge("C[$([O,N])]");
     }
