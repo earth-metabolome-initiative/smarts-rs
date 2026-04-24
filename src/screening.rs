@@ -66,8 +66,9 @@ mod features;
 mod requirements;
 
 use bitset::{
-    bitset_word_count, ensure_zeroed_words, for_each_set_bit, intersect_source, set_bit,
-    CachedFeatureMask, CountBitsetIndex, RequiredCountFilter,
+    bitset_word_count, ensure_zeroed_words, for_each_set_bit, intersect_source,
+    intersect_source_with_population, set_bit, CachedFeatureMask, CountBitsetIndex,
+    RequiredCountFilter,
 };
 use features::{
     AtomFeature, BondCountScreen, EdgeBondFeature, EdgeFeature, Path3Feature, Path4Feature,
@@ -399,6 +400,43 @@ struct Path3FeatureMaskIndex {
     right_bonds: IndexedFeatureIdMask<EdgeBondFeature>,
     right_atoms: IndexedFeatureIdMask<AtomFeature>,
 }
+
+type IndexedPath4SparseIndexParts = (
+    IndexedSparseFeatureCountIndex<Path4Feature>,
+    Path4FeatureMaskIndex,
+    Box<[AtomFeature]>,
+    Box<[EdgeBondFeature]>,
+);
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Path4FeatureMaskIndex {
+    left_atoms: IndexedFeatureIdMask<AtomFeature>,
+    left_bonds: IndexedFeatureIdMask<EdgeBondFeature>,
+    left_middle_atoms: IndexedFeatureIdMask<AtomFeature>,
+    center_bonds: IndexedFeatureIdMask<EdgeBondFeature>,
+    right_middle_atoms: IndexedFeatureIdMask<AtomFeature>,
+    right_bonds: IndexedFeatureIdMask<EdgeBondFeature>,
+    right_atoms: IndexedFeatureIdMask<AtomFeature>,
+}
+
+type IndexedStar3SparseIndexParts = (
+    IndexedSparseFeatureCountIndex<Star3Feature>,
+    Star3FeatureMaskIndex,
+    Box<[AtomFeature]>,
+    Box<[EdgeBondFeature]>,
+);
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Star3FeatureMaskIndex {
+    center_atoms: IndexedFeatureIdMask<AtomFeature>,
+    first_bonds: IndexedFeatureIdMask<EdgeBondFeature>,
+    first_atoms: IndexedFeatureIdMask<AtomFeature>,
+    second_bonds: IndexedFeatureIdMask<EdgeBondFeature>,
+    second_atoms: IndexedFeatureIdMask<AtomFeature>,
+    third_bonds: IndexedFeatureIdMask<EdgeBondFeature>,
+    third_atoms: IndexedFeatureIdMask<AtomFeature>,
+}
+
 type TargetGraphFeatures = (
     BTreeMap<EdgeFeature, usize>,
     BTreeMap<Path3Feature, usize>,
@@ -410,6 +448,7 @@ type TargetGraphFeatures = (
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TargetCorpusScratch<'a> {
     candidate_mask: Vec<u64>,
+    active_candidate_mask: Vec<u64>,
     filters: Vec<RequiredCountFilter<'a>>,
     cache_owner: Option<usize>,
     edge_mask_cache: BTreeMap<(EdgeFeature, u16), CachedFeatureMask>,
@@ -445,7 +484,9 @@ pub struct TargetCorpusScratch<'a> {
     path4_left_bonds: Vec<EdgeBondFeature>,
     path4_center_bonds: Vec<EdgeBondFeature>,
     path4_right_bonds: Vec<EdgeBondFeature>,
-    path4_visited_features: Vec<Path4Feature>,
+    path4_feature_candidate_mask: Vec<u64>,
+    path4_feature_reverse_mask: Vec<u64>,
+    path4_feature_component_mask: Vec<u64>,
     star3_mask_cache: BTreeMap<(Star3Feature, u16), CachedFeatureMask>,
     star3_count_by_target: Vec<u16>,
     star3_touched_targets: Vec<usize>,
@@ -457,7 +498,9 @@ pub struct TargetCorpusScratch<'a> {
     star3_first_bonds: Vec<EdgeBondFeature>,
     star3_second_bonds: Vec<EdgeBondFeature>,
     star3_third_bonds: Vec<EdgeBondFeature>,
-    star3_visited_features: Vec<Star3Feature>,
+    star3_feature_candidate_mask: Vec<u64>,
+    star3_feature_permutation_mask: Vec<u64>,
+    star3_feature_component_mask: Vec<u64>,
 }
 
 impl TargetCorpusScratch<'_> {
@@ -467,6 +510,7 @@ impl TargetCorpusScratch<'_> {
     pub const fn new() -> Self {
         Self {
             candidate_mask: Vec::new(),
+            active_candidate_mask: Vec::new(),
             filters: Vec::new(),
             cache_owner: None,
             edge_mask_cache: BTreeMap::new(),
@@ -502,7 +546,9 @@ impl TargetCorpusScratch<'_> {
             path4_left_bonds: Vec::new(),
             path4_center_bonds: Vec::new(),
             path4_right_bonds: Vec::new(),
-            path4_visited_features: Vec::new(),
+            path4_feature_candidate_mask: Vec::new(),
+            path4_feature_reverse_mask: Vec::new(),
+            path4_feature_component_mask: Vec::new(),
             star3_mask_cache: BTreeMap::new(),
             star3_count_by_target: Vec::new(),
             star3_touched_targets: Vec::new(),
@@ -514,7 +560,9 @@ impl TargetCorpusScratch<'_> {
             star3_first_bonds: Vec::new(),
             star3_second_bonds: Vec::new(),
             star3_third_bonds: Vec::new(),
-            star3_visited_features: Vec::new(),
+            star3_feature_candidate_mask: Vec::new(),
+            star3_feature_permutation_mask: Vec::new(),
+            star3_feature_component_mask: Vec::new(),
         }
     }
 
@@ -583,32 +631,48 @@ impl QueryFeatureFilter {
         }
     }
 
-    fn intersect_candidate_mask(
-        self,
-        scratch: &mut TargetCorpusScratch<'_>,
-        has_active_source: &mut bool,
-    ) -> bool {
+    fn intersect_active_candidate_mask(self, scratch: &mut TargetCorpusScratch<'_>) -> usize {
+        let source = match self {
+            Self::Edge { .. } => &scratch.edge_candidate_mask,
+            Self::Path3 { .. } => &scratch.path3_candidate_mask,
+            Self::Path4 { .. } => &scratch.path4_candidate_mask,
+            Self::Star3 { .. } => &scratch.star3_candidate_mask,
+        };
+
+        let mut population = 0usize;
+        for (candidate_word, &source_word) in scratch.candidate_mask.iter_mut().zip(source) {
+            *candidate_word &= source_word;
+            population += candidate_word.count_ones() as usize;
+        }
+        population
+    }
+
+    const fn move_candidate_mask_to_active(self, scratch: &mut TargetCorpusScratch<'_>) {
         match self {
-            Self::Edge { .. } => intersect_source(
-                &mut scratch.candidate_mask,
-                has_active_source,
-                &scratch.edge_candidate_mask,
-            ),
-            Self::Path3 { .. } => intersect_source(
-                &mut scratch.candidate_mask,
-                has_active_source,
-                &scratch.path3_candidate_mask,
-            ),
-            Self::Path4 { .. } => intersect_source(
-                &mut scratch.candidate_mask,
-                has_active_source,
-                &scratch.path4_candidate_mask,
-            ),
-            Self::Star3 { .. } => intersect_source(
-                &mut scratch.candidate_mask,
-                has_active_source,
-                &scratch.star3_candidate_mask,
-            ),
+            Self::Edge { .. } => {
+                core::mem::swap(
+                    &mut scratch.candidate_mask,
+                    &mut scratch.edge_candidate_mask,
+                );
+            }
+            Self::Path3 { .. } => {
+                core::mem::swap(
+                    &mut scratch.candidate_mask,
+                    &mut scratch.path3_candidate_mask,
+                );
+            }
+            Self::Path4 { .. } => {
+                core::mem::swap(
+                    &mut scratch.candidate_mask,
+                    &mut scratch.path4_candidate_mask,
+                );
+            }
+            Self::Star3 { .. } => {
+                core::mem::swap(
+                    &mut scratch.candidate_mask,
+                    &mut scratch.star3_candidate_mask,
+                );
+            }
         }
     }
 }
@@ -756,9 +820,11 @@ pub struct TargetCorpusIndex {
     path3_atom_feature_domain: Box<[AtomFeature]>,
     path3_bond_feature_domain: Box<[EdgeBondFeature]>,
     indexed_path4_feature_count_index: IndexedSparseFeatureCountIndex<Path4Feature>,
+    path4_feature_mask_index: Path4FeatureMaskIndex,
     path4_atom_feature_domain: Box<[AtomFeature]>,
     path4_bond_feature_domain: Box<[EdgeBondFeature]>,
     indexed_star3_feature_count_index: IndexedSparseFeatureCountIndex<Star3Feature>,
+    star3_feature_mask_index: Star3FeatureMaskIndex,
     star3_atom_feature_domain: Box<[AtomFeature]>,
     star3_bond_feature_domain: Box<[EdgeBondFeature]>,
 }
@@ -787,14 +853,16 @@ impl TargetCorpusIndex {
         index.path3_feature_mask_index = path3_feature_mask_index;
         index.path3_atom_feature_domain = atom_domain;
         index.path3_bond_feature_domain = bond_domain;
-        let (path4_index, path4_atom_domain, path4_bond_domain) =
+        let (path4_index, path4_feature_mask_index, path4_atom_domain, path4_bond_domain) =
             build_path4_sparse_index(path4_feature_count_index);
         index.indexed_path4_feature_count_index = path4_index;
+        index.path4_feature_mask_index = path4_feature_mask_index;
         index.path4_atom_feature_domain = path4_atom_domain;
         index.path4_bond_feature_domain = path4_bond_domain;
-        let (star3_index, star3_atom_domain, star3_bond_domain) =
+        let (star3_index, star3_feature_mask_index, star3_atom_domain, star3_bond_domain) =
             build_star3_sparse_index(star3_feature_count_index);
         index.indexed_star3_feature_count_index = star3_index;
+        index.star3_feature_mask_index = star3_feature_mask_index;
         index.star3_atom_feature_domain = star3_atom_domain;
         index.star3_bond_feature_domain = star3_bond_domain;
         index
@@ -888,9 +956,11 @@ impl TargetCorpusIndex {
             path3_atom_feature_domain: Box::new([]),
             path3_bond_feature_domain: Box::new([]),
             indexed_path4_feature_count_index: Box::new([]),
+            path4_feature_mask_index: Path4FeatureMaskIndex::default(),
             path4_atom_feature_domain: Box::new([]),
             path4_bond_feature_domain: Box::new([]),
             indexed_star3_feature_count_index: Box::new([]),
+            star3_feature_mask_index: Star3FeatureMaskIndex::default(),
             star3_atom_feature_domain: Box::new([]),
             star3_bond_feature_domain: Box::new([]),
         }
@@ -1026,20 +1096,18 @@ impl TargetCorpusIndex {
         scratch
             .filters
             .sort_unstable_by_key(|filter| filter.population);
+        let mut candidate_population = self.screens.len();
         for &filter in &scratch.filters {
-            if !intersect_source(
+            let Some(population) = intersect_source_with_population(
                 &mut scratch.candidate_mask,
                 &mut has_active_source,
                 filter.source,
-            ) {
+                filter.population,
+            ) else {
                 return;
-            }
+            };
+            candidate_population = population;
         }
-        let mut candidate_population = if has_active_source {
-            bitset_population(&scratch.candidate_mask)
-        } else {
-            self.screens.len()
-        };
         if !self.apply_feature_count_filters(
             query,
             scratch,
@@ -1148,24 +1216,52 @@ impl TargetCorpusIndex {
         candidate_population: &mut usize,
     ) -> bool {
         for filter in query.planned_feature_filters.iter().copied() {
-            let active_candidate_mask = should_filter_sparse_counts(
+            let mut active_candidate_mask = self.copy_active_candidate_mask_if_sparse(
+                scratch,
                 *has_active_source,
                 *candidate_population,
-                self.screens.len(),
-            )
-            .then(|| scratch.candidate_mask.clone());
+            );
+            let used_active_candidate_mask = active_candidate_mask.is_some();
             let population =
                 filter.populate_candidate_mask(self, active_candidate_mask.as_deref(), scratch);
+            if let Some(mask) = active_candidate_mask.take() {
+                scratch.active_candidate_mask = mask;
+            }
             if population == 0 {
                 return false;
             }
-            if !filter.intersect_candidate_mask(scratch, has_active_source) {
-                return false;
+
+            if used_active_candidate_mask || !*has_active_source {
+                filter.move_candidate_mask_to_active(scratch);
+                *has_active_source = true;
+                *candidate_population = population;
+            } else {
+                let population = filter.intersect_active_candidate_mask(scratch);
+                if population == 0 {
+                    return false;
+                }
+                *candidate_population = population;
             }
-            *candidate_population = bitset_population(&scratch.candidate_mask);
         }
 
         true
+    }
+
+    fn copy_active_candidate_mask_if_sparse(
+        &self,
+        scratch: &mut TargetCorpusScratch<'_>,
+        has_active_source: bool,
+        candidate_population: usize,
+    ) -> Option<Vec<u64>> {
+        if !should_filter_sparse_counts(has_active_source, candidate_population, self.screens.len())
+        {
+            return None;
+        }
+
+        let mut mask = core::mem::take(&mut scratch.active_candidate_mask);
+        mask.clear();
+        mask.extend_from_slice(&scratch.candidate_mask);
+        Some(mask)
     }
 
     fn populate_edge_candidate_mask(
@@ -1178,15 +1274,15 @@ impl TargetCorpusIndex {
         if required_count == 0 {
             return self.screens.len();
         }
-        if active_candidate_mask.is_none() {
-            if let Some(cached) = scratch
-                .edge_mask_cache
-                .get(&(query_feature, required_count))
-            {
-                scratch.edge_candidate_mask.clear();
-                scratch.edge_candidate_mask.extend_from_slice(&cached.words);
-                return cached.population;
-            }
+        if let Some(cached) = scratch
+            .edge_mask_cache
+            .get(&(query_feature, required_count))
+        {
+            return load_cached_candidate_mask(
+                &mut scratch.edge_candidate_mask,
+                cached,
+                active_candidate_mask,
+            );
         }
 
         scratch.edge_touched_targets.clear();
@@ -1323,17 +1419,15 @@ impl TargetCorpusIndex {
         if required_count == 0 {
             return self.screens.len();
         }
-        if active_candidate_mask.is_none() {
-            if let Some(cached) = scratch
-                .path3_mask_cache
-                .get(&(query_feature, required_count))
-            {
-                scratch.path3_candidate_mask.clear();
-                scratch
-                    .path3_candidate_mask
-                    .extend_from_slice(&cached.words);
-                return cached.population;
-            }
+        if let Some(cached) = scratch
+            .path3_mask_cache
+            .get(&(query_feature, required_count))
+        {
+            return load_cached_candidate_mask(
+                &mut scratch.path3_candidate_mask,
+                cached,
+                active_candidate_mask,
+            );
         }
 
         scratch.path3_touched_targets.clear();
@@ -1488,17 +1582,15 @@ impl TargetCorpusIndex {
         if required_count == 0 {
             return self.screens.len();
         }
-        if active_candidate_mask.is_none() {
-            if let Some(cached) = scratch
-                .path4_mask_cache
-                .get(&(query_feature, required_count))
-            {
-                scratch.path4_candidate_mask.clear();
-                scratch
-                    .path4_candidate_mask
-                    .extend_from_slice(&cached.words);
-                return cached.population;
-            }
+        if let Some(cached) = scratch
+            .path4_mask_cache
+            .get(&(query_feature, required_count))
+        {
+            return load_cached_candidate_mask(
+                &mut scratch.path4_candidate_mask,
+                cached,
+                active_candidate_mask,
+            );
         }
 
         scratch.path4_touched_targets.clear();
@@ -1508,21 +1600,7 @@ impl TargetCorpusIndex {
         }
 
         self.collect_path4_domain_matches(query_feature, scratch);
-        let candidate_combination_count = scratch
-            .path4_left_atoms
-            .len()
-            .saturating_mul(scratch.path4_left_bonds.len())
-            .saturating_mul(scratch.path4_left_middle_atoms.len())
-            .saturating_mul(scratch.path4_center_bonds.len())
-            .saturating_mul(scratch.path4_right_middle_atoms.len())
-            .saturating_mul(scratch.path4_right_bonds.len())
-            .saturating_mul(scratch.path4_right_atoms.len());
-
-        if candidate_combination_count <= self.indexed_path4_feature_count_index.len() {
-            self.accumulate_enumerated_path4_matches(query_feature, scratch, active_candidate_mask);
-        } else {
-            self.accumulate_scanned_path4_matches(query_feature, scratch, active_candidate_mask);
-        }
+        self.accumulate_indexed_path4_matches(query_feature, scratch, active_candidate_mask);
 
         let population = finalize_sparse_candidate_mask(
             self.screens.len(),
@@ -1586,77 +1664,84 @@ impl TargetCorpusIndex {
         );
     }
 
-    fn accumulate_enumerated_path4_matches(
+    fn accumulate_indexed_path4_matches(
         &self,
         query_feature: Path4Feature,
         scratch: &mut TargetCorpusScratch<'_>,
         active_candidate_mask: Option<&[u64]>,
     ) {
-        scratch.path4_visited_features.clear();
-        for &left in &scratch.path4_left_atoms {
-            for &left_bond in &scratch.path4_left_bonds {
-                for &left_middle in &scratch.path4_left_middle_atoms {
-                    for &center_bond in &scratch.path4_center_bonds {
-                        for &right_middle in &scratch.path4_right_middle_atoms {
-                            for &right_bond in &scratch.path4_right_bonds {
-                                for &right in &scratch.path4_right_atoms {
-                                    let feature = Path4Feature::new(
-                                        left,
-                                        left_bond,
-                                        left_middle,
-                                        center_bond,
-                                        right_middle,
-                                        right_bond,
-                                        right,
-                                    );
-                                    if path4_feature_is_informative(feature)
-                                        && path4_target_feature_satisfies_query(
-                                            feature,
-                                            query_feature,
-                                        )
-                                    {
-                                        scratch.path4_visited_features.push(feature);
-                                    }
-                                }
-                            }
-                        }
-                    }
+        let feature_count = self.indexed_path4_feature_count_index.len();
+        let forward_has_candidates = build_path4_orientation_feature_mask(
+            &self.path4_feature_mask_index,
+            &Path4OrientationFeatureMask {
+                query_left: query_feature.left,
+                left_atoms: &scratch.path4_left_atoms,
+                query_left_bond: query_feature.left_bond,
+                left_bonds: &scratch.path4_left_bonds,
+                query_left_middle: query_feature.left_middle,
+                left_middle_atoms: &scratch.path4_left_middle_atoms,
+                query_center_bond: query_feature.center_bond,
+                center_bonds: &scratch.path4_center_bonds,
+                query_right_middle: query_feature.right_middle,
+                right_middle_atoms: &scratch.path4_right_middle_atoms,
+                query_right_bond: query_feature.right_bond,
+                right_bonds: &scratch.path4_right_bonds,
+                query_right: query_feature.right,
+                right_atoms: &scratch.path4_right_atoms,
+            },
+            feature_count,
+            &mut scratch.path4_feature_candidate_mask,
+            &mut scratch.path4_feature_component_mask,
+        );
+        let reverse_has_candidates = build_path4_orientation_feature_mask(
+            &self.path4_feature_mask_index,
+            &Path4OrientationFeatureMask {
+                query_left: query_feature.right,
+                left_atoms: &scratch.path4_right_atoms,
+                query_left_bond: query_feature.right_bond,
+                left_bonds: &scratch.path4_right_bonds,
+                query_left_middle: query_feature.right_middle,
+                left_middle_atoms: &scratch.path4_right_middle_atoms,
+                query_center_bond: query_feature.center_bond,
+                center_bonds: &scratch.path4_center_bonds,
+                query_right_middle: query_feature.left_middle,
+                right_middle_atoms: &scratch.path4_left_middle_atoms,
+                query_right_bond: query_feature.left_bond,
+                right_bonds: &scratch.path4_left_bonds,
+                query_right: query_feature.left,
+                right_atoms: &scratch.path4_left_atoms,
+            },
+            feature_count,
+            &mut scratch.path4_feature_reverse_mask,
+            &mut scratch.path4_feature_component_mask,
+        );
+
+        if reverse_has_candidates {
+            if forward_has_candidates {
+                for (dst, src) in scratch
+                    .path4_feature_candidate_mask
+                    .iter_mut()
+                    .zip(&scratch.path4_feature_reverse_mask)
+                {
+                    *dst |= *src;
                 }
+            } else {
+                scratch.path4_feature_candidate_mask.clear();
+                scratch
+                    .path4_feature_candidate_mask
+                    .extend_from_slice(&scratch.path4_feature_reverse_mask);
             }
+        } else if !forward_has_candidates {
+            scratch.path4_feature_candidate_mask.clear();
         }
-        scratch.path4_visited_features.sort_unstable();
-        scratch.path4_visited_features.dedup();
 
-        for &feature in &scratch.path4_visited_features {
-            if let Some((_, sparse_counts)) =
-                find_sparse_count_index(&self.indexed_path4_feature_count_index, &feature)
-            {
-                accumulate_sparse_counts(
-                    &mut scratch.path4_count_by_target,
-                    &mut scratch.path4_touched_targets,
-                    sparse_counts,
-                    active_candidate_mask,
-                );
-            }
-        }
-    }
-
-    fn accumulate_scanned_path4_matches(
-        &self,
-        query_feature: Path4Feature,
-        scratch: &mut TargetCorpusScratch<'_>,
-        active_candidate_mask: Option<&[u64]>,
-    ) {
-        for &(target_feature, ref sparse_counts) in &self.indexed_path4_feature_count_index {
-            if path4_target_feature_satisfies_query(target_feature, query_feature) {
-                accumulate_sparse_counts(
-                    &mut scratch.path4_count_by_target,
-                    &mut scratch.path4_touched_targets,
-                    sparse_counts,
-                    active_candidate_mask,
-                );
-            }
-        }
+        accumulate_feature_id_mask_counts(
+            &self.indexed_path4_feature_count_index,
+            &scratch.path4_feature_candidate_mask,
+            &mut scratch.path4_count_by_target,
+            &mut scratch.path4_touched_targets,
+            active_candidate_mask,
+        );
     }
 
     fn populate_star3_candidate_mask(
@@ -1669,17 +1754,15 @@ impl TargetCorpusIndex {
         if required_count == 0 {
             return self.screens.len();
         }
-        if active_candidate_mask.is_none() {
-            if let Some(cached) = scratch
-                .star3_mask_cache
-                .get(&(query_feature, required_count))
-            {
-                scratch.star3_candidate_mask.clear();
-                scratch
-                    .star3_candidate_mask
-                    .extend_from_slice(&cached.words);
-                return cached.population;
-            }
+        if let Some(cached) = scratch
+            .star3_mask_cache
+            .get(&(query_feature, required_count))
+        {
+            return load_cached_candidate_mask(
+                &mut scratch.star3_candidate_mask,
+                cached,
+                active_candidate_mask,
+            );
         }
 
         scratch.star3_touched_targets.clear();
@@ -1689,21 +1772,7 @@ impl TargetCorpusIndex {
         }
 
         self.collect_star3_domain_matches(query_feature, scratch);
-        let candidate_combination_count = scratch
-            .star3_center_atoms
-            .len()
-            .saturating_mul(scratch.star3_first_bonds.len())
-            .saturating_mul(scratch.star3_first_atoms.len())
-            .saturating_mul(scratch.star3_second_bonds.len())
-            .saturating_mul(scratch.star3_second_atoms.len())
-            .saturating_mul(scratch.star3_third_bonds.len())
-            .saturating_mul(scratch.star3_third_atoms.len());
-
-        if candidate_combination_count <= self.indexed_star3_feature_count_index.len() {
-            self.accumulate_enumerated_star3_matches(query_feature, scratch, active_candidate_mask);
-        } else {
-            self.accumulate_scanned_star3_matches(query_feature, scratch, active_candidate_mask);
-        }
+        self.accumulate_indexed_star3_matches(query_feature, scratch, active_candidate_mask);
 
         let population = finalize_sparse_candidate_mask(
             self.screens.len(),
@@ -1767,85 +1836,99 @@ impl TargetCorpusIndex {
         );
     }
 
-    fn accumulate_enumerated_star3_matches(
+    fn accumulate_indexed_star3_matches(
         &self,
         query_feature: Star3Feature,
         scratch: &mut TargetCorpusScratch<'_>,
         active_candidate_mask: Option<&[u64]>,
     ) {
-        scratch.star3_visited_features.clear();
-        for &center in &scratch.star3_center_atoms {
-            for &first_bond in &scratch.star3_first_bonds {
-                for &first_atom in &scratch.star3_first_atoms {
-                    for &second_bond in &scratch.star3_second_bonds {
-                        for &second_atom in &scratch.star3_second_atoms {
-                            for &third_bond in &scratch.star3_third_bonds {
-                                for &third_atom in &scratch.star3_third_atoms {
-                                    let feature = Star3Feature::new(
-                                        center,
-                                        [
-                                            Star3Arm {
-                                                bond: first_bond,
-                                                atom: first_atom,
-                                            },
-                                            Star3Arm {
-                                                bond: second_bond,
-                                                atom: second_atom,
-                                            },
-                                            Star3Arm {
-                                                bond: third_bond,
-                                                atom: third_atom,
-                                            },
-                                        ],
-                                    );
-                                    if star3_feature_is_informative(feature)
-                                        && star3_target_feature_satisfies_query(
-                                            feature,
-                                            query_feature,
-                                        )
-                                    {
-                                        scratch.star3_visited_features.push(feature);
-                                    }
-                                }
-                            }
-                        }
-                    }
+        const ARM_ORDERS: [[usize; 3]; 6] = [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ];
+
+        let feature_count = self.indexed_star3_feature_count_index.len();
+        ensure_zeroed_words(
+            &mut scratch.star3_feature_candidate_mask,
+            bitset_word_count(feature_count),
+        );
+
+        let target_atom_matches = [
+            scratch.star3_first_atoms.as_slice(),
+            scratch.star3_second_atoms.as_slice(),
+            scratch.star3_third_atoms.as_slice(),
+        ];
+        let target_bond_matches = [
+            scratch.star3_first_bonds.as_slice(),
+            scratch.star3_second_bonds.as_slice(),
+            scratch.star3_third_bonds.as_slice(),
+        ];
+        let target_atom_indexes = [
+            self.star3_feature_mask_index.first_atoms.as_ref(),
+            self.star3_feature_mask_index.second_atoms.as_ref(),
+            self.star3_feature_mask_index.third_atoms.as_ref(),
+        ];
+        let target_bond_indexes = [
+            self.star3_feature_mask_index.first_bonds.as_ref(),
+            self.star3_feature_mask_index.second_bonds.as_ref(),
+            self.star3_feature_mask_index.third_bonds.as_ref(),
+        ];
+
+        for order in ARM_ORDERS {
+            if build_star3_orientation_feature_mask(
+                &Star3OrientationFeatureMask {
+                    query_center: query_feature.center,
+                    center_atoms: &scratch.star3_center_atoms,
+                    center_atom_index: &self.star3_feature_mask_index.center_atoms,
+                    arms: [
+                        Star3OrientationArmFeatureMask {
+                            query: query_feature.arms[0],
+                            atoms: target_atom_matches[order[0]],
+                            atom_index: target_atom_indexes[order[0]],
+                            bonds: target_bond_matches[order[0]],
+                            bond_index: target_bond_indexes[order[0]],
+                        },
+                        Star3OrientationArmFeatureMask {
+                            query: query_feature.arms[1],
+                            atoms: target_atom_matches[order[1]],
+                            atom_index: target_atom_indexes[order[1]],
+                            bonds: target_bond_matches[order[1]],
+                            bond_index: target_bond_indexes[order[1]],
+                        },
+                        Star3OrientationArmFeatureMask {
+                            query: query_feature.arms[2],
+                            atoms: target_atom_matches[order[2]],
+                            atom_index: target_atom_indexes[order[2]],
+                            bonds: target_bond_matches[order[2]],
+                            bond_index: target_bond_indexes[order[2]],
+                        },
+                    ],
+                },
+                feature_count,
+                &mut scratch.star3_feature_permutation_mask,
+                &mut scratch.star3_feature_component_mask,
+            ) {
+                for (dst, &src) in scratch
+                    .star3_feature_candidate_mask
+                    .iter_mut()
+                    .zip(&scratch.star3_feature_permutation_mask)
+                {
+                    *dst |= src;
                 }
             }
         }
-        scratch.star3_visited_features.sort_unstable();
-        scratch.star3_visited_features.dedup();
 
-        for &feature in &scratch.star3_visited_features {
-            if let Some((_, sparse_counts)) =
-                find_sparse_count_index(&self.indexed_star3_feature_count_index, &feature)
-            {
-                accumulate_sparse_counts(
-                    &mut scratch.star3_count_by_target,
-                    &mut scratch.star3_touched_targets,
-                    sparse_counts,
-                    active_candidate_mask,
-                );
-            }
-        }
-    }
-
-    fn accumulate_scanned_star3_matches(
-        &self,
-        query_feature: Star3Feature,
-        scratch: &mut TargetCorpusScratch<'_>,
-        active_candidate_mask: Option<&[u64]>,
-    ) {
-        for &(target_feature, ref sparse_counts) in &self.indexed_star3_feature_count_index {
-            if star3_target_feature_satisfies_query(target_feature, query_feature) {
-                accumulate_sparse_counts(
-                    &mut scratch.star3_count_by_target,
-                    &mut scratch.star3_touched_targets,
-                    sparse_counts,
-                    active_candidate_mask,
-                );
-            }
-        }
+        accumulate_feature_id_mask_counts(
+            &self.indexed_star3_feature_count_index,
+            &scratch.star3_feature_candidate_mask,
+            &mut scratch.star3_count_by_target,
+            &mut scratch.star3_touched_targets,
+            active_candidate_mask,
+        );
     }
 }
 
@@ -1960,6 +2043,37 @@ fn finalize_sparse_candidate_mask(
     population
 }
 
+fn load_cached_candidate_mask(
+    out: &mut Vec<u64>,
+    cached: &CachedFeatureMask,
+    active_candidate_mask: Option<&[u64]>,
+) -> usize {
+    let Some(active_candidate_mask) = active_candidate_mask else {
+        out.clear();
+        out.extend_from_slice(&cached.words);
+        return cached.population;
+    };
+
+    if out.len() == cached.words.len() {
+        out.fill(0);
+    } else {
+        out.clear();
+        out.resize(cached.words.len(), 0);
+    }
+
+    let mut population = 0usize;
+    for ((dst, &cached_word), &active_word) in out
+        .iter_mut()
+        .zip(cached.words.iter())
+        .zip(active_candidate_mask)
+    {
+        let word = cached_word & active_word;
+        *dst = word;
+        population += word.count_ones() as usize;
+    }
+    population
+}
+
 fn find_count_index<'a, T: Ord>(
     entries: &'a [(T, CountBitsetIndex)],
     feature: &T,
@@ -1968,16 +2082,6 @@ fn find_count_index<'a, T: Ord>(
         .binary_search_by(|(entry_feature, _)| entry_feature.cmp(feature))
         .ok()?;
     Some((index, &entries[index].1))
-}
-
-fn find_sparse_count_index<'a, T: Ord>(
-    entries: &'a [(T, SparseFeatureCounts)],
-    feature: &T,
-) -> Option<(usize, &'a [(usize, u16)])> {
-    let index = entries
-        .binary_search_by(|(entry_feature, _)| entry_feature.cmp(feature))
-        .ok()?;
-    Some((index, entries[index].1.as_ref()))
 }
 
 fn find_feature_id_mask<'a, T: Ord>(
@@ -2185,6 +2289,141 @@ fn build_path3_orientation_feature_mask(
     builder.has_candidates()
 }
 
+struct Path4OrientationFeatureMask<'a> {
+    query_left: AtomFeature,
+    left_atoms: &'a [AtomFeature],
+    query_left_bond: EdgeBondFeature,
+    left_bonds: &'a [EdgeBondFeature],
+    query_left_middle: AtomFeature,
+    left_middle_atoms: &'a [AtomFeature],
+    query_center_bond: EdgeBondFeature,
+    center_bonds: &'a [EdgeBondFeature],
+    query_right_middle: AtomFeature,
+    right_middle_atoms: &'a [AtomFeature],
+    query_right_bond: EdgeBondFeature,
+    right_bonds: &'a [EdgeBondFeature],
+    query_right: AtomFeature,
+    right_atoms: &'a [AtomFeature],
+}
+
+fn build_path4_orientation_feature_mask(
+    index: &Path4FeatureMaskIndex,
+    orientation: &Path4OrientationFeatureMask<'_>,
+    feature_count: usize,
+    candidate_mask: &mut Vec<u64>,
+    component_mask: &mut Vec<u64>,
+) -> bool {
+    let mut builder = FeatureMaskBuilder::new(feature_count, candidate_mask, component_mask);
+    if !constrained_atom_component_intersects(
+        orientation.query_left,
+        &index.left_atoms,
+        orientation.left_atoms,
+        &mut builder,
+    ) {
+        return false;
+    }
+    if !constrained_bond_component_intersects(
+        orientation.query_left_bond,
+        &index.left_bonds,
+        orientation.left_bonds,
+        &mut builder,
+    ) {
+        return false;
+    }
+    if !constrained_atom_component_intersects(
+        orientation.query_left_middle,
+        &index.left_middle_atoms,
+        orientation.left_middle_atoms,
+        &mut builder,
+    ) {
+        return false;
+    }
+    if !constrained_bond_component_intersects(
+        orientation.query_center_bond,
+        &index.center_bonds,
+        orientation.center_bonds,
+        &mut builder,
+    ) {
+        return false;
+    }
+    if !constrained_atom_component_intersects(
+        orientation.query_right_middle,
+        &index.right_middle_atoms,
+        orientation.right_middle_atoms,
+        &mut builder,
+    ) {
+        return false;
+    }
+    if !constrained_bond_component_intersects(
+        orientation.query_right_bond,
+        &index.right_bonds,
+        orientation.right_bonds,
+        &mut builder,
+    ) {
+        return false;
+    }
+    if !constrained_atom_component_intersects(
+        orientation.query_right,
+        &index.right_atoms,
+        orientation.right_atoms,
+        &mut builder,
+    ) {
+        return false;
+    }
+    builder.has_candidates()
+}
+
+struct Star3OrientationArmFeatureMask<'a> {
+    query: Star3Arm,
+    atoms: &'a [AtomFeature],
+    atom_index: &'a [(AtomFeature, FeatureIdMask)],
+    bonds: &'a [EdgeBondFeature],
+    bond_index: &'a [(EdgeBondFeature, FeatureIdMask)],
+}
+
+struct Star3OrientationFeatureMask<'a> {
+    query_center: AtomFeature,
+    center_atoms: &'a [AtomFeature],
+    center_atom_index: &'a [(AtomFeature, FeatureIdMask)],
+    arms: [Star3OrientationArmFeatureMask<'a>; 3],
+}
+
+fn build_star3_orientation_feature_mask(
+    orientation: &Star3OrientationFeatureMask<'_>,
+    feature_count: usize,
+    candidate_mask: &mut Vec<u64>,
+    component_mask: &mut Vec<u64>,
+) -> bool {
+    let mut builder = FeatureMaskBuilder::new(feature_count, candidate_mask, component_mask);
+    if !constrained_atom_component_intersects(
+        orientation.query_center,
+        orientation.center_atom_index,
+        orientation.center_atoms,
+        &mut builder,
+    ) {
+        return false;
+    }
+    for arm in &orientation.arms {
+        if !constrained_bond_component_intersects(
+            arm.query.bond,
+            arm.bond_index,
+            arm.bonds,
+            &mut builder,
+        ) {
+            return false;
+        }
+        if !constrained_atom_component_intersects(
+            arm.query.atom,
+            arm.atom_index,
+            arm.atoms,
+            &mut builder,
+        ) {
+            return false;
+        }
+    }
+    builder.has_candidates()
+}
+
 fn accumulate_feature_id_mask_counts<T>(
     entries: &[(T, SparseFeatureCounts)],
     feature_mask: &[u64],
@@ -2207,10 +2446,6 @@ fn accumulate_feature_id_mask_counts<T>(
             word &= word - 1;
         }
     }
-}
-
-fn bitset_population(words: &[u64]) -> usize {
-    words.iter().map(|word| word.count_ones() as usize).sum()
 }
 
 fn bitset_contains(words: &[u64], bit: usize) -> bool {
@@ -2567,11 +2802,7 @@ fn into_feature_id_mask_index<T: Ord>(masks: BTreeMap<T, Vec<u64>>) -> IndexedFe
 
 fn build_path4_sparse_index(
     path4_occurrences: Path4FeatureCountIndex,
-) -> (
-    IndexedSparseFeatureCountIndex<Path4Feature>,
-    Box<[AtomFeature]>,
-    Box<[EdgeBondFeature]>,
-) {
+) -> IndexedPath4SparseIndexParts {
     let mut atom_domain = Vec::new();
     let mut bond_domain = Vec::new();
     let entries = path4_occurrences
@@ -2586,19 +2817,65 @@ fn build_path4_sparse_index(
             push_unique_sorted_domain_value(&mut bond_domain, feature.right_bond);
             (feature, sparse_counts.into_boxed_slice())
         })
-        .collect();
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
 
+    let mask_index = build_path4_feature_mask_index(&entries);
     let (atom_domain, bond_domain) = build_feature_domains(atom_domain, bond_domain);
-    (entries, atom_domain, bond_domain)
+    (entries, mask_index, atom_domain, bond_domain)
+}
+
+fn build_path4_feature_mask_index(
+    entries: &[(Path4Feature, SparseFeatureCounts)],
+) -> Path4FeatureMaskIndex {
+    let word_count = bitset_word_count(entries.len());
+    let mut left_atoms = BTreeMap::new();
+    let mut left_bonds = BTreeMap::new();
+    let mut left_middle_atoms = BTreeMap::new();
+    let mut center_bonds = BTreeMap::new();
+    let mut right_middle_atoms = BTreeMap::new();
+    let mut right_bonds = BTreeMap::new();
+    let mut right_atoms = BTreeMap::new();
+
+    for (feature_id, &(feature, _)) in entries.iter().enumerate() {
+        push_feature_id_mask_value(&mut left_atoms, feature.left, feature_id, word_count);
+        push_feature_id_mask_value(&mut left_bonds, feature.left_bond, feature_id, word_count);
+        push_feature_id_mask_value(
+            &mut left_middle_atoms,
+            feature.left_middle,
+            feature_id,
+            word_count,
+        );
+        push_feature_id_mask_value(
+            &mut center_bonds,
+            feature.center_bond,
+            feature_id,
+            word_count,
+        );
+        push_feature_id_mask_value(
+            &mut right_middle_atoms,
+            feature.right_middle,
+            feature_id,
+            word_count,
+        );
+        push_feature_id_mask_value(&mut right_bonds, feature.right_bond, feature_id, word_count);
+        push_feature_id_mask_value(&mut right_atoms, feature.right, feature_id, word_count);
+    }
+
+    Path4FeatureMaskIndex {
+        left_atoms: into_feature_id_mask_index(left_atoms),
+        left_bonds: into_feature_id_mask_index(left_bonds),
+        left_middle_atoms: into_feature_id_mask_index(left_middle_atoms),
+        center_bonds: into_feature_id_mask_index(center_bonds),
+        right_middle_atoms: into_feature_id_mask_index(right_middle_atoms),
+        right_bonds: into_feature_id_mask_index(right_bonds),
+        right_atoms: into_feature_id_mask_index(right_atoms),
+    }
 }
 
 fn build_star3_sparse_index(
     star3_occurrences: Star3FeatureCountIndex,
-) -> (
-    IndexedSparseFeatureCountIndex<Star3Feature>,
-    Box<[AtomFeature]>,
-    Box<[EdgeBondFeature]>,
-) {
+) -> IndexedStar3SparseIndexParts {
     let mut atom_domain = Vec::new();
     let mut bond_domain = Vec::new();
     let entries = star3_occurrences
@@ -2611,10 +2888,75 @@ fn build_star3_sparse_index(
             }
             (feature, sparse_counts.into_boxed_slice())
         })
-        .collect();
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
 
+    let mask_index = build_star3_feature_mask_index(&entries);
     let (atom_domain, bond_domain) = build_feature_domains(atom_domain, bond_domain);
-    (entries, atom_domain, bond_domain)
+    (entries, mask_index, atom_domain, bond_domain)
+}
+
+fn build_star3_feature_mask_index(
+    entries: &[(Star3Feature, SparseFeatureCounts)],
+) -> Star3FeatureMaskIndex {
+    let word_count = bitset_word_count(entries.len());
+    let mut center_atoms = BTreeMap::new();
+    let mut first_bonds = BTreeMap::new();
+    let mut first_atoms = BTreeMap::new();
+    let mut second_bonds = BTreeMap::new();
+    let mut second_atoms = BTreeMap::new();
+    let mut third_bonds = BTreeMap::new();
+    let mut third_atoms = BTreeMap::new();
+
+    for (feature_id, &(feature, _)) in entries.iter().enumerate() {
+        push_feature_id_mask_value(&mut center_atoms, feature.center, feature_id, word_count);
+        push_feature_id_mask_value(
+            &mut first_bonds,
+            feature.arms[0].bond,
+            feature_id,
+            word_count,
+        );
+        push_feature_id_mask_value(
+            &mut first_atoms,
+            feature.arms[0].atom,
+            feature_id,
+            word_count,
+        );
+        push_feature_id_mask_value(
+            &mut second_bonds,
+            feature.arms[1].bond,
+            feature_id,
+            word_count,
+        );
+        push_feature_id_mask_value(
+            &mut second_atoms,
+            feature.arms[1].atom,
+            feature_id,
+            word_count,
+        );
+        push_feature_id_mask_value(
+            &mut third_bonds,
+            feature.arms[2].bond,
+            feature_id,
+            word_count,
+        );
+        push_feature_id_mask_value(
+            &mut third_atoms,
+            feature.arms[2].atom,
+            feature_id,
+            word_count,
+        );
+    }
+
+    Star3FeatureMaskIndex {
+        center_atoms: into_feature_id_mask_index(center_atoms),
+        first_bonds: into_feature_id_mask_index(first_bonds),
+        first_atoms: into_feature_id_mask_index(first_atoms),
+        second_bonds: into_feature_id_mask_index(second_bonds),
+        second_atoms: into_feature_id_mask_index(second_atoms),
+        third_bonds: into_feature_id_mask_index(third_bonds),
+        third_atoms: into_feature_id_mask_index(third_atoms),
+    }
 }
 
 fn push_unique_sorted_domain_value<T: Copy + PartialEq>(domain: &mut Vec<T>, value: T) {
@@ -3191,33 +3533,6 @@ const fn path4_feature_is_informative(feature: Path4Feature) -> bool {
         && atom_feature_is_unconstrained(feature.right))
 }
 
-fn path4_target_feature_satisfies_query(target: Path4Feature, query: Path4Feature) -> bool {
-    path4_target_orientation_satisfies_query(target, query)
-        || path4_target_orientation_satisfies_query(reverse_path4_feature(target), query)
-}
-
-const fn reverse_path4_feature(feature: Path4Feature) -> Path4Feature {
-    Path4Feature {
-        left: feature.right,
-        left_bond: feature.right_bond,
-        left_middle: feature.right_middle,
-        center_bond: feature.center_bond,
-        right_middle: feature.left_middle,
-        right_bond: feature.left_bond,
-        right: feature.left,
-    }
-}
-
-fn path4_target_orientation_satisfies_query(target: Path4Feature, query: Path4Feature) -> bool {
-    atom_feature_satisfies_query(target.left, query.left)
-        && bond_feature_satisfies_query(target.left_bond, query.left_bond)
-        && atom_feature_satisfies_query(target.left_middle, query.left_middle)
-        && bond_feature_satisfies_query(target.center_bond, query.center_bond)
-        && atom_feature_satisfies_query(target.right_middle, query.right_middle)
-        && bond_feature_satisfies_query(target.right_bond, query.right_bond)
-        && atom_feature_satisfies_query(target.right, query.right)
-}
-
 const fn star3_feature_is_informative(feature: Star3Feature) -> bool {
     !(atom_feature_is_unconstrained(feature.center)
         && bond_feature_is_unconstrained(feature.arms[0].bond)
@@ -3226,29 +3541,6 @@ const fn star3_feature_is_informative(feature: Star3Feature) -> bool {
         && atom_feature_is_unconstrained(feature.arms[1].atom)
         && bond_feature_is_unconstrained(feature.arms[2].bond)
         && atom_feature_is_unconstrained(feature.arms[2].atom))
-}
-
-fn star3_target_feature_satisfies_query(target: Star3Feature, query: Star3Feature) -> bool {
-    atom_feature_satisfies_query(target.center, query.center)
-        && ([
-            [0usize, 1usize, 2usize],
-            [0usize, 2usize, 1usize],
-            [1usize, 0usize, 2usize],
-            [1usize, 2usize, 0usize],
-            [2usize, 0usize, 1usize],
-            [2usize, 1usize, 0usize],
-        ])
-        .into_iter()
-        .any(|order| {
-            star3_arm_satisfies_query(target.arms[order[0]], query.arms[0])
-                && star3_arm_satisfies_query(target.arms[order[1]], query.arms[1])
-                && star3_arm_satisfies_query(target.arms[order[2]], query.arms[2])
-        })
-}
-
-fn star3_arm_satisfies_query(target: Star3Arm, query: Star3Arm) -> bool {
-    bond_feature_satisfies_query(target.bond, query.bond)
-        && atom_feature_satisfies_query(target.atom, query.atom)
 }
 
 fn target_atom_feature(target: &PreparedTarget, atom_id: usize) -> Option<AtomFeature> {

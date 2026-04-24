@@ -389,6 +389,35 @@ fn query_screen_plans_more_specific_local_filters_first() {
 }
 
 #[test]
+fn cached_feature_masks_can_be_reused_after_scalar_filters() {
+    let prepared_targets = ["CCO", "CCOC", "ClCCO", "NCCO", "CCCC", "COC", "CCN", "OCCO"]
+        .into_iter()
+        .map(|smiles| PreparedTarget::new(Smiles::from_str(smiles).unwrap()))
+        .collect::<alloc::vec::Vec<_>>();
+    let index = TargetCorpusIndex::new(&prepared_targets);
+    let warmup_query = QueryScreen::new(&QueryMol::from_str("CO").unwrap());
+    let narrow_query = QueryScreen::new(&QueryMol::from_str("[Cl].CO").unwrap());
+
+    let mut scratch = TargetCorpusScratch::new();
+    let mut warmed_candidates = alloc::vec::Vec::new();
+    index.candidate_ids_with_scratch_into(&warmup_query, &mut scratch, &mut warmed_candidates);
+    assert!(!scratch.edge_mask_cache.is_empty());
+
+    let mut reused_scratch_candidates = alloc::vec::Vec::new();
+    index.candidate_ids_with_scratch_into(
+        &narrow_query,
+        &mut scratch,
+        &mut reused_scratch_candidates,
+    );
+
+    assert_eq!(
+        index.candidate_ids(&narrow_query),
+        reused_scratch_candidates
+    );
+    assert_eq!(reused_scratch_candidates, alloc::vec![2]);
+}
+
+#[test]
 fn star3_feature_filter_rejects_missing_branch_context() {
     let prepared_targets = ["CC(O)(N)Cl", "CC(O)(N)F", "CC(O)Cl", "CC(Cl)(N)O"]
         .into_iter()

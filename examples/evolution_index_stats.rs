@@ -1,4 +1,4 @@
-//! Reports screening/index selectivity on the fixed 200 x 20k benchmark corpus.
+//! Reports screening/index selectivity on the fixed evolution benchmark corpora.
 
 use core::str::FromStr;
 use std::{fs, path::PathBuf, time::Instant};
@@ -8,6 +8,18 @@ use smarts_rs::{
     QueryScreen, TargetCorpusIndex, TargetCorpusIndexStats, TargetCorpusScratch, TargetScreen,
 };
 use smiles_parser::Smiles;
+
+const TARGET_FIXTURE: &str = "corpus/benchmark/smarts-evolution-example-smiles-v0.tsv";
+const QUERY_FIXTURES: [(&str, &str); 2] = [
+    (
+        "smarts_evolution_complex_queries_x_examples",
+        "corpus/benchmark/smarts-evolution-complex-queries-v0.smarts",
+    ),
+    (
+        "smarts_evolution_large_complex_queries_x_examples",
+        "corpus/benchmark/smarts-evolution-complex-queries-large-v0.smarts",
+    ),
+];
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -178,18 +190,12 @@ fn print_summary(
 
 fn main() {
     let started = Instant::now();
-    let query_smarts = load_lines("corpus/benchmark/smarts-evolution-complex-queries-v0.smarts");
-    let target_smiles =
-        load_target_smiles("corpus/benchmark/smarts-evolution-example-smiles-v0.tsv");
-    eprintln!("loaded fixtures in {:?}", started.elapsed());
-
-    let phase = Instant::now();
-    let queries = query_smarts
+    let query_sets = QUERY_FIXTURES
         .iter()
-        .map(|smarts| QueryMol::from_str(smarts).expect("benchmark SMARTS must parse"))
+        .map(|&(name, path)| (name, load_lines(path)))
         .collect::<Vec<_>>();
-    let query_screens = queries.iter().map(QueryScreen::new).collect::<Vec<_>>();
-    eprintln!("prepared queries in {:?}", phase.elapsed());
+    let target_smiles = load_target_smiles(TARGET_FIXTURE);
+    eprintln!("loaded fixtures in {:?}", started.elapsed());
 
     let phase = Instant::now();
     let targets = target_smiles
@@ -208,37 +214,49 @@ fn main() {
     let index_stats = index.stats();
     eprintln!("built target index in {:?}", phase.elapsed());
 
-    let phase = Instant::now();
-    let total_pairs = query_screens.len() * target_screens.len();
-    let coarse_pairs = query_screens
-        .iter()
-        .map(|query| {
-            target_screens
-                .iter()
-                .filter(|target| query.may_match(target))
-                .count()
-        })
-        .sum::<usize>();
-    eprintln!("counted coarse pairs in {:?}", phase.elapsed());
-
-    let phase = Instant::now();
-    let mut scratch = TargetCorpusScratch::new();
-    let mut candidates = Vec::new();
-    let mut indexed_counts = Vec::with_capacity(query_screens.len());
-    for query in &query_screens {
-        index.candidate_ids_with_scratch_into(query, &mut scratch, &mut candidates);
-        indexed_counts.push(candidates.len());
-    }
-    eprintln!("counted indexed pairs in {:?}", phase.elapsed());
     let target_count = target_screens.len();
 
-    print_summary(
-        &query_smarts,
-        &query_screens,
-        index_stats,
-        target_count,
-        total_pairs,
-        coarse_pairs,
-        &indexed_counts,
-    );
+    for (name, query_smarts) in query_sets {
+        let phase = Instant::now();
+        let queries = query_smarts
+            .iter()
+            .map(|smarts| QueryMol::from_str(smarts).expect("benchmark SMARTS must parse"))
+            .collect::<Vec<_>>();
+        let query_screens = queries.iter().map(QueryScreen::new).collect::<Vec<_>>();
+        eprintln!("prepared {name} queries in {:?}", phase.elapsed());
+
+        let phase = Instant::now();
+        let total_pairs = query_screens.len() * target_screens.len();
+        let coarse_pairs = query_screens
+            .iter()
+            .map(|query| {
+                target_screens
+                    .iter()
+                    .filter(|target| query.may_match(target))
+                    .count()
+            })
+            .sum::<usize>();
+        eprintln!("counted {name} coarse pairs in {:?}", phase.elapsed());
+
+        let phase = Instant::now();
+        let mut scratch = TargetCorpusScratch::new();
+        let mut candidates = Vec::new();
+        let mut indexed_counts = Vec::with_capacity(query_screens.len());
+        for query in &query_screens {
+            index.candidate_ids_with_scratch_into(query, &mut scratch, &mut candidates);
+            indexed_counts.push(candidates.len());
+        }
+        eprintln!("counted {name} indexed pairs in {:?}", phase.elapsed());
+
+        println!("fixture: {name}");
+        print_summary(
+            &query_smarts,
+            &query_screens,
+            index_stats,
+            target_count,
+            total_pairs,
+            coarse_pairs,
+            &indexed_counts,
+        );
+    }
 }

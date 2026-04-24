@@ -13,17 +13,20 @@ use smarts_rs::{
 use smiles_parser::Smiles;
 
 const COMPLEX_QUERY_FIXTURE: &str = "corpus/benchmark/smarts-evolution-complex-queries-v0.smarts";
+const LARGE_COMPLEX_QUERY_FIXTURE: &str =
+    "corpus/benchmark/smarts-evolution-complex-queries-large-v0.smarts";
 const TARGET_FIXTURE: &str = "corpus/benchmark/smarts-evolution-example-smiles-v0.tsv";
 
 struct MatrixDataset {
     id: &'static str,
     description: String,
     queries: Vec<CompiledQuery>,
+    query_screens: Vec<QueryScreen>,
     candidate_sets: Vec<TargetCandidateSet>,
-    targets: Vec<PreparedTarget>,
     total_pairs: u64,
     screened_pairs: u64,
     expected_total_matches: usize,
+    benchmark_scalar: bool,
 }
 
 struct RawMatrixInput {
@@ -117,22 +120,29 @@ fn prepare_targets(target_smiles: &[String]) -> Vec<PreparedTarget> {
         .collect()
 }
 
-fn build_dataset(id: &'static str, query_fixture: &str, query_description: &str) -> MatrixDataset {
+fn build_dataset(
+    id: &'static str,
+    query_fixture: &str,
+    query_description: &str,
+    targets: &[PreparedTarget],
+    target_index: &TargetCorpusIndex,
+    per_dataset: &BTreeMap<String, usize>,
+    benchmark_scalar: bool,
+) -> MatrixDataset {
     let query_smarts = load_query_smarts(query_fixture);
-    let (target_smiles, per_dataset) = load_target_smiles();
-
     let queries = compile_queries(&query_smarts);
     let query_screens = queries
         .iter()
         .map(|query| QueryScreen::new(query.query()))
         .collect::<Vec<_>>();
-
-    let targets = prepare_targets(&target_smiles);
-    let target_index = TargetCorpusIndex::new(&targets);
-    let candidate_sets = build_candidate_sets(&query_screens, &target_index);
+    let candidate_sets = build_candidate_sets(&query_screens, target_index);
 
     let total_pairs = (queries.len() * targets.len()) as u64;
-    let expected_total_matches = matrix_match_count_scalar(&queries, &targets);
+    let expected_total_matches = if benchmark_scalar {
+        matrix_match_count_scalar(&queries, targets)
+    } else {
+        matrix_match_count_indexed_scalar(&queries, &candidate_sets, targets)
+    };
     let screened_pairs = candidate_sets
         .iter()
         .map(TargetCandidateSet::len)
@@ -157,11 +167,12 @@ fn build_dataset(id: &'static str, query_fixture: &str, query_description: &str)
         id,
         description,
         queries,
+        query_screens,
         candidate_sets,
-        targets,
         total_pairs,
         screened_pairs,
         expected_total_matches,
+        benchmark_scalar,
     }
 }
 
@@ -222,6 +233,52 @@ fn matrix_match_count_indexed_rayon_queries(
         .sum()
 }
 
+fn matrix_match_count_indexed_streaming_scalar(
+    queries: &[CompiledQuery],
+    query_screens: &[QueryScreen],
+    target_index: &TargetCorpusIndex,
+    targets: &[PreparedTarget],
+) -> usize {
+    let mut total = 0usize;
+    let mut corpus_scratch = TargetCorpusScratch::new();
+    let mut match_scratch = MatchScratch::new();
+    for (query, screen) in queries.iter().zip(query_screens) {
+        target_index.for_each_candidate_id_with_scratch(screen, &mut corpus_scratch, |target_id| {
+            total +=
+                usize::from(query.matches_with_scratch(&targets[target_id], &mut match_scratch));
+        });
+    }
+    total
+}
+
+fn matrix_match_count_indexed_streaming_rayon_queries(
+    queries: &[CompiledQuery],
+    query_screens: &[QueryScreen],
+    target_index: &TargetCorpusIndex,
+    targets: &[PreparedTarget],
+) -> usize {
+    queries
+        .par_iter()
+        .zip(query_screens.par_iter())
+        .map_init(
+            || (TargetCorpusScratch::new(), MatchScratch::new()),
+            |(corpus_scratch, match_scratch), (query, screen)| {
+                let mut total = 0usize;
+                target_index.for_each_candidate_id_with_scratch(
+                    screen,
+                    corpus_scratch,
+                    |target_id| {
+                        total += usize::from(
+                            query.matches_with_scratch(&targets[target_id], match_scratch),
+                        );
+                    },
+                );
+                total
+            },
+        )
+        .sum()
+}
+
 fn configure_group(group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>) {
     group.sample_size(10);
     group.warm_up_time(Duration::from_secs(2));
@@ -230,38 +287,57 @@ fn configure_group(group: &mut criterion::BenchmarkGroup<'_, criterion::measurem
 
 #[allow(clippy::too_many_lines)]
 fn bench_evolution_matrix(c: &mut Criterion) {
+    let (target_smiles, per_dataset) = load_target_smiles();
+    let targets = prepare_targets(&target_smiles);
+    let target_index = TargetCorpusIndex::new(&targets);
+
     let mut group = c.benchmark_group("matcher_evolution_matrix_boolean");
     configure_group(&mut group);
 
-    let datasets = [build_dataset(
-        "smarts_evolution_complex_queries_x_examples",
-        COMPLEX_QUERY_FIXTURE,
-        "mined downstream complex SMARTS",
-    )];
+    let datasets = [
+        build_dataset(
+            "smarts_evolution_complex_queries_x_examples",
+            COMPLEX_QUERY_FIXTURE,
+            "mined downstream complex SMARTS",
+            &targets,
+            &target_index,
+            &per_dataset,
+            true,
+        ),
+        build_dataset(
+            "smarts_evolution_large_complex_queries_x_examples",
+            LARGE_COMPLEX_QUERY_FIXTURE,
+            "larger mined downstream complex SMARTS generation",
+            &targets,
+            &target_index,
+            &per_dataset,
+            false,
+        ),
+    ];
 
     for dataset in &datasets {
         group.throughput(Throughput::Elements(dataset.total_pairs));
 
-        group.bench_function(BenchmarkId::new("scalar", dataset.id), |b| {
-            b.iter(|| {
-                let total = matrix_match_count_scalar(
-                    black_box(&dataset.queries),
-                    black_box(&dataset.targets),
-                );
-                assert_eq!(
-                    total, dataset.expected_total_matches,
-                    "benchmark fixture drifted"
-                );
-                black_box(total);
+        if dataset.benchmark_scalar {
+            group.bench_function(BenchmarkId::new("scalar", dataset.id), |b| {
+                b.iter(|| {
+                    let total =
+                        matrix_match_count_scalar(black_box(&dataset.queries), black_box(&targets));
+                    assert_eq!(
+                        total, dataset.expected_total_matches,
+                        "benchmark fixture drifted"
+                    );
+                    black_box(total);
+                });
             });
-        });
+        }
 
         group.bench_function(BenchmarkId::new("indexed_scalar", dataset.id), |b| {
             b.iter(|| {
                 let total = matrix_match_count_indexed_scalar(
                     black_box(&dataset.queries),
                     black_box(&dataset.candidate_sets),
-                    black_box(&dataset.targets),
+                    black_box(&targets),
                 );
                 assert_eq!(
                     total, dataset.expected_total_matches,
@@ -276,7 +352,7 @@ fn bench_evolution_matrix(c: &mut Criterion) {
                 let total = matrix_match_count_indexed_rayon_queries(
                     black_box(&dataset.queries),
                     black_box(&dataset.candidate_sets),
-                    black_box(&dataset.targets),
+                    black_box(&targets),
                 );
                 assert_eq!(
                     total, dataset.expected_total_matches,
@@ -285,6 +361,44 @@ fn bench_evolution_matrix(c: &mut Criterion) {
                 black_box(total);
             });
         });
+
+        group.bench_function(
+            BenchmarkId::new("indexed_streaming_scalar", dataset.id),
+            |b| {
+                b.iter(|| {
+                    let total = matrix_match_count_indexed_streaming_scalar(
+                        black_box(&dataset.queries),
+                        black_box(&dataset.query_screens),
+                        black_box(&target_index),
+                        black_box(&targets),
+                    );
+                    assert_eq!(
+                        total, dataset.expected_total_matches,
+                        "streaming indexed benchmark changed match count"
+                    );
+                    black_box(total);
+                });
+            },
+        );
+
+        group.bench_function(
+            BenchmarkId::new("indexed_streaming_rayon_queries", dataset.id),
+            |b| {
+                b.iter(|| {
+                    let total = matrix_match_count_indexed_streaming_rayon_queries(
+                        black_box(&dataset.queries),
+                        black_box(&dataset.query_screens),
+                        black_box(&target_index),
+                        black_box(&targets),
+                    );
+                    assert_eq!(
+                        total, dataset.expected_total_matches,
+                        "streaming indexed rayon benchmark changed match count"
+                    );
+                    black_box(total);
+                });
+            },
+        );
 
         group.throughput(Throughput::Elements(0));
         black_box(&dataset.description);
@@ -295,50 +409,58 @@ fn bench_evolution_matrix(c: &mut Criterion) {
 }
 
 fn bench_evolution_setup(c: &mut Criterion) {
-    let input = load_raw_input(
-        "smarts_evolution_complex_queries_x_examples",
-        COMPLEX_QUERY_FIXTURE,
-    );
-    let queries = compile_queries(&input.query_smarts);
-    let query_screens = queries
-        .iter()
-        .map(|query| QueryScreen::new(query.query()))
-        .collect::<Vec<_>>();
-    let targets = prepare_targets(&input.target_smiles);
+    let inputs = [
+        load_raw_input(
+            "smarts_evolution_complex_queries_x_examples",
+            COMPLEX_QUERY_FIXTURE,
+        ),
+        load_raw_input(
+            "smarts_evolution_large_complex_queries_x_examples",
+            LARGE_COMPLEX_QUERY_FIXTURE,
+        ),
+    ];
+    let targets = prepare_targets(&inputs[0].target_smiles);
     let target_index = TargetCorpusIndex::new(&targets);
 
     let mut group = c.benchmark_group("matcher_evolution_matrix_setup");
     configure_group(&mut group);
 
-    group.throughput(Throughput::Elements(input.query_smarts.len() as u64));
-    group.bench_function(BenchmarkId::new("compile_queries", input.id), |b| {
-        b.iter(|| {
-            let queries = compile_queries(black_box(&input.query_smarts));
-            black_box(queries);
-        });
-    });
+    for input in &inputs {
+        let queries = compile_queries(&input.query_smarts);
+        let query_screens = queries
+            .iter()
+            .map(|query| QueryScreen::new(query.query()))
+            .collect::<Vec<_>>();
 
-    group.throughput(Throughput::Elements(input.target_smiles.len() as u64));
-    group.bench_function(BenchmarkId::new("prepare_targets", input.id), |b| {
+        group.throughput(Throughput::Elements(input.query_smarts.len() as u64));
+        group.bench_function(BenchmarkId::new("compile_queries", input.id), |b| {
+            b.iter(|| {
+                let queries = compile_queries(black_box(&input.query_smarts));
+                black_box(queries);
+            });
+        });
+
+        group.bench_function(BenchmarkId::new("build_candidate_sets", input.id), |b| {
+            b.iter(|| {
+                let candidates =
+                    build_candidate_sets(black_box(&query_screens), black_box(&target_index));
+                black_box(candidates);
+            });
+        });
+    }
+
+    group.throughput(Throughput::Elements(inputs[0].target_smiles.len() as u64));
+    group.bench_function(BenchmarkId::new("prepare_targets", inputs[0].id), |b| {
         b.iter(|| {
-            let targets = prepare_targets(black_box(&input.target_smiles));
+            let targets = prepare_targets(black_box(&inputs[0].target_smiles));
             black_box(targets);
         });
     });
 
-    group.bench_function(BenchmarkId::new("build_target_index", input.id), |b| {
+    group.bench_function(BenchmarkId::new("build_target_index", inputs[0].id), |b| {
         b.iter(|| {
             let index = TargetCorpusIndex::new(black_box(&targets));
             black_box(index);
-        });
-    });
-
-    group.throughput(Throughput::Elements(input.query_smarts.len() as u64));
-    group.bench_function(BenchmarkId::new("build_candidate_sets", input.id), |b| {
-        b.iter(|| {
-            let candidates =
-                build_candidate_sets(black_box(&query_screens), black_box(&target_index));
-            black_box(candidates);
         });
     });
 

@@ -13,7 +13,10 @@ use smiles_parser::{bond::Bond, Smiles};
 
 const INPUT_TSV: &str = "corpus/benchmark/smarts-evolution-example-smiles-v0.tsv";
 const OUTPUT_SMARTS: &str = "corpus/benchmark/smarts-evolution-complex-queries-v0.smarts";
+const LARGE_OUTPUT_SMARTS: &str =
+    "corpus/benchmark/smarts-evolution-complex-queries-large-v0.smarts";
 const QUERIES_PER_DATASET: usize = 40;
+const LARGE_QUERIES_PER_DATASET: usize = 200;
 const MAX_PATH_ATOMS: usize = 4;
 
 #[derive(Clone, Debug)]
@@ -36,13 +39,38 @@ struct ComplexityMetrics {
 
 fn main() {
     let datasets = load_dataset_smiles();
+    let candidates_by_dataset = datasets
+        .iter()
+        .map(|(dataset, smiles_set)| (dataset.clone(), mine_dataset_candidates(smiles_set)))
+        .collect::<BTreeMap<_, _>>();
+
+    write_query_fixture(
+        &datasets,
+        &candidates_by_dataset,
+        QUERIES_PER_DATASET,
+        OUTPUT_SMARTS,
+    );
+    write_query_fixture(
+        &datasets,
+        &candidates_by_dataset,
+        LARGE_QUERIES_PER_DATASET,
+        LARGE_OUTPUT_SMARTS,
+    );
+}
+
+fn write_query_fixture(
+    datasets: &BTreeMap<String, Vec<Smiles>>,
+    candidates_by_dataset: &BTreeMap<String, Vec<CandidateStats>>,
+    queries_per_dataset: usize,
+    output_smarts: &str,
+) {
     let mut selected = Vec::new();
 
-    for (dataset, smiles_set) in &datasets {
-        let candidates = mine_dataset_candidates(smiles_set);
-        let chosen = choose_dataset_queries(&candidates, QUERIES_PER_DATASET);
+    for dataset in datasets.keys() {
+        let candidates = &candidates_by_dataset[dataset];
+        let chosen = choose_dataset_queries(candidates, queries_per_dataset);
         assert!(
-            chosen.len() >= QUERIES_PER_DATASET,
+            chosen.len() >= queries_per_dataset,
             "dataset {dataset} produced only {} complex candidates",
             chosen.len()
         );
@@ -59,7 +87,7 @@ fn main() {
             .then_with(|| compare_candidates(&left.1, &right.1))
     });
 
-    let output_path = repo_root().join(OUTPUT_SMARTS);
+    let output_path = repo_root().join(output_smarts);
     let mut rendered = String::new();
     for (_dataset, candidate) in &selected {
         rendered.push_str(&candidate.smarts);

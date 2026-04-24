@@ -108,6 +108,26 @@ pub(super) fn intersect_source(
     candidate_mask.iter().any(|&word| word != 0)
 }
 
+pub(super) fn intersect_source_with_population(
+    candidate_mask: &mut [u64],
+    has_active_candidate: &mut bool,
+    source: &[u64],
+    source_population: usize,
+) -> Option<usize> {
+    if *has_active_candidate {
+        let mut population = 0usize;
+        for (candidate_word, &source_word) in candidate_mask.iter_mut().zip(source) {
+            *candidate_word &= source_word;
+            population += candidate_word.count_ones() as usize;
+        }
+        (population != 0).then_some(population)
+    } else {
+        candidate_mask.copy_from_slice(source);
+        *has_active_candidate = true;
+        (source_population != 0).then_some(source_population)
+    }
+}
+
 pub(super) fn for_each_set_bit<F>(candidate_mask: &[u64], target_count: usize, mut f: F)
 where
     F: FnMut(usize),
