@@ -1090,9 +1090,22 @@ fn compile_complete_primitive_predicates(
             alloc::vec![AtomFastPredicate::AliphaticHeteroNeighbor(*expected)]
         }
         AtomPrimitive::Charge(expected) => alloc::vec![AtomFastPredicate::Charge(*expected)],
-        AtomPrimitive::RecursiveQuery(_) => return None,
+        AtomPrimitive::RecursiveQuery(query) => {
+            return single_atom_recursive_query_expr(query)
+                .and_then(compile_complete_atom_predicates);
+        }
     };
     Some(predicates)
+}
+
+fn single_atom_recursive_query_expr(query: &QueryMol) -> Option<&AtomExpr> {
+    if query.atom_count() != 1 || query.bond_count() != 0 {
+        return None;
+    }
+    match &query.atoms()[0].expr {
+        AtomExpr::Bracket(expr) if expr.atom_map.is_some() => None,
+        expr => Some(expr),
+    }
 }
 
 fn compile_required_atom_predicates(expr: &AtomExpr) -> alloc::vec::Vec<AtomFastPredicate> {
@@ -5009,6 +5022,14 @@ mod tests {
     fn recursive_queries_are_respected() {
         assert!(QueryMol::from_str("[$(C)]").unwrap().matches("C").unwrap());
         assert!(!QueryMol::from_str("[$(O)]").unwrap().matches("C").unwrap());
+        assert!(QueryMol::from_str("[$([#6;R])]")
+            .unwrap()
+            .matches("C1CCCCC1")
+            .unwrap());
+        assert!(!QueryMol::from_str("[$([#6;R])]")
+            .unwrap()
+            .matches("CC")
+            .unwrap());
         assert!(QueryMol::from_str("[$(CO)]")
             .unwrap()
             .matches("CO")
