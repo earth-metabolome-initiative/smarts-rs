@@ -966,6 +966,7 @@ fn simplify_bracket_and(items: Vec<BracketExprTree>, kind: BracketAndKind) -> Br
         .map(simplify_bracket_tree)
         .collect::<Vec<_>>();
     flatten_bracket_and_items(&mut items, kind);
+    while replace_negated_numeric_pair_with_residual(&mut items) {}
     if items.iter().any(is_false_bracket_tree)
         || bracket_and_contains_complement_pair(&items)
         || bracket_and_contains_mutually_exclusive_pair(&items)
@@ -986,6 +987,7 @@ fn simplify_bracket_and(items: Vec<BracketExprTree>, kind: BracketAndKind) -> Br
     }
     while subtract_negated_isotope_conjunction_terms(&mut items) {}
     while subtract_negated_bracket_conjunction_terms(&mut items) {}
+    while replace_negated_numeric_pair_with_residual(&mut items) {}
     if items.iter().any(is_false_bracket_tree)
         || bracket_and_contains_complement_pair(&items)
         || bracket_and_contains_mutually_exclusive_pair(&items)
@@ -1550,6 +1552,174 @@ fn remove_indices_descending<T>(items: &mut Vec<T>, indices: &[usize]) {
     for index in indices.into_iter().rev() {
         items.remove(index);
     }
+}
+
+fn replace_negated_numeric_pair_with_residual(items: &mut Vec<BracketExprTree>) -> bool {
+    for left_index in 0..items.len() {
+        let Some(left) = negated_numeric_primitive(&items[left_index]) else {
+            continue;
+        };
+        for right_index in (left_index + 1)..items.len() {
+            let Some(right) = negated_numeric_primitive(&items[right_index]) else {
+                continue;
+            };
+            let Some(replacement) = residual_for_negated_numeric_pair(left, right) else {
+                continue;
+            };
+            remove_indices_descending(items, &[left_index, right_index]);
+            items.push(replacement);
+            return true;
+        }
+    }
+
+    false
+}
+
+fn negated_numeric_primitive(tree: &BracketExprTree) -> Option<&AtomPrimitive> {
+    let BracketExprTree::Not(inner) = tree else {
+        return None;
+    };
+    let BracketExprTree::Primitive(primitive) = inner.as_ref() else {
+        return None;
+    };
+    Some(primitive)
+}
+
+fn residual_for_negated_numeric_pair(
+    left: &AtomPrimitive,
+    right: &AtomPrimitive,
+) -> Option<BracketExprTree> {
+    match (left, right) {
+        (AtomPrimitive::Degree(left), AtomPrimitive::Degree(right)) => {
+            residual_for_negated_count_pair(*left, *right, AtomPrimitive::Degree)
+        }
+        (AtomPrimitive::Connectivity(left), AtomPrimitive::Connectivity(right)) => {
+            residual_for_negated_count_pair(*left, *right, AtomPrimitive::Connectivity)
+        }
+        (AtomPrimitive::Valence(left), AtomPrimitive::Valence(right)) => {
+            residual_for_negated_count_pair(*left, *right, AtomPrimitive::Valence)
+        }
+        (AtomPrimitive::HeteroNeighbor(left), AtomPrimitive::HeteroNeighbor(right)) => {
+            residual_for_negated_count_pair(*left, *right, AtomPrimitive::HeteroNeighbor)
+        }
+        (
+            AtomPrimitive::AliphaticHeteroNeighbor(left),
+            AtomPrimitive::AliphaticHeteroNeighbor(right),
+        ) => residual_for_negated_count_pair(*left, *right, AtomPrimitive::AliphaticHeteroNeighbor),
+        (AtomPrimitive::Hydrogen(left_kind, left), AtomPrimitive::Hydrogen(right_kind, right))
+            if left_kind == right_kind =>
+        {
+            residual_for_negated_count_pair(*left, *right, |query| {
+                AtomPrimitive::Hydrogen(*left_kind, query)
+            })
+        }
+        (AtomPrimitive::RingMembership(left), AtomPrimitive::RingMembership(right)) => {
+            residual_for_negated_ring_pair(*left, *right, AtomPrimitive::RingMembership)
+        }
+        (AtomPrimitive::RingSize(left), AtomPrimitive::RingSize(right)) => {
+            residual_for_negated_ring_pair(*left, *right, AtomPrimitive::RingSize)
+        }
+        (AtomPrimitive::RingConnectivity(left), AtomPrimitive::RingConnectivity(right)) => {
+            residual_for_negated_ring_pair(*left, *right, AtomPrimitive::RingConnectivity)
+        }
+        _ => None,
+    }
+}
+
+fn residual_for_negated_count_pair(
+    left: Option<NumericQuery>,
+    right: Option<NumericQuery>,
+    build: impl Fn(Option<NumericQuery>) -> AtomPrimitive,
+) -> Option<BracketExprTree> {
+    residual_for_negated_numeric_ranges(
+        numeric_count_range(left),
+        numeric_count_range(right),
+        |range| BracketExprTree::Primitive(build(count_query_from_range(range).into_option())),
+    )
+}
+
+fn residual_for_negated_ring_pair(
+    left: Option<NumericQuery>,
+    right: Option<NumericQuery>,
+    build: impl Fn(Option<NumericQuery>) -> AtomPrimitive,
+) -> Option<BracketExprTree> {
+    residual_for_negated_numeric_ranges(
+        numeric_ring_range(left),
+        numeric_ring_range(right),
+        |range| BracketExprTree::Primitive(build(ring_query_from_range(range).into_option())),
+    )
+}
+
+fn residual_for_negated_numeric_ranges(
+    left: NumericRange,
+    right: NumericRange,
+    build: impl Fn(NumericRange) -> BracketExprTree,
+) -> Option<BracketExprTree> {
+    let retained = nonnegative_range_union_complement(left, right);
+
+    match retained.as_slice() {
+        [] => Some(false_bracket_tree()),
+        [single] => Some(build(canonical_numeric_range(*single))),
+        _ => None,
+    }
+}
+
+fn nonnegative_range_union_complement(
+    left: NumericRange,
+    right: NumericRange,
+) -> Vec<NumericRange> {
+    let left_min = left.min.unwrap_or(0);
+    let right_min = right.min.unwrap_or(0);
+    let (first, second, second_min) = if left_min <= right_min {
+        (left, right, right_min)
+    } else {
+        (right, left, left_min)
+    };
+
+    let covered = if first
+        .max
+        .is_some_and(|first_max| first_max.saturating_add(1) < second_min)
+    {
+        vec![first, second]
+    } else {
+        let max = match (first.max, second.max) {
+            (None, _) | (_, None) => None,
+            (Some(first_max), Some(second_max)) => Some(first_max.max(second_max)),
+        };
+        vec![NumericRange {
+            min: Some(first.min.unwrap_or(0)),
+            max,
+        }]
+    };
+    nonnegative_ranges_complement(&covered)
+}
+
+fn nonnegative_ranges_complement(covered: &[NumericRange]) -> Vec<NumericRange> {
+    let mut next_retained_min = Some(0u16);
+    let mut retained = Vec::new();
+
+    for range in covered {
+        let Some(start) = next_retained_min else {
+            break;
+        };
+        let range_min = range.min.unwrap_or(0);
+        if start < range_min {
+            retained.push(NumericRange {
+                min: Some(start),
+                max: Some(range_min - 1),
+            });
+        }
+        next_retained_min = range.max.and_then(|max| max.checked_add(1));
+    }
+
+    if let Some(start) = next_retained_min {
+        retained.push(NumericRange {
+            min: Some(start),
+            max: None,
+        });
+    }
+
+    retained
 }
 
 fn subtract_atom_primitive(
@@ -5320,6 +5490,13 @@ mod tests {
             ("[#6&a&!c]", "[!*]"),
             ("[#6&!C&!c]", "[!*]"),
             ("[!A&!a]", "[!*]"),
+            ("[!D{0-2};!D{3-}]", "[!*]"),
+            ("[!D{0-2}&!D{3-}]", "[!*]"),
+            ("[!R&!R0]", "[!*]"),
+            ("[!r&!r0]", "[!*]"),
+            ("[!x&!x0]", "[!*]"),
+            ("[!H&!H0]", "[H{2-}]"),
+            ("[!D{0-2}&!D{4-}]", "[D3]"),
             ("[D{1-2}&!D1&!D2]", "[!*]"),
             ("[D{2-4}&!D2&!D3&!D4]", "[!*]"),
             ("[#6&12*&!12C&!12c]", "[!*]"),
