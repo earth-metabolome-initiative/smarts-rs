@@ -47,6 +47,10 @@ harness = false
 name = "evolution_matrix"
 harness = false
 
+[[bench]]
+name = "pathological_matching"
+harness = false
+
 [workspace]
 members = ["."]
 exclude = ["fuzz"]

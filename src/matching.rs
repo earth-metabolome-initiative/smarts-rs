@@ -33,6 +33,11 @@ struct SearchContext<'a> {
     query_to_target: &'a mut [Option<usize>],
     used_target_atoms: &'a mut [u32],
     used_target_generation: u32,
+    bondless_query_order: &'a mut alloc::vec::Vec<QueryAtomId>,
+    bondless_candidate_offsets: &'a mut alloc::vec::Vec<usize>,
+    bondless_candidates: &'a mut alloc::vec::Vec<usize>,
+    bondless_target_assignments: &'a mut alloc::vec::Vec<Option<QueryAtomId>>,
+    bondless_seen_targets: &'a mut alloc::vec::Vec<bool>,
     atom_stereo_cache: &'a mut AtomStereoCache,
     recursive_cache: &'a mut RecursiveMatchCache,
 }
@@ -42,6 +47,11 @@ struct SearchScratchView<'a> {
     query_to_target: &'a mut [Option<usize>],
     used_target_atoms: &'a mut [u32],
     used_target_generation: u32,
+    bondless_query_order: &'a mut alloc::vec::Vec<QueryAtomId>,
+    bondless_candidate_offsets: &'a mut alloc::vec::Vec<usize>,
+    bondless_candidates: &'a mut alloc::vec::Vec<usize>,
+    bondless_target_assignments: &'a mut alloc::vec::Vec<Option<QueryAtomId>>,
+    bondless_seen_targets: &'a mut alloc::vec::Vec<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -49,16 +59,35 @@ struct FreshSearchBuffers {
     query_atom_anchor_widths: alloc::vec::Vec<usize>,
     query_to_target: alloc::vec::Vec<Option<usize>>,
     used_target_atoms: alloc::vec::Vec<u32>,
+    bondless_query_order: alloc::vec::Vec<QueryAtomId>,
+    bondless_candidate_offsets: alloc::vec::Vec<usize>,
+    bondless_candidates: alloc::vec::Vec<usize>,
+    bondless_target_assignments: alloc::vec::Vec<Option<QueryAtomId>>,
+    bondless_seen_targets: alloc::vec::Vec<bool>,
 }
 
 impl FreshSearchBuffers {
-    fn new(query: &CompiledQuery, target: &PreparedTarget) -> Self {
+    fn new(
+        query: &CompiledQuery,
+        target: &PreparedTarget,
+        recursive_cache: &mut RecursiveMatchCache,
+    ) -> Self {
         let mut query_atom_anchor_widths = alloc::vec::Vec::new();
-        prepare_query_atom_anchor_widths(&mut query_atom_anchor_widths, query, target);
+        prepare_query_atom_search_widths(
+            &mut query_atom_anchor_widths,
+            query,
+            target,
+            recursive_cache,
+        );
         Self {
             query_atom_anchor_widths,
             query_to_target: alloc::vec![None; query.query.atom_count()],
             used_target_atoms: alloc::vec![0; target.atom_count()],
+            bondless_query_order: alloc::vec::Vec::new(),
+            bondless_candidate_offsets: alloc::vec::Vec::new(),
+            bondless_candidates: alloc::vec::Vec::new(),
+            bondless_target_assignments: alloc::vec::Vec::new(),
+            bondless_seen_targets: alloc::vec::Vec::new(),
         }
     }
 
@@ -68,6 +97,11 @@ impl FreshSearchBuffers {
             query_to_target: &mut self.query_to_target,
             used_target_atoms: &mut self.used_target_atoms,
             used_target_generation: 1,
+            bondless_query_order: &mut self.bondless_query_order,
+            bondless_candidate_offsets: &mut self.bondless_candidate_offsets,
+            bondless_candidates: &mut self.bondless_candidates,
+            bondless_target_assignments: &mut self.bondless_target_assignments,
+            bondless_seen_targets: &mut self.bondless_seen_targets,
         }
     }
 }
@@ -109,6 +143,11 @@ impl<'a> SearchScratchView<'a> {
             query_to_target: self.query_to_target,
             used_target_atoms: self.used_target_atoms,
             used_target_generation: self.used_target_generation,
+            bondless_query_order: self.bondless_query_order,
+            bondless_candidate_offsets: self.bondless_candidate_offsets,
+            bondless_candidates: self.bondless_candidates,
+            bondless_target_assignments: self.bondless_target_assignments,
+            bondless_seen_targets: self.bondless_seen_targets,
             atom_stereo_cache,
             recursive_cache,
         }
@@ -439,6 +478,11 @@ pub struct MatchScratch {
     query_to_target: alloc::vec::Vec<Option<usize>>,
     used_target_atoms: alloc::vec::Vec<u32>,
     used_target_generation: u32,
+    bondless_query_order: alloc::vec::Vec<QueryAtomId>,
+    bondless_candidate_offsets: alloc::vec::Vec<usize>,
+    bondless_candidates: alloc::vec::Vec<usize>,
+    bondless_target_assignments: alloc::vec::Vec<Option<QueryAtomId>>,
+    bondless_seen_targets: alloc::vec::Vec<bool>,
     atom_stereo_cache: AtomStereoCache,
     recursive_cache: RecursiveMatchCache,
 }
@@ -458,19 +502,29 @@ impl MatchScratch {
             query_to_target: alloc::vec::Vec::new(),
             used_target_atoms: alloc::vec::Vec::new(),
             used_target_generation: 0,
+            bondless_query_order: alloc::vec::Vec::new(),
+            bondless_candidate_offsets: alloc::vec::Vec::new(),
+            bondless_candidates: alloc::vec::Vec::new(),
+            bondless_target_assignments: alloc::vec::Vec::new(),
+            bondless_seen_targets: alloc::vec::Vec::new(),
             atom_stereo_cache: AtomStereoCache::new(),
             recursive_cache: RecursiveMatchCache::new(0, 0),
         }
     }
 
     fn prepare(&mut self, query: &CompiledQuery, target: &PreparedTarget) {
-        self.prepare_search_buffers(query, target);
         self.prepare_caches(query, target);
+        self.prepare_search_buffers(query, target);
     }
 
     fn prepare_search_buffers(&mut self, query: &CompiledQuery, target: &PreparedTarget) {
         let query_atom_count = query.query.atom_count();
-        prepare_query_atom_anchor_widths(&mut self.query_atom_anchor_widths, query, target);
+        prepare_query_atom_search_widths(
+            &mut self.query_atom_anchor_widths,
+            query,
+            target,
+            &mut self.recursive_cache,
+        );
         self.prepare_mapping_buffers(query_atom_count, target);
     }
 
@@ -1382,6 +1436,11 @@ fn query_matches_with_scratch(
             query_to_target: &mut scratch.query_to_target,
             used_target_atoms: &mut scratch.used_target_atoms,
             used_target_generation: scratch.used_target_generation,
+            bondless_query_order: &mut scratch.bondless_query_order,
+            bondless_candidate_offsets: &mut scratch.bondless_candidate_offsets,
+            bondless_candidates: &mut scratch.bondless_candidates,
+            bondless_target_assignments: &mut scratch.bondless_target_assignments,
+            bondless_seen_targets: &mut scratch.bondless_seen_targets,
         },
         initial_mapping,
     )
@@ -1449,7 +1508,7 @@ fn query_matches_with_mapping(
         );
     }
 
-    let mut scratch = FreshSearchBuffers::new(query, target);
+    let mut scratch = FreshSearchBuffers::new(query, target, recursive_cache);
     query_matches_with_mapping_state(
         query,
         target,
@@ -1474,6 +1533,15 @@ fn query_matches_with_mapping_state(
         return false;
     };
 
+    if query.query.bond_count() == 0 {
+        if can_solve_bondless_by_assignment(query) {
+            return search_bondless_assignment(&query.query, target, &mut context, mapped_count);
+        }
+        if should_precompute_bondless_candidates(target, &context) {
+            return search_bondless_mapping(&query.query, target, &mut context, mapped_count);
+        }
+    }
+
     search_mapping(&query.query, target, &mut context, mapped_count)
 }
 
@@ -1485,7 +1553,7 @@ fn with_fresh_bound_search_context<R>(
     initial_mapping: InitialAtomMapping,
     run: impl FnOnce(&mut SearchContext<'_>, usize) -> R,
 ) -> Option<R> {
-    let mut scratch = FreshSearchBuffers::new(query, target);
+    let mut scratch = FreshSearchBuffers::new(query, target, recursive_cache);
     let mut context = scratch
         .view()
         .into_context(query, atom_stereo_cache, recursive_cache);
@@ -2948,6 +3016,312 @@ fn search_mapping(
     search_mapping_candidates(query, target, context, mapped_count, next_query_atom)
 }
 
+fn search_bondless_mapping(
+    query: &QueryMol,
+    target: &PreparedTarget,
+    context: &mut SearchContext<'_>,
+    mapped_count: usize,
+) -> bool {
+    if mapped_count == query.atom_count() {
+        return compiled_query_stereo_constraints_match(
+            context.compiled_query,
+            target,
+            context.query_to_target,
+            context.atom_stereo_cache,
+        );
+    }
+
+    if !prepare_bondless_query_candidates(query, target, context) {
+        return false;
+    }
+
+    search_bondless_mapping_candidates(query, target, context, mapped_count, 0)
+}
+
+fn search_bondless_assignment(
+    query: &QueryMol,
+    target: &PreparedTarget,
+    context: &mut SearchContext<'_>,
+    mapped_count: usize,
+) -> bool {
+    if mapped_count == query.atom_count() {
+        return true;
+    }
+    if !prepare_bondless_query_candidates(query, target, context) {
+        return false;
+    }
+
+    context.bondless_target_assignments.clear();
+    context
+        .bondless_target_assignments
+        .resize(target.atom_count(), None);
+    context.bondless_seen_targets.clear();
+    context
+        .bondless_seen_targets
+        .resize(target.atom_count(), false);
+    bondless_assignment_exists(
+        context.bondless_query_order,
+        context.bondless_candidate_offsets,
+        context.bondless_candidates,
+        context.bondless_target_assignments,
+        context.bondless_seen_targets,
+    )
+}
+
+const fn can_solve_bondless_by_assignment(query: &CompiledQuery) -> bool {
+    !query.has_component_constraints && !query.has_stereo_constraints
+}
+
+fn bondless_assignment_exists(
+    query_order: &[QueryAtomId],
+    candidate_offsets: &[usize],
+    candidates: &[usize],
+    target_assignments: &mut [Option<QueryAtomId>],
+    seen_targets: &mut [bool],
+) -> bool {
+    for &query_atom in query_order {
+        seen_targets.fill(false);
+        if !assign_bondless_query_atom(
+            query_atom,
+            candidate_offsets,
+            candidates,
+            target_assignments,
+            seen_targets,
+        ) {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn assign_bondless_query_atom(
+    query_atom: QueryAtomId,
+    candidate_offsets: &[usize],
+    candidates: &[usize],
+    target_assignments: &mut [Option<QueryAtomId>],
+    seen_targets: &mut [bool],
+) -> bool {
+    let start = candidate_offsets[query_atom];
+    let end = candidate_offsets[query_atom + 1];
+    for candidate_index in start..end {
+        let target_atom = candidates[candidate_index];
+        if seen_targets[target_atom] {
+            continue;
+        }
+        seen_targets[target_atom] = true;
+
+        let previous_query_atom = target_assignments[target_atom];
+        if previous_query_atom.is_none_or(|previous_query_atom| {
+            assign_bondless_query_atom(
+                previous_query_atom,
+                candidate_offsets,
+                candidates,
+                target_assignments,
+                seen_targets,
+            )
+        }) {
+            target_assignments[target_atom] = Some(query_atom);
+            return true;
+        }
+    }
+
+    false
+}
+
+fn should_precompute_bondless_candidates(
+    target: &PreparedTarget,
+    context: &SearchContext<'_>,
+) -> bool {
+    const MIN_TARGET_ATOMS: usize = 64;
+    const MAX_ANCHORED_FRACTION: usize = 4;
+
+    if target.atom_count() < MIN_TARGET_ATOMS {
+        return false;
+    }
+
+    (0..context.compiled_query.query.atom_count())
+        .filter(|&query_atom| context.query_to_target[query_atom].is_none())
+        .all(|query_atom| {
+            atom_matcher_anchor_candidates(
+                &context.compiled_query.atom_matchers[query_atom],
+                target,
+            )
+            .is_some_and(|candidates| {
+                candidates.len().saturating_mul(MAX_ANCHORED_FRACTION) <= target.atom_count()
+            })
+        })
+}
+
+fn prepare_bondless_query_candidates(
+    query: &QueryMol,
+    target: &PreparedTarget,
+    context: &mut SearchContext<'_>,
+) -> bool {
+    context.bondless_query_order.clear();
+    context.bondless_candidate_offsets.clear();
+    context.bondless_candidates.clear();
+    context
+        .bondless_candidate_offsets
+        .resize(query.atom_count() + 1, 0);
+
+    for query_atom in 0..query.atom_count() {
+        if context.query_to_target[query_atom].is_some() {
+            context.bondless_candidate_offsets[query_atom + 1] = context.bondless_candidates.len();
+            continue;
+        }
+
+        context.bondless_query_order.push(query_atom);
+        let start = context.bondless_candidates.len();
+        push_bondless_atom_candidates(query, target, context, query_atom);
+        if context.bondless_candidates.len() == start {
+            return false;
+        }
+        context.bondless_candidate_offsets[query_atom + 1] = context.bondless_candidates.len();
+    }
+
+    let offsets = &context.bondless_candidate_offsets;
+    let scores = context.query_atom_scores;
+    context
+        .bondless_query_order
+        .sort_unstable_by_key(|&query_atom| {
+            (
+                offsets[query_atom + 1] - offsets[query_atom],
+                core::cmp::Reverse(scores[query_atom]),
+                query_atom,
+            )
+        });
+
+    true
+}
+
+fn push_bondless_atom_candidates(
+    query: &QueryMol,
+    target: &PreparedTarget,
+    context: &mut SearchContext<'_>,
+    query_atom: QueryAtomId,
+) {
+    if let Some(target_atoms) =
+        atom_matcher_anchor_candidates(&context.compiled_query.atom_matchers[query_atom], target)
+    {
+        for target_atom in target_atoms.iter().copied() {
+            push_bondless_atom_candidate(query, target, context, query_atom, target_atom);
+        }
+        return;
+    }
+
+    for target_atom in 0..target.atom_count() {
+        push_bondless_atom_candidate(query, target, context, query_atom, target_atom);
+    }
+}
+
+fn push_bondless_atom_candidate(
+    query: &QueryMol,
+    target: &PreparedTarget,
+    context: &mut SearchContext<'_>,
+    query_atom: QueryAtomId,
+    target_atom: usize,
+) {
+    if context.target_atom_is_used(target_atom) {
+        return;
+    }
+    if context.compiled_query.has_component_constraints
+        && !component_constraints_match(
+            query_atom,
+            target_atom,
+            query,
+            target,
+            context.query_to_target,
+        )
+    {
+        return;
+    }
+    if compiled_query_atom_matches(
+        context.compiled_query,
+        target,
+        context.recursive_cache,
+        query_atom,
+        target_atom,
+    ) {
+        context.bondless_candidates.push(target_atom);
+    }
+}
+
+fn search_bondless_mapping_candidates(
+    query: &QueryMol,
+    target: &PreparedTarget,
+    context: &mut SearchContext<'_>,
+    mapped_count: usize,
+    order_index: usize,
+) -> bool {
+    if mapped_count == query.atom_count() {
+        return compiled_query_stereo_constraints_match(
+            context.compiled_query,
+            target,
+            context.query_to_target,
+            context.atom_stereo_cache,
+        );
+    }
+
+    let Some((next_order_index, query_atom)) =
+        next_unmapped_bondless_query_atom(context, order_index)
+    else {
+        return false;
+    };
+    let start = context.bondless_candidate_offsets[query_atom];
+    let end = context.bondless_candidate_offsets[query_atom + 1];
+
+    for candidate_index in start..end {
+        let target_atom = context.bondless_candidates[candidate_index];
+        if context.target_atom_is_used(target_atom) {
+            continue;
+        }
+        if context.compiled_query.has_component_constraints
+            && !component_constraints_match(
+                query_atom,
+                target_atom,
+                query,
+                target,
+                context.query_to_target,
+            )
+        {
+            continue;
+        }
+
+        context.query_to_target[query_atom] = Some(target_atom);
+        context.mark_target_atom_used(target_atom);
+        let matched = search_bondless_mapping_candidates(
+            query,
+            target,
+            context,
+            mapped_count + 1,
+            next_order_index + 1,
+        );
+        context.unmark_target_atom_used(target_atom);
+        context.query_to_target[query_atom] = None;
+        if matched {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn next_unmapped_bondless_query_atom(
+    context: &SearchContext<'_>,
+    mut order_index: usize,
+) -> Option<(usize, QueryAtomId)> {
+    while order_index < context.bondless_query_order.len() {
+        let query_atom = context.bondless_query_order[order_index];
+        if context.query_to_target[query_atom].is_none() {
+            return Some((order_index, query_atom));
+        }
+        order_index += 1;
+    }
+
+    None
+}
+
 fn search_mapping_candidates(
     query: &QueryMol,
     target: &PreparedTarget,
@@ -3386,16 +3760,81 @@ fn best_mapped_neighbor_seed(
     best.map(|(_, seed)| seed)
 }
 
-fn prepare_query_atom_anchor_widths(
+fn prepare_query_atom_search_widths(
     widths: &mut alloc::vec::Vec<usize>,
     query: &CompiledQuery,
     target: &PreparedTarget,
+    recursive_cache: &mut RecursiveMatchCache,
 ) {
     let fallback = target.atom_count();
     widths.clear();
-    widths.extend(query.atom_matchers.iter().map(|atom_matcher| {
-        atom_matcher_anchor_candidates(atom_matcher, target).map_or(fallback, <[usize]>::len)
+    widths.extend((0..query.query.atom_count()).map(|query_atom| {
+        atom_matcher_anchor_candidates(&query.atom_matchers[query_atom], target).map_or_else(
+            || {
+                if should_scan_query_atom_for_ordering(query, query_atom) {
+                    count_query_atom_target_matches(query, target, recursive_cache, query_atom)
+                } else {
+                    fallback
+                }
+            },
+            <[usize]>::len,
+        )
     }));
+}
+
+fn should_scan_query_atom_for_ordering(query: &CompiledQuery, query_atom: QueryAtomId) -> bool {
+    query.query.atom_count() > 1
+        && !query.atom_matchers[query_atom].complete
+        && atom_expr_needs_target_scan_for_ordering(&query.query.atoms()[query_atom].expr)
+}
+
+fn atom_expr_needs_target_scan_for_ordering(expr: &AtomExpr) -> bool {
+    match expr {
+        AtomExpr::Wildcard | AtomExpr::Bare { .. } => false,
+        AtomExpr::Bracket(expr) => bracket_tree_needs_target_scan_for_ordering(&expr.tree),
+    }
+}
+
+fn bracket_tree_needs_target_scan_for_ordering(tree: &BracketExprTree) -> bool {
+    match tree {
+        BracketExprTree::Primitive(AtomPrimitive::RecursiveQuery(_)) => true,
+        BracketExprTree::Primitive(_) => false,
+        BracketExprTree::Not(inner) => {
+            bracket_tree_may_filter_without_fast_anchor(inner)
+                || bracket_tree_needs_target_scan_for_ordering(inner)
+        }
+        BracketExprTree::HighAnd(items)
+        | BracketExprTree::LowAnd(items)
+        | BracketExprTree::Or(items) => items
+            .iter()
+            .any(bracket_tree_needs_target_scan_for_ordering),
+    }
+}
+
+fn bracket_tree_may_filter_without_fast_anchor(tree: &BracketExprTree) -> bool {
+    match tree {
+        BracketExprTree::Primitive(AtomPrimitive::Wildcard | AtomPrimitive::Chirality(_)) => false,
+        BracketExprTree::Primitive(_) => true,
+        BracketExprTree::Not(inner) => bracket_tree_may_filter_without_fast_anchor(inner),
+        BracketExprTree::HighAnd(items)
+        | BracketExprTree::LowAnd(items)
+        | BracketExprTree::Or(items) => items
+            .iter()
+            .any(bracket_tree_may_filter_without_fast_anchor),
+    }
+}
+
+fn count_query_atom_target_matches(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    recursive_cache: &mut RecursiveMatchCache,
+    query_atom: QueryAtomId,
+) -> usize {
+    (0..target.atom_count())
+        .filter(|&target_atom| {
+            compiled_query_atom_matches(query, target, recursive_cache, query_atom, target_atom)
+        })
+        .count()
 }
 
 fn candidate_target_atoms(
@@ -4046,6 +4485,7 @@ fn is_hidden_attached_hydrogen(target: &PreparedTarget, atom_id: usize) -> bool 
 
 #[cfg(test)]
 mod tests {
+    use alloc::format;
     use core::str::FromStr;
 
     use smiles_parser::Smiles;
@@ -4252,13 +4692,60 @@ mod tests {
     }
 
     #[test]
+    fn bondless_boolean_fast_path_matches_counting_reference() {
+        let cases = [
+            ("C.C", "CC"),
+            ("C.C", "C"),
+            ("(C.C)", "CC"),
+            ("(C.C)", "C.C"),
+            ("(C).(C)", "CC"),
+            ("(C).(C)", "C.C"),
+            ("[$([#6,#7])].[R]", "c1ccccc1"),
+            (
+                "[!!12C,16O,D,D11,h,v14].([!r6&$([#6,#7]):57773].[R:30837])",
+                "c1ccccc1",
+            ),
+        ];
+        let mut scratch = MatchScratch::new();
+
+        for (smarts, smiles) in cases {
+            let query = QueryMol::from_str(smarts).unwrap();
+            let target = PreparedTarget::new(Smiles::from_str(smiles).unwrap());
+            let compiled = CompiledQuery::new(query).unwrap();
+            let expected = compiled.match_count(&target) > 0;
+
+            assert_eq!(
+                compiled.matches(&target),
+                expected,
+                "compiled boolean mismatch for {smarts} against {smiles}"
+            );
+            assert_eq!(
+                compiled.matches_with_scratch(&target, &mut scratch),
+                expected,
+                "scratch boolean mismatch for {smarts} against {smiles}"
+            );
+        }
+
+        let long_anchored_target = format!("{}.Cl.[Na]", "C".repeat(64));
+        let query = QueryMol::from_str("[Cl].[Na]").unwrap();
+        let target = PreparedTarget::new(Smiles::from_str(&long_anchored_target).unwrap());
+        let compiled = CompiledQuery::new(query).unwrap();
+        let expected = compiled.match_count(&target) > 0;
+        assert_eq!(compiled.matches(&target), expected);
+        assert_eq!(
+            compiled.matches_with_scratch(&target, &mut scratch),
+            expected
+        );
+    }
+
+    #[test]
     fn target_aware_root_selection_prefers_more_selective_unanchored_component() {
         let compiled = CompiledQuery::new(QueryMol::from_str("C.[Cl-].[Na+]").unwrap()).unwrap();
         let target = PreparedTarget::new(Smiles::from_str("CC.[Cl-].[Na+]").unwrap());
-        let mut scratch = FreshSearchBuffers::new(&compiled, &target);
         let mut atom_stereo_cache = AtomStereoCache::new();
         let mut recursive_cache =
             RecursiveMatchCache::new(compiled.recursive_cache_slots, target.atom_count());
+        let mut scratch = FreshSearchBuffers::new(&compiled, &target, &mut recursive_cache);
         let context =
             scratch
                 .view()
@@ -4273,6 +4760,24 @@ mod tests {
             0
         );
         assert_eq!(select_next_query_atom_for_target(&context), 1);
+    }
+
+    #[test]
+    fn target_aware_root_selection_scans_unanchored_recursive_misses() {
+        let compiled = CompiledQuery::new(QueryMol::from_str("C.[!$([!#1])]").unwrap()).unwrap();
+        let target = PreparedTarget::new(Smiles::from_str("CCCC").unwrap());
+        let mut atom_stereo_cache = AtomStereoCache::new();
+        let mut recursive_cache =
+            RecursiveMatchCache::new(compiled.recursive_cache_slots, target.atom_count());
+        let mut scratch = FreshSearchBuffers::new(&compiled, &target, &mut recursive_cache);
+        let context =
+            scratch
+                .view()
+                .into_context(&compiled, &mut atom_stereo_cache, &mut recursive_cache);
+
+        assert_eq!(context.query_atom_anchor_widths[1], 0);
+        assert_eq!(select_next_query_atom_for_target(&context), 1);
+        assert!(!compiled.matches(&target));
     }
 
     #[test]
