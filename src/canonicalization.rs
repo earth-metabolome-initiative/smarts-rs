@@ -1537,14 +1537,17 @@ fn bond_expr_contains_direction(expr: &BondExpr) -> bool {
 #[cfg(test)]
 mod tests {
     use alloc::{
+        boxed::Box,
         string::{String, ToString},
         vec,
         vec::Vec,
     };
     use core::str::FromStr;
 
+    use smiles_parser::bond::Bond;
+
     use super::QueryCanonicalLabeling;
-    use crate::{QueryAtom, QueryBond, QueryMol};
+    use crate::{BondExpr, BondExprTree, BondPrimitive, QueryAtom, QueryBond, QueryMol};
 
     fn canonical_string(source: &str) -> String {
         QueryMol::from_str(source)
@@ -1801,6 +1804,27 @@ mod tests {
         assert_eq!(canonical_string("[$((CO))]"), "[$(CO)]");
         assert_all_atom_permutations_converge("[$(CO)]N");
         assert_all_atom_permutations_converge("C[$([O,N])]");
+    }
+
+    #[test]
+    fn canonicalize_runs_expression_simplifications_through_recursion_and_bonds() {
+        assert_eq!(canonical_string("[!!#6]"), "[#6]");
+        assert_eq!(canonical_string("[!!-2]"), "[-2]");
+        assert_eq!(canonical_string("[$([!!#6;*])]"), "[$([#6])]");
+
+        let query = QueryMol::from_str("C-N").unwrap();
+        let mut bonds = query.bonds().to_vec();
+        bonds[0].expr = BondExpr::Query(BondExprTree::Not(Box::new(BondExprTree::Not(Box::new(
+            BondExprTree::Primitive(BondPrimitive::Bond(Bond::Single)),
+        )))));
+        let query = QueryMol::from_parts(
+            query.atoms().to_vec(),
+            bonds,
+            query.component_count(),
+            query.component_groups().to_vec(),
+        );
+
+        assert_eq!(query.canonicalize().to_string(), "C-N");
     }
 
     #[test]

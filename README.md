@@ -21,11 +21,13 @@ use smiles_parser::Smiles;
 let query = QueryMol::from_str("[#6]-[#8]").unwrap();
 assert_eq!(query.atom_count(), 2);
 assert_eq!(query.bond_count(), 1);
+assert!(query.complexity() > 0);
 
 assert!(query.matches("CCO").unwrap());
 assert!(!query.matches("CCCC").unwrap());
 
 let compiled = CompiledQuery::new(query).unwrap();
+assert_eq!(compiled.complexity(), compiled.query().complexity());
 let ethanol = PreparedTarget::new(Smiles::from_str("CCO").unwrap());
 assert!(compiled.matches(&ethanol));
 ```

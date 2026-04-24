@@ -426,6 +426,348 @@ impl QueryMol {
             self.component_groups.clone(),
         )
     }
+
+    /// Returns a target-independent estimate of exact matching cost.
+    ///
+    /// Larger values indicate SMARTS that are expected to require more matcher
+    /// work: broad atom predicates, disconnected singleton components,
+    /// negation, disjunction, recursive SMARTS, wildcard bonds, cycles, and
+    /// branched query topology all increase the score. The value is a heuristic
+    /// for scheduling or penalizing generated SMARTS, not a semantic property
+    /// and not a replacement for benchmarking against a concrete target corpus.
+    #[inline]
+    #[must_use]
+    pub fn complexity(&self) -> usize {
+        query_complexity(self)
+    }
+}
+
+fn query_complexity(query: &QueryMol) -> usize {
+    let atom_score = query.atoms.iter().fold(0usize, |score, atom| {
+        score.saturating_add(atom_expr_complexity(&atom.expr))
+    });
+    let bond_score = query.bonds.iter().fold(0usize, |score, bond| {
+        score.saturating_add(bond_expr_complexity(&bond.expr))
+    });
+
+    1usize
+        .saturating_add(query.atom_count().saturating_mul(4))
+        .saturating_add(query.bond_count().saturating_mul(8))
+        .saturating_add(atom_score)
+        .saturating_add(bond_score)
+        .saturating_add(query_topology_complexity(query))
+}
+
+fn query_topology_complexity(query: &QueryMol) -> usize {
+    let mut score = 0usize;
+
+    if query.component_count > 1 {
+        score = score.saturating_add(square(query.component_count - 1).saturating_mul(12));
+    }
+    if query.bond_count() == 0 && query.atom_count() > 1 {
+        score = score.saturating_add(square(query.atom_count()).saturating_mul(16));
+    }
+
+    let grouped_components = query
+        .component_groups
+        .iter()
+        .filter(|group| group.is_some())
+        .count();
+    score = score
+        .saturating_add(grouped_components.saturating_mul(8))
+        .saturating_add(component_group_complexity(query));
+
+    let cycle_rank = query
+        .bond_count()
+        .saturating_add(query.component_count)
+        .saturating_sub(query.atom_count());
+    score = score.saturating_add(
+        cycle_rank
+            .saturating_mul(16)
+            .saturating_add(square(cycle_rank).saturating_mul(16)),
+    );
+
+    query
+        .atoms
+        .iter()
+        .fold(score, |score, atom| {
+            let degree = query.degree(atom.id);
+            let atom_score = match degree {
+                0 if query.atom_count() > 1 => 10,
+                0 | 1 => 0,
+                2 => 2,
+                degree => square(degree - 2).saturating_mul(10),
+            };
+            score.saturating_add(atom_score)
+        })
+        .saturating_add(disconnected_singleton_complexity(query))
+        .saturating_add(component_interaction_complexity(query))
+}
+
+const fn square(value: usize) -> usize {
+    value.saturating_mul(value)
+}
+
+fn disconnected_singleton_complexity(query: &QueryMol) -> usize {
+    if query.component_count <= 1 {
+        return 0;
+    }
+
+    let mut singleton_count = 0usize;
+    let mut singleton_expr_score = 0usize;
+    for component_id in 0..query.component_count {
+        let atoms = query.component_atoms(component_id);
+        if atoms.len() != 1 || !query.component_bonds(component_id).is_empty() {
+            continue;
+        }
+
+        singleton_count = singleton_count.saturating_add(1);
+        let atom_id = atoms[0];
+        singleton_expr_score =
+            singleton_expr_score.saturating_add(atom_expr_complexity(&query.atoms[atom_id].expr));
+    }
+
+    if singleton_count < 2 {
+        return 0;
+    }
+
+    let base = square(singleton_count).saturating_mul(24).saturating_add(
+        singleton_expr_score
+            .saturating_mul(singleton_count)
+            .saturating_mul(2),
+    );
+    if query.bond_count() == 0 {
+        base.saturating_mul(2)
+    } else {
+        base
+    }
+}
+
+fn component_interaction_complexity(query: &QueryMol) -> usize {
+    if query.component_count <= 2 || query.component_groups.iter().any(Option::is_some) {
+        return 0;
+    }
+
+    let component_scores = (0..query.component_count)
+        .map(|component_id| component_search_space_score(query, component_id))
+        .collect::<Vec<_>>();
+    let mut score = 0usize;
+    for left in 0..component_scores.len() {
+        for right in left + 1..component_scores.len() {
+            score = score
+                .saturating_add(component_scores[left].saturating_mul(component_scores[right]) / 7);
+        }
+    }
+
+    score
+}
+
+fn component_search_space_score(query: &QueryMol, component_id: ComponentId) -> usize {
+    let atoms = query.component_atoms(component_id);
+    let bonds = query.component_bonds(component_id);
+    let mut broad_atoms = 0usize;
+    let atom_score = atoms.iter().fold(0usize, |score, &atom_id| {
+        let atom_complexity = atom_expr_complexity(&query.atoms[atom_id].expr);
+        if atom_complexity >= 8 {
+            broad_atoms = broad_atoms.saturating_add(1);
+        }
+        score.saturating_add(atom_complexity)
+    });
+    let mut broad_bonds = 0usize;
+    let bond_score = bonds.iter().fold(0usize, |score, &bond_id| {
+        let bond_complexity = bond_expr_complexity(&query.bonds[bond_id].expr);
+        if bond_complexity >= 12 {
+            broad_bonds = broad_bonds.saturating_add(1);
+        }
+        score.saturating_add(bond_complexity)
+    });
+
+    let mut score = atom_score
+        .saturating_add(bond_score)
+        .saturating_add(atoms.len().saturating_mul(2))
+        .saturating_add(bonds.len().saturating_mul(3));
+
+    if atoms.len() == 1 && bonds.is_empty() && broad_atoms == 1 {
+        score = score
+            .saturating_add(64)
+            .saturating_add(atom_score.saturating_mul(3));
+    }
+    score
+        .saturating_add(square(broad_atoms).saturating_mul(16))
+        .saturating_add(square(broad_bonds).saturating_mul(12))
+        .max(1)
+}
+
+fn component_group_complexity(query: &QueryMol) -> usize {
+    let mut score = 0usize;
+    for component_id in 0..query.component_count {
+        let Some(group_id) = query.component_group(component_id) else {
+            continue;
+        };
+        if query
+            .component_groups
+            .iter()
+            .take(component_id)
+            .any(|group| *group == Some(group_id))
+        {
+            continue;
+        }
+
+        let mut group_size = 0usize;
+        let mut singleton_count = 0usize;
+        let mut group_expr_score = 0usize;
+        let mut singleton_expr_score = 0usize;
+        for grouped_component_id in 0..query.component_count {
+            if query.component_group(grouped_component_id) != Some(group_id) {
+                continue;
+            }
+
+            group_size = group_size.saturating_add(1);
+            let atoms = query.component_atoms(grouped_component_id);
+            for &atom_id in atoms {
+                group_expr_score = group_expr_score
+                    .saturating_add(atom_expr_complexity(&query.atoms[atom_id].expr));
+            }
+            if atoms.len() == 1 && query.component_bonds(grouped_component_id).is_empty() {
+                singleton_count = singleton_count.saturating_add(1);
+                singleton_expr_score = singleton_expr_score
+                    .saturating_add(atom_expr_complexity(&query.atoms[atoms[0]].expr));
+            }
+        }
+
+        if group_size > 1 {
+            score = score
+                .saturating_add(square(group_size).saturating_mul(64))
+                .saturating_add(group_expr_score.saturating_mul(group_size));
+        }
+        if singleton_count > 0 {
+            score = score
+                .saturating_add(square(singleton_count).saturating_mul(128))
+                .saturating_add(singleton_expr_score.saturating_mul(4));
+        }
+    }
+
+    score
+}
+
+fn atom_expr_complexity(expr: &AtomExpr) -> usize {
+    match expr {
+        AtomExpr::Wildcard => 16,
+        AtomExpr::Bare { aromatic, .. } => {
+            if *aromatic {
+                3
+            } else {
+                2
+            }
+        }
+        AtomExpr::Bracket(expr) => {
+            bracket_tree_complexity(&expr.tree).saturating_add(usize::from(expr.atom_map.is_some()))
+        }
+    }
+}
+
+fn bracket_tree_complexity(tree: &BracketExprTree) -> usize {
+    match tree {
+        BracketExprTree::Primitive(primitive) => atom_primitive_complexity(primitive),
+        BracketExprTree::Not(inner) => match inner.as_ref() {
+            BracketExprTree::Not(grandchild) => bracket_tree_complexity(grandchild),
+            _ => 12usize.saturating_add(bracket_tree_complexity(inner).saturating_mul(2)),
+        },
+        BracketExprTree::HighAnd(items) | BracketExprTree::LowAnd(items) => {
+            items.iter().fold(items.len(), |score, item| {
+                score.saturating_add(bracket_tree_complexity(item))
+            })
+        }
+        BracketExprTree::Or(items) => items.iter().fold(
+            8usize.saturating_add(square(items.len()).saturating_mul(4)),
+            |score, item| score.saturating_add(bracket_tree_complexity(item)),
+        ),
+    }
+}
+
+fn atom_primitive_complexity(primitive: &AtomPrimitive) -> usize {
+    match primitive {
+        AtomPrimitive::Wildcard => 16,
+        AtomPrimitive::AliphaticAny
+        | AtomPrimitive::AromaticAny
+        | AtomPrimitive::IsotopeWildcard(_)
+        | AtomPrimitive::Chirality(_) => 10,
+        AtomPrimitive::Symbol { aromatic, .. } => {
+            if *aromatic {
+                3
+            } else {
+                2
+            }
+        }
+        AtomPrimitive::Isotope { .. } | AtomPrimitive::Charge(_) => 4,
+        AtomPrimitive::AtomicNumber(_) => 3,
+        AtomPrimitive::Degree(query)
+        | AtomPrimitive::Connectivity(query)
+        | AtomPrimitive::Valence(query)
+        | AtomPrimitive::Hydrogen(_, query)
+        | AtomPrimitive::RingMembership(query)
+        | AtomPrimitive::RingSize(query)
+        | AtomPrimitive::RingConnectivity(query)
+        | AtomPrimitive::HeteroNeighbor(query)
+        | AtomPrimitive::AliphaticHeteroNeighbor(query) => {
+            6usize.saturating_add(optional_numeric_query_complexity(*query))
+        }
+        AtomPrimitive::Hybridization(query) => {
+            6usize.saturating_add(numeric_query_complexity(*query))
+        }
+        AtomPrimitive::RecursiveQuery(query) => {
+            32usize.saturating_add(query.complexity().saturating_mul(3))
+        }
+    }
+}
+
+fn optional_numeric_query_complexity(query: Option<NumericQuery>) -> usize {
+    query.map_or(2, numeric_query_complexity)
+}
+
+const fn numeric_query_complexity(query: NumericQuery) -> usize {
+    match query {
+        NumericQuery::Exact(_) => 2,
+        NumericQuery::Range(range) => 8usize
+            .saturating_add(if range.min.is_none() { 4 } else { 0 })
+            .saturating_add(if range.max.is_none() { 4 } else { 0 }),
+    }
+}
+
+fn bond_expr_complexity(expr: &BondExpr) -> usize {
+    match expr {
+        BondExpr::Elided => 1,
+        BondExpr::Query(tree) => bond_tree_complexity(tree),
+    }
+}
+
+fn bond_tree_complexity(tree: &BondExprTree) -> usize {
+    match tree {
+        BondExprTree::Primitive(primitive) => bond_primitive_complexity(*primitive),
+        BondExprTree::Not(inner) => match inner.as_ref() {
+            BondExprTree::Not(grandchild) => bond_tree_complexity(grandchild),
+            _ => 12usize.saturating_add(bond_tree_complexity(inner).saturating_mul(2)),
+        },
+        BondExprTree::HighAnd(items) | BondExprTree::LowAnd(items) => {
+            items.iter().fold(items.len(), |score, item| {
+                score.saturating_add(bond_tree_complexity(item))
+            })
+        }
+        BondExprTree::Or(items) => items.iter().fold(
+            6usize.saturating_add(square(items.len()).saturating_mul(3)),
+            |score, item| score.saturating_add(bond_tree_complexity(item)),
+        ),
+    }
+}
+
+const fn bond_primitive_complexity(primitive: BondPrimitive) -> usize {
+    match primitive {
+        BondPrimitive::Any => 14,
+        BondPrimitive::Ring => 8,
+        BondPrimitive::Bond(Bond::Up | Bond::Down) => 4,
+        BondPrimitive::Bond(Bond::Single | Bond::Double | Bond::Triple | Bond::Aromatic) => 2,
+        BondPrimitive::Bond(Bond::Quadruple) => 3,
+    }
 }
 
 impl fmt::Display for QueryMol {

@@ -704,6 +704,15 @@ impl CompiledQuery {
         &self.query
     }
 
+    /// Returns the target-independent matching-cost estimate for this query.
+    ///
+    /// This delegates to [`QueryMol::complexity`].
+    #[inline]
+    #[must_use]
+    pub fn complexity(&self) -> usize {
+        self.query.complexity()
+    }
+
     /// Match this compiled SMARTS query against a prepared target.
     #[inline]
     #[must_use]
