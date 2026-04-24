@@ -6,6 +6,7 @@ use alloc::{
     vec::Vec,
 };
 
+use elements_rs::{AtomicNumber, ElementVariant, Isotope, MassNumber};
 use geometric_traits::{
     impls::SortedVec,
     naive_structs::{UndiEdgesBuilder, UndiGraph},
@@ -18,7 +19,8 @@ use crate::{
     edit::normalize_bond_tree,
     query::{
         AtomExpr, AtomId, AtomPrimitive, BondExpr, BondExprTree, BondPrimitive, BracketExpr,
-        BracketExprTree, ComponentId, HydrogenKind, QueryAtom, QueryBond, QueryMol,
+        BracketExprTree, ComponentId, HydrogenKind, NumericQuery, NumericRange, QueryAtom,
+        QueryBond, QueryMol,
     },
 };
 
@@ -489,7 +491,7 @@ fn bracket_tree_has_single_hydrogen(tree: &BracketExprTree) -> bool {
     match tree {
         BracketExprTree::Primitive(AtomPrimitive::Hydrogen(
             _,
-            None | Some(crate::query::NumericQuery::Exact(1)),
+            None | Some(NumericQuery::Exact(1)),
         )) => true,
         BracketExprTree::Primitive(_) => false,
         BracketExprTree::Not(inner) => bracket_tree_has_single_hydrogen(inner),
@@ -714,7 +716,7 @@ fn canonical_bracket_expr(expr: &BracketExpr) -> BracketExpr {
         .normalize()
         .unwrap_or_else(|_| unreachable!("parsed SMARTS expressions are never empty"));
     let mut tree = canonical_bracket_tree(normalized.tree);
-    tree = simplify_redundant_wildcards(tree);
+    tree = simplify_bracket_tree(tree);
     let mut bracket = BracketExpr {
         tree,
         atom_map: normalized.atom_map,
@@ -723,7 +725,7 @@ fn canonical_bracket_expr(expr: &BracketExpr) -> BracketExpr {
         .normalize()
         .unwrap_or_else(|_| unreachable!("parsed SMARTS expressions are never empty"));
     let mut tree = canonical_bracket_tree(bracket.tree);
-    tree = simplify_redundant_wildcards(tree);
+    tree = simplify_bracket_tree(tree);
     let mut bracket = BracketExpr {
         tree,
         atom_map: bracket.atom_map,
@@ -751,6 +753,7 @@ fn canonical_bracket_tree(tree: BracketExprTree) -> BracketExprTree {
                 .map(canonical_bracket_tree)
                 .collect::<Vec<_>>();
             items.sort_by_cached_key(BracketExprTree::to_string);
+            items.dedup();
             BracketExprTree::HighAnd(items)
         }
         BracketExprTree::Or(items) => {
@@ -759,6 +762,7 @@ fn canonical_bracket_tree(tree: BracketExprTree) -> BracketExprTree {
                 .map(canonical_bracket_tree)
                 .collect::<Vec<_>>();
             items.sort_by_cached_key(BracketExprTree::to_string);
+            items.dedup();
             BracketExprTree::Or(items)
         }
         BracketExprTree::LowAnd(items) => {
@@ -767,6 +771,7 @@ fn canonical_bracket_tree(tree: BracketExprTree) -> BracketExprTree {
                 .map(canonical_bracket_tree)
                 .collect::<Vec<_>>();
             items.sort_by_cached_key(BracketExprTree::to_string);
+            items.dedup();
             BracketExprTree::LowAnd(items)
         }
     }
@@ -778,6 +783,32 @@ fn canonical_atom_primitive(primitive: AtomPrimitive) -> AtomPrimitive {
             element: elements_rs::Element::H,
             aromatic: false,
         } => AtomPrimitive::AtomicNumber(1),
+        AtomPrimitive::Degree(query) => AtomPrimitive::Degree(canonical_count_query(query)),
+        AtomPrimitive::Connectivity(query) => {
+            AtomPrimitive::Connectivity(canonical_count_query(query))
+        }
+        AtomPrimitive::Valence(query) => AtomPrimitive::Valence(canonical_count_query(query)),
+        AtomPrimitive::Hydrogen(kind, query) => {
+            AtomPrimitive::Hydrogen(kind, canonical_count_query(query))
+        }
+        AtomPrimitive::RingMembership(query) => {
+            AtomPrimitive::RingMembership(query.map(canonical_numeric_query))
+        }
+        AtomPrimitive::RingSize(query) => {
+            AtomPrimitive::RingSize(query.map(canonical_numeric_query))
+        }
+        AtomPrimitive::RingConnectivity(query) => {
+            AtomPrimitive::RingConnectivity(query.map(canonical_numeric_query))
+        }
+        AtomPrimitive::Hybridization(query) => {
+            AtomPrimitive::Hybridization(canonical_numeric_query(query))
+        }
+        AtomPrimitive::HeteroNeighbor(query) => {
+            AtomPrimitive::HeteroNeighbor(canonical_count_query(query))
+        }
+        AtomPrimitive::AliphaticHeteroNeighbor(query) => {
+            AtomPrimitive::AliphaticHeteroNeighbor(canonical_count_query(query))
+        }
         AtomPrimitive::RecursiveQuery(query) => {
             AtomPrimitive::RecursiveQuery(Box::new(query.canonicalize()))
         }
@@ -785,59 +816,1009 @@ fn canonical_atom_primitive(primitive: AtomPrimitive) -> AtomPrimitive {
     }
 }
 
-fn simplify_redundant_wildcards(tree: BracketExprTree) -> BracketExprTree {
+fn canonical_count_query(query: Option<NumericQuery>) -> Option<NumericQuery> {
+    match query.map(canonical_numeric_query) {
+        Some(NumericQuery::Exact(1)) => None,
+        other => other,
+    }
+}
+
+fn canonical_numeric_query(query: NumericQuery) -> NumericQuery {
+    match query {
+        NumericQuery::Range(range) => {
+            let range = canonical_numeric_range(range);
+            let lower = range.min.unwrap_or(0);
+            if range.max == Some(lower) {
+                NumericQuery::Exact(lower)
+            } else {
+                NumericQuery::Range(range)
+            }
+        }
+        NumericQuery::Exact(value) => NumericQuery::Exact(value),
+    }
+}
+
+fn canonical_numeric_range(mut range: NumericRange) -> NumericRange {
+    if range.min == Some(0) {
+        range.min = None;
+    }
+    range
+}
+
+fn simplify_bracket_tree(tree: BracketExprTree) -> BracketExprTree {
     match tree {
         BracketExprTree::Primitive(primitive) => BracketExprTree::Primitive(primitive),
-        BracketExprTree::Not(inner) => {
-            BracketExprTree::Not(Box::new(simplify_redundant_wildcards(*inner)))
+        BracketExprTree::Not(inner) => simplify_bracket_not(simplify_bracket_tree(*inner)),
+        BracketExprTree::HighAnd(items) => simplify_bracket_and(items, BracketAndKind::High),
+        BracketExprTree::LowAnd(items) => simplify_bracket_and(items, BracketAndKind::Low),
+        BracketExprTree::Or(items) => simplify_bracket_or(items),
+    }
+}
+
+fn simplify_bracket_not(inner: BracketExprTree) -> BracketExprTree {
+    if is_false_bracket_tree(&inner) {
+        BracketExprTree::Primitive(AtomPrimitive::Wildcard)
+    } else {
+        BracketExprTree::Not(Box::new(inner))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BracketAndKind {
+    High,
+    Low,
+}
+
+fn simplify_bracket_and(items: Vec<BracketExprTree>, kind: BracketAndKind) -> BracketExprTree {
+    let mut items = items
+        .into_iter()
+        .map(simplify_bracket_tree)
+        .collect::<Vec<_>>();
+    if items.iter().any(is_false_bracket_tree)
+        || bracket_and_contains_complement_pair(&items)
+        || bracket_and_contains_mutually_exclusive_pair(&items)
+    {
+        return false_bracket_tree();
+    }
+    if items.len() > 1 {
+        items.retain(|item| !matches!(item, BracketExprTree::Primitive(AtomPrimitive::Wildcard)));
+    }
+    merge_numeric_bracket_conjunctions(&mut items);
+    synthesize_symbol_conjunctions(&mut items);
+    synthesize_isotope_conjunctions(&mut items);
+    remove_implied_bracket_conjunction_terms(&mut items);
+    items.sort_by_cached_key(BracketExprTree::to_string);
+    items.dedup();
+
+    match items.as_slice() {
+        [] => BracketExprTree::Primitive(AtomPrimitive::Wildcard),
+        [single] => single.clone(),
+        _ if kind == BracketAndKind::Low && !can_render_bracket_and_as_high_and(&items) => {
+            BracketExprTree::LowAnd(items)
         }
-        BracketExprTree::HighAnd(items) => {
-            let mut items = items
-                .into_iter()
-                .map(simplify_redundant_wildcards)
-                .collect::<Vec<_>>();
-            if items.len() > 1 {
-                items.retain(|item| {
-                    !matches!(item, BracketExprTree::Primitive(AtomPrimitive::Wildcard))
-                });
-            }
-            match items.as_slice() {
-                [] => BracketExprTree::Primitive(AtomPrimitive::Wildcard),
-                [single] => single.clone(),
-                _ => BracketExprTree::HighAnd(items),
-            }
+        _ => BracketExprTree::HighAnd(items),
+    }
+}
+
+fn false_bracket_tree() -> BracketExprTree {
+    BracketExprTree::Not(Box::new(BracketExprTree::Primitive(
+        AtomPrimitive::Wildcard,
+    )))
+}
+
+fn is_false_bracket_tree(tree: &BracketExprTree) -> bool {
+    matches!(
+        tree,
+        BracketExprTree::Not(inner)
+            if matches!(inner.as_ref(), BracketExprTree::Primitive(AtomPrimitive::Wildcard))
+    )
+}
+
+fn synthesize_symbol_conjunctions(items: &mut Vec<BracketExprTree>) {
+    while let Some((atomic_number_index, any_index, element, aromatic)) =
+        find_symbol_conjunction_pair(items)
+    {
+        if atomic_number_index > any_index {
+            items.remove(atomic_number_index);
+            items.remove(any_index);
+        } else {
+            items.remove(any_index);
+            items.remove(atomic_number_index);
         }
-        BracketExprTree::LowAnd(items) => {
-            let mut items = items
-                .into_iter()
-                .map(simplify_redundant_wildcards)
-                .collect::<Vec<_>>();
-            if items.len() > 1 {
-                items.retain(|item| {
-                    !matches!(item, BracketExprTree::Primitive(AtomPrimitive::Wildcard))
-                });
+        items.push(BracketExprTree::Primitive(AtomPrimitive::Symbol {
+            element,
+            aromatic,
+        }));
+    }
+}
+
+fn find_symbol_conjunction_pair(
+    items: &[BracketExprTree],
+) -> Option<(usize, usize, elements_rs::Element, bool)> {
+    for (atomic_number_index, item) in items.iter().enumerate() {
+        let BracketExprTree::Primitive(AtomPrimitive::AtomicNumber(atomic_number)) = item else {
+            continue;
+        };
+        for (any_index, any_item) in items.iter().enumerate() {
+            if any_index == atomic_number_index {
+                continue;
             }
-            match items.as_slice() {
-                [] => BracketExprTree::Primitive(AtomPrimitive::Wildcard),
-                [single] => single.clone(),
-                _ => BracketExprTree::LowAnd(items),
-            }
+            let aromatic = match any_item {
+                BracketExprTree::Primitive(AtomPrimitive::AliphaticAny) => false,
+                BracketExprTree::Primitive(AtomPrimitive::AromaticAny) => true,
+                _ => continue,
+            };
+            let Some(element) = element_for_symbol_conjunction(*atomic_number, aromatic) else {
+                continue;
+            };
+            return Some((atomic_number_index, any_index, element, aromatic));
         }
-        BracketExprTree::Or(items) => {
-            let items = items
-                .into_iter()
-                .map(simplify_redundant_wildcards)
-                .collect::<Vec<_>>();
-            if items
-                .iter()
-                .any(|item| matches!(item, BracketExprTree::Primitive(AtomPrimitive::Wildcard)))
-            {
-                BracketExprTree::Primitive(AtomPrimitive::Wildcard)
-            } else {
-                BracketExprTree::Or(items)
+    }
+    None
+}
+
+fn synthesize_isotope_conjunctions(items: &mut Vec<BracketExprTree>) {
+    while let Some((isotope_wildcard_index, symbol_index, isotope, aromatic)) =
+        find_isotope_conjunction_pair(items)
+    {
+        if isotope_wildcard_index > symbol_index {
+            items.remove(isotope_wildcard_index);
+            items.remove(symbol_index);
+        } else {
+            items.remove(symbol_index);
+            items.remove(isotope_wildcard_index);
+        }
+        items.push(BracketExprTree::Primitive(AtomPrimitive::Isotope {
+            isotope,
+            aromatic,
+        }));
+    }
+}
+
+fn find_isotope_conjunction_pair(
+    items: &[BracketExprTree],
+) -> Option<(usize, usize, Isotope, bool)> {
+    for (isotope_wildcard_index, item) in items.iter().enumerate() {
+        let BracketExprTree::Primitive(AtomPrimitive::IsotopeWildcard(mass_number)) = item else {
+            continue;
+        };
+        if *mass_number == 0 {
+            continue;
+        }
+        for (symbol_index, symbol_item) in items.iter().enumerate() {
+            if symbol_index == isotope_wildcard_index {
+                continue;
+            }
+            let BracketExprTree::Primitive(AtomPrimitive::Symbol { element, aromatic }) =
+                symbol_item
+            else {
+                continue;
+            };
+            let Ok(isotope) = Isotope::try_from((*element, *mass_number)) else {
+                continue;
+            };
+            return Some((isotope_wildcard_index, symbol_index, isotope, *aromatic));
+        }
+    }
+    None
+}
+
+fn element_for_symbol_conjunction(
+    atomic_number: u16,
+    aromatic: bool,
+) -> Option<elements_rs::Element> {
+    let element = elements_rs::Element::try_from(u8::try_from(atomic_number).ok()?).ok()?;
+    if aromatic && !element_supports_aromatic_bracket_symbol(element) {
+        return None;
+    }
+    Some(element)
+}
+
+const fn element_supports_aromatic_bracket_symbol(element: elements_rs::Element) -> bool {
+    matches!(
+        element,
+        elements_rs::Element::B
+            | elements_rs::Element::C
+            | elements_rs::Element::N
+            | elements_rs::Element::O
+            | elements_rs::Element::P
+            | elements_rs::Element::S
+            | elements_rs::Element::As
+            | elements_rs::Element::Se
+    )
+}
+
+fn remove_implied_bracket_conjunction_terms(items: &mut Vec<BracketExprTree>) {
+    let mut index = 0usize;
+    while index < items.len() {
+        let is_implied = items.iter().enumerate().any(|(other_index, other)| {
+            other_index != index && bracket_tree_implies(other, &items[index])
+        });
+        if is_implied {
+            items.remove(index);
+        } else {
+            index += 1;
+        }
+    }
+}
+
+fn bracket_tree_implies(specific: &BracketExprTree, general: &BracketExprTree) -> bool {
+    match (specific, general) {
+        (specific, general) if specific == general => true,
+        (BracketExprTree::Not(specific), BracketExprTree::Not(general)) => {
+            bracket_tree_implies(general, specific)
+        }
+        (_, BracketExprTree::Not(excluded)) => {
+            bracket_trees_are_mutually_exclusive(specific, excluded)
+        }
+        (BracketExprTree::HighAnd(items) | BracketExprTree::LowAnd(items), _) => {
+            items.iter().any(|item| bracket_tree_implies(item, general))
+        }
+        (_, BracketExprTree::HighAnd(items) | BracketExprTree::LowAnd(items)) => items
+            .iter()
+            .all(|item| bracket_tree_implies(specific, item)),
+        (
+            BracketExprTree::Primitive(AtomPrimitive::Symbol { element, .. }),
+            BracketExprTree::Primitive(AtomPrimitive::AtomicNumber(atomic_number)),
+        ) => u16::from(element.atomic_number()) == *atomic_number,
+        (
+            BracketExprTree::Primitive(AtomPrimitive::Symbol {
+                aromatic: false, ..
+            }),
+            BracketExprTree::Primitive(AtomPrimitive::AliphaticAny),
+        )
+        | (
+            BracketExprTree::Primitive(AtomPrimitive::Symbol { aromatic: true, .. }),
+            BracketExprTree::Primitive(AtomPrimitive::AromaticAny),
+        ) => true,
+        (BracketExprTree::Primitive(specific), BracketExprTree::Primitive(general)) => {
+            atom_primitive_implies(specific, general)
+        }
+        _ => false,
+    }
+}
+
+fn bracket_and_contains_complement_pair(items: &[BracketExprTree]) -> bool {
+    items.iter().any(|item| {
+        items.iter().any(|other| match other {
+            BracketExprTree::Not(inner) => inner.as_ref() == item,
+            _ => false,
+        })
+    })
+}
+
+fn bracket_and_contains_mutually_exclusive_pair(items: &[BracketExprTree]) -> bool {
+    items.iter().enumerate().any(|(left_index, left)| {
+        items.iter().enumerate().any(|(right_index, right)| {
+            left_index != right_index && bracket_trees_are_mutually_exclusive(left, right)
+        })
+    })
+}
+
+fn merge_numeric_bracket_conjunctions(items: &mut Vec<BracketExprTree>) {
+    while merge_numeric_bracket_items(items, NumericMerge::Intersection) {}
+}
+
+fn merge_numeric_bracket_disjunctions(items: &mut Vec<BracketExprTree>) {
+    while merge_numeric_bracket_items(items, NumericMerge::Union) {}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NumericMerge {
+    Intersection,
+    Union,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MergedOptionalNumericQuery {
+    Omitted,
+    Query(NumericQuery),
+}
+
+impl MergedOptionalNumericQuery {
+    const fn into_option(self) -> Option<NumericQuery> {
+        match self {
+            Self::Omitted => None,
+            Self::Query(query) => Some(query),
+        }
+    }
+}
+
+fn merge_numeric_bracket_items(items: &mut Vec<BracketExprTree>, merge: NumericMerge) -> bool {
+    for left_index in 0..items.len() {
+        let BracketExprTree::Primitive(left) = &items[left_index] else {
+            continue;
+        };
+        for right_index in (left_index + 1)..items.len() {
+            let BracketExprTree::Primitive(right) = &items[right_index] else {
+                continue;
+            };
+            let Some(merged) = merge_numeric_atom_primitives(left, right, merge) else {
+                continue;
+            };
+            items.remove(right_index);
+            items.remove(left_index);
+            items.push(BracketExprTree::Primitive(merged));
+            return true;
+        }
+    }
+    false
+}
+
+fn merge_numeric_atom_primitives(
+    left: &AtomPrimitive,
+    right: &AtomPrimitive,
+    merge: NumericMerge,
+) -> Option<AtomPrimitive> {
+    match (left, right) {
+        (AtomPrimitive::Degree(left), AtomPrimitive::Degree(right)) => Some(AtomPrimitive::Degree(
+            merge_count_queries(*left, *right, merge)?.into_option(),
+        )),
+        (AtomPrimitive::Connectivity(left), AtomPrimitive::Connectivity(right)) => Some(
+            AtomPrimitive::Connectivity(merge_count_queries(*left, *right, merge)?.into_option()),
+        ),
+        (AtomPrimitive::Valence(left), AtomPrimitive::Valence(right)) => Some(
+            AtomPrimitive::Valence(merge_count_queries(*left, *right, merge)?.into_option()),
+        ),
+        (AtomPrimitive::HeteroNeighbor(left), AtomPrimitive::HeteroNeighbor(right)) => Some(
+            AtomPrimitive::HeteroNeighbor(merge_count_queries(*left, *right, merge)?.into_option()),
+        ),
+        (
+            AtomPrimitive::AliphaticHeteroNeighbor(left),
+            AtomPrimitive::AliphaticHeteroNeighbor(right),
+        ) => Some(AtomPrimitive::AliphaticHeteroNeighbor(
+            merge_count_queries(*left, *right, merge)?.into_option(),
+        )),
+        (AtomPrimitive::Hydrogen(left_kind, left), AtomPrimitive::Hydrogen(right_kind, right))
+            if left_kind == right_kind =>
+        {
+            Some(AtomPrimitive::Hydrogen(
+                *left_kind,
+                merge_count_queries(*left, *right, merge)?.into_option(),
+            ))
+        }
+        (AtomPrimitive::RingMembership(left), AtomPrimitive::RingMembership(right)) => Some(
+            AtomPrimitive::RingMembership(merge_ring_queries(*left, *right, merge)?.into_option()),
+        ),
+        (AtomPrimitive::RingSize(left), AtomPrimitive::RingSize(right)) => Some(
+            AtomPrimitive::RingSize(merge_ring_queries(*left, *right, merge)?.into_option()),
+        ),
+        (AtomPrimitive::RingConnectivity(left), AtomPrimitive::RingConnectivity(right)) => {
+            Some(AtomPrimitive::RingConnectivity(
+                merge_ring_queries(*left, *right, merge)?.into_option(),
+            ))
+        }
+        (AtomPrimitive::Hybridization(left), AtomPrimitive::Hybridization(right)) => Some(
+            AtomPrimitive::Hybridization(merge_numeric_queries(*left, *right, merge)?),
+        ),
+        _ => None,
+    }
+}
+
+fn merge_count_queries(
+    left: Option<NumericQuery>,
+    right: Option<NumericQuery>,
+    merge: NumericMerge,
+) -> Option<MergedOptionalNumericQuery> {
+    merge_numeric_ranges(numeric_count_range(left), numeric_count_range(right), merge)
+        .map(count_query_from_range)
+}
+
+fn merge_ring_queries(
+    left: Option<NumericQuery>,
+    right: Option<NumericQuery>,
+    merge: NumericMerge,
+) -> Option<MergedOptionalNumericQuery> {
+    merge_numeric_ranges(numeric_ring_range(left), numeric_ring_range(right), merge)
+        .map(ring_query_from_range)
+}
+
+fn merge_numeric_queries(
+    left: NumericQuery,
+    right: NumericQuery,
+    merge: NumericMerge,
+) -> Option<NumericQuery> {
+    merge_numeric_ranges(numeric_query_range(left), numeric_query_range(right), merge)
+        .map(numeric_query_from_range)
+}
+
+fn merge_numeric_ranges(
+    left: NumericRange,
+    right: NumericRange,
+    merge: NumericMerge,
+) -> Option<NumericRange> {
+    match merge {
+        NumericMerge::Intersection => intersect_numeric_ranges(left, right),
+        NumericMerge::Union => union_numeric_ranges(left, right),
+    }
+}
+
+fn intersect_numeric_ranges(left: NumericRange, right: NumericRange) -> Option<NumericRange> {
+    let min = left.min.unwrap_or(0).max(right.min.unwrap_or(0));
+    let max = match (left.max, right.max) {
+        (Some(left_max), Some(right_max)) => Some(left_max.min(right_max)),
+        (Some(max), None) | (None, Some(max)) => Some(max),
+        (None, None) => None,
+    };
+    if max.is_some_and(|max| min > max) {
+        None
+    } else {
+        Some(canonical_numeric_range(NumericRange {
+            min: Some(min),
+            max,
+        }))
+    }
+}
+
+fn union_numeric_ranges(left: NumericRange, right: NumericRange) -> Option<NumericRange> {
+    let left_min = left.min.unwrap_or(0);
+    let right_min = right.min.unwrap_or(0);
+    let (first, second, first_min, second_min) = if left_min <= right_min {
+        (left, right, left_min, right_min)
+    } else {
+        (right, left, right_min, left_min)
+    };
+
+    if let Some(first_max) = first.max {
+        if first_max.saturating_add(1) < second_min {
+            return None;
+        }
+    }
+
+    let max = match (first.max, second.max) {
+        (None, _) | (_, None) => None,
+        (Some(first_max), Some(second_max)) => Some(first_max.max(second_max)),
+    };
+    Some(canonical_numeric_range(NumericRange {
+        min: Some(first_min),
+        max,
+    }))
+}
+
+fn count_query_from_range(range: NumericRange) -> MergedOptionalNumericQuery {
+    let query = numeric_query_from_range(range);
+    if query == NumericQuery::Exact(1) {
+        MergedOptionalNumericQuery::Omitted
+    } else {
+        MergedOptionalNumericQuery::Query(query)
+    }
+}
+
+fn ring_query_from_range(range: NumericRange) -> MergedOptionalNumericQuery {
+    let range = canonical_numeric_range(range);
+    if range.min == Some(1) && range.max.is_none() {
+        MergedOptionalNumericQuery::Omitted
+    } else {
+        MergedOptionalNumericQuery::Query(numeric_query_from_range(range))
+    }
+}
+
+fn numeric_query_from_range(range: NumericRange) -> NumericQuery {
+    canonical_numeric_query(NumericQuery::Range(range))
+}
+
+fn atom_primitive_implies(specific: &AtomPrimitive, general: &AtomPrimitive) -> bool {
+    match (specific, general) {
+        (specific, general) if specific == general => true,
+        (AtomPrimitive::Isotope { isotope, .. }, AtomPrimitive::AtomicNumber(atomic_number)) => {
+            u16::from(isotope.element().atomic_number()) == *atomic_number
+        }
+        (
+            AtomPrimitive::Isotope { isotope, aromatic },
+            AtomPrimitive::Symbol {
+                element,
+                aromatic: symbol_aromatic,
+            },
+        ) => isotope.element() == *element && aromatic == symbol_aromatic,
+        (
+            AtomPrimitive::Isotope {
+                aromatic: false, ..
+            },
+            AtomPrimitive::AliphaticAny,
+        )
+        | (AtomPrimitive::Isotope { aromatic: true, .. }, AtomPrimitive::AromaticAny) => true,
+        (AtomPrimitive::Isotope { isotope, .. }, AtomPrimitive::IsotopeWildcard(mass_number)) => {
+            isotope.mass_number() == *mass_number
+        }
+        (AtomPrimitive::Degree(specific), AtomPrimitive::Degree(general))
+        | (AtomPrimitive::Connectivity(specific), AtomPrimitive::Connectivity(general))
+        | (AtomPrimitive::Valence(specific), AtomPrimitive::Valence(general))
+        | (AtomPrimitive::HeteroNeighbor(specific), AtomPrimitive::HeteroNeighbor(general))
+        | (
+            AtomPrimitive::AliphaticHeteroNeighbor(specific),
+            AtomPrimitive::AliphaticHeteroNeighbor(general),
+        ) => count_query_implies(*specific, *general),
+        (
+            AtomPrimitive::Hydrogen(specific_kind, specific),
+            AtomPrimitive::Hydrogen(general_kind, general),
+        ) if specific_kind == general_kind => count_query_implies(*specific, *general),
+        (AtomPrimitive::RingMembership(specific), AtomPrimitive::RingMembership(general))
+        | (AtomPrimitive::RingSize(specific), AtomPrimitive::RingSize(general))
+        | (AtomPrimitive::RingConnectivity(specific), AtomPrimitive::RingConnectivity(general)) => {
+            ring_query_implies(*specific, *general)
+        }
+        (AtomPrimitive::Hybridization(specific), AtomPrimitive::Hybridization(general)) => {
+            numeric_query_implies(*specific, *general)
+        }
+        _ => false,
+    }
+}
+
+fn count_query_implies(specific: Option<NumericQuery>, general: Option<NumericQuery>) -> bool {
+    numeric_range_implies(numeric_count_range(specific), numeric_count_range(general))
+}
+
+fn ring_query_implies(specific: Option<NumericQuery>, general: Option<NumericQuery>) -> bool {
+    numeric_range_implies(numeric_ring_range(specific), numeric_ring_range(general))
+}
+
+fn numeric_query_implies(specific: NumericQuery, general: NumericQuery) -> bool {
+    numeric_range_implies(numeric_query_range(specific), numeric_query_range(general))
+}
+
+fn numeric_count_range(query: Option<NumericQuery>) -> NumericRange {
+    query.map_or(
+        NumericRange {
+            min: Some(1),
+            max: Some(1),
+        },
+        numeric_query_range,
+    )
+}
+
+fn numeric_ring_range(query: Option<NumericQuery>) -> NumericRange {
+    query.map_or(
+        NumericRange {
+            min: Some(1),
+            max: None,
+        },
+        numeric_query_range,
+    )
+}
+
+const fn numeric_query_range(query: NumericQuery) -> NumericRange {
+    match query {
+        NumericQuery::Exact(value) => NumericRange {
+            min: Some(value),
+            max: Some(value),
+        },
+        NumericQuery::Range(range) => range,
+    }
+}
+
+fn numeric_range_implies(specific: NumericRange, general: NumericRange) -> bool {
+    let lower_bound_is_subset = specific.min.unwrap_or(0) >= general.min.unwrap_or(0);
+    let upper_bound_is_subset = match (specific.max, general.max) {
+        (_, None) => true,
+        (Some(specific_max), Some(general_max)) => specific_max <= general_max,
+        (None, Some(_)) => false,
+    };
+    lower_bound_is_subset && upper_bound_is_subset
+}
+
+fn simplify_bracket_or(items: Vec<BracketExprTree>) -> BracketExprTree {
+    let mut items = items
+        .into_iter()
+        .map(simplify_bracket_tree)
+        .collect::<Vec<_>>();
+    if items.len() > 1 {
+        items.retain(|item| !is_false_bracket_tree(item));
+    }
+    synthesize_atomic_number_disjunctions(&mut items);
+    synthesize_isotope_disjunctions(&mut items);
+    merge_numeric_bracket_disjunctions(&mut items);
+    if items
+        .iter()
+        .any(|item| matches!(item, BracketExprTree::Primitive(AtomPrimitive::Wildcard)))
+        || bracket_or_contains_complement_pair(&items)
+        || bracket_or_contains_implied_complement_pair(&items)
+        || bracket_or_contains_negated_mutually_exclusive_pair(&items)
+        || bracket_or_contains_aliphatic_and_aromatic_any(&items)
+    {
+        return BracketExprTree::Primitive(AtomPrimitive::Wildcard);
+    }
+
+    while relax_complemented_bracket_disjunction_terms(&mut items) {}
+    remove_absorbed_bracket_disjunction_terms(&mut items);
+    items.sort_by_cached_key(BracketExprTree::to_string);
+    items.dedup();
+    match items.as_slice() {
+        [] => false_bracket_tree(),
+        [single] => single.clone(),
+        _ => BracketExprTree::Or(items),
+    }
+}
+
+fn synthesize_atomic_number_disjunctions(items: &mut Vec<BracketExprTree>) {
+    while let Some((aliphatic_index, aromatic_index, atomic_number)) =
+        find_atomic_number_disjunction_pair(items)
+    {
+        if aliphatic_index > aromatic_index {
+            items.remove(aliphatic_index);
+            items.remove(aromatic_index);
+        } else {
+            items.remove(aromatic_index);
+            items.remove(aliphatic_index);
+        }
+        items.push(BracketExprTree::Primitive(AtomPrimitive::AtomicNumber(
+            atomic_number,
+        )));
+    }
+}
+
+fn find_atomic_number_disjunction_pair(items: &[BracketExprTree]) -> Option<(usize, usize, u16)> {
+    for (aliphatic_index, item) in items.iter().enumerate() {
+        let BracketExprTree::Primitive(AtomPrimitive::Symbol {
+            element,
+            aromatic: false,
+        }) = item
+        else {
+            continue;
+        };
+        for (aromatic_index, aromatic_item) in items.iter().enumerate() {
+            if aromatic_index == aliphatic_index {
+                continue;
+            }
+            if matches!(
+                aromatic_item,
+                BracketExprTree::Primitive(AtomPrimitive::Symbol {
+                    element: aromatic_element,
+                    aromatic: true,
+                }) if aromatic_element == element
+            ) {
+                return Some((
+                    aliphatic_index,
+                    aromatic_index,
+                    u16::from(element.atomic_number()),
+                ));
             }
         }
     }
+    None
+}
+
+fn synthesize_isotope_disjunctions(items: &mut Vec<BracketExprTree>) {
+    while let Some((aliphatic_index, aromatic_index, isotope)) =
+        find_isotope_disjunction_pair(items)
+    {
+        if aliphatic_index > aromatic_index {
+            items.remove(aliphatic_index);
+            items.remove(aromatic_index);
+        } else {
+            items.remove(aromatic_index);
+            items.remove(aliphatic_index);
+        }
+        items.push(BracketExprTree::HighAnd(vec![
+            BracketExprTree::Primitive(AtomPrimitive::AtomicNumber(u16::from(
+                isotope.element().atomic_number(),
+            ))),
+            BracketExprTree::Primitive(AtomPrimitive::IsotopeWildcard(isotope.mass_number())),
+        ]));
+    }
+}
+
+fn find_isotope_disjunction_pair(items: &[BracketExprTree]) -> Option<(usize, usize, Isotope)> {
+    for (aliphatic_index, item) in items.iter().enumerate() {
+        let BracketExprTree::Primitive(AtomPrimitive::Isotope {
+            isotope,
+            aromatic: false,
+        }) = item
+        else {
+            continue;
+        };
+        for (aromatic_index, aromatic_item) in items.iter().enumerate() {
+            if aromatic_index == aliphatic_index {
+                continue;
+            }
+            if matches!(
+                aromatic_item,
+                BracketExprTree::Primitive(AtomPrimitive::Isotope {
+                    isotope: aromatic_isotope,
+                    aromatic: true,
+                }) if aromatic_isotope == isotope
+            ) {
+                return Some((aliphatic_index, aromatic_index, *isotope));
+            }
+        }
+    }
+    None
+}
+
+fn bracket_or_contains_complement_pair(items: &[BracketExprTree]) -> bool {
+    items.iter().any(|item| {
+        items.iter().any(|other| match other {
+            BracketExprTree::Not(inner) => inner.as_ref() == item,
+            _ => false,
+        })
+    })
+}
+
+fn bracket_or_contains_implied_complement_pair(items: &[BracketExprTree]) -> bool {
+    items.iter().any(|item| {
+        items.iter().any(|other| match other {
+            BracketExprTree::Not(inner) => bracket_tree_implies(inner, item),
+            _ => false,
+        })
+    })
+}
+
+fn bracket_or_contains_negated_mutually_exclusive_pair(items: &[BracketExprTree]) -> bool {
+    items.iter().any(|item| {
+        let BracketExprTree::Not(left) = item else {
+            return false;
+        };
+        items.iter().any(|other| match other {
+            BracketExprTree::Not(right) => bracket_trees_are_mutually_exclusive(left, right),
+            _ => false,
+        })
+    })
+}
+
+fn relax_complemented_bracket_disjunction_terms(items: &mut [BracketExprTree]) -> bool {
+    for base_index in 0..items.len() {
+        for candidate_index in 0..items.len() {
+            if base_index == candidate_index {
+                continue;
+            }
+            let Some(relaxed) = remove_negated_bracket_term_from_conjunction(
+                &items[candidate_index],
+                &items[base_index],
+            ) else {
+                continue;
+            };
+            items[candidate_index] = relaxed;
+            return true;
+        }
+    }
+    false
+}
+
+fn remove_negated_bracket_term_from_conjunction(
+    candidate: &BracketExprTree,
+    base: &BracketExprTree,
+) -> Option<BracketExprTree> {
+    let (items, kind) = match candidate {
+        BracketExprTree::HighAnd(items) => (items, BracketAndKind::High),
+        BracketExprTree::LowAnd(items) => (items, BracketAndKind::Low),
+        _ => return None,
+    };
+    let complement_index = items.iter().position(|item| match item {
+        BracketExprTree::Not(inner) => inner.as_ref() == base,
+        _ => false,
+    })?;
+    let remaining = items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| (index != complement_index).then_some(item.clone()))
+        .collect::<Vec<_>>();
+    Some(simplify_bracket_and(remaining, kind))
+}
+
+fn bracket_trees_are_mutually_exclusive(left: &BracketExprTree, right: &BracketExprTree) -> bool {
+    let left_items = bracket_conjunction_items(left);
+    let right_items = bracket_conjunction_items(right);
+    left_items.iter().any(|left_item| {
+        right_items
+            .iter()
+            .any(|right_item| bracket_tree_pair_is_mutually_exclusive(left_item, right_item))
+    })
+}
+
+fn bracket_conjunction_items(tree: &BracketExprTree) -> &[BracketExprTree] {
+    match tree {
+        BracketExprTree::HighAnd(items) | BracketExprTree::LowAnd(items) => items,
+        other => core::slice::from_ref(other),
+    }
+}
+
+fn bracket_tree_pair_is_mutually_exclusive(
+    left: &BracketExprTree,
+    right: &BracketExprTree,
+) -> bool {
+    match (left, right) {
+        (BracketExprTree::Not(_), BracketExprTree::Not(_)) => false,
+        (BracketExprTree::Not(excluded), candidate)
+        | (candidate, BracketExprTree::Not(excluded)) => bracket_tree_implies(candidate, excluded),
+        (
+            BracketExprTree::Primitive(left_primitive),
+            BracketExprTree::Primitive(right_primitive),
+        ) => atom_primitives_are_mutually_exclusive(left_primitive, right_primitive),
+        _ => false,
+    }
+}
+
+fn atom_primitives_are_mutually_exclusive(left: &AtomPrimitive, right: &AtomPrimitive) -> bool {
+    if left == right {
+        return false;
+    }
+    atom_aromaticity_classes_are_mutually_exclusive(left, right)
+        || atom_element_identities_are_mutually_exclusive(left, right)
+        || atom_isotope_identities_are_mutually_exclusive(left, right)
+        || atom_numeric_queries_are_mutually_exclusive(left, right)
+        || matches!((left, right), (AtomPrimitive::Charge(left), AtomPrimitive::Charge(right)) if left != right)
+}
+
+const fn atom_aromaticity_classes_are_mutually_exclusive(
+    left: &AtomPrimitive,
+    right: &AtomPrimitive,
+) -> bool {
+    match (
+        atom_primitive_aromaticity_class(left),
+        atom_primitive_aromaticity_class(right),
+    ) {
+        (Some(left), Some(right)) => left != right,
+        _ => false,
+    }
+}
+
+const fn atom_primitive_aromaticity_class(primitive: &AtomPrimitive) -> Option<bool> {
+    match primitive {
+        AtomPrimitive::AliphaticAny => Some(false),
+        AtomPrimitive::AromaticAny => Some(true),
+        AtomPrimitive::Symbol { aromatic, .. } | AtomPrimitive::Isotope { aromatic, .. } => {
+            Some(*aromatic)
+        }
+        _ => None,
+    }
+}
+
+fn atom_element_identities_are_mutually_exclusive(
+    left: &AtomPrimitive,
+    right: &AtomPrimitive,
+) -> bool {
+    match (left, right) {
+        (
+            AtomPrimitive::Symbol {
+                element: left_element,
+                ..
+            },
+            AtomPrimitive::Symbol {
+                element: right_element,
+                ..
+            },
+        ) => left_element != right_element,
+        (AtomPrimitive::Symbol { element, .. }, AtomPrimitive::Isotope { isotope, .. })
+        | (AtomPrimitive::Isotope { isotope, .. }, AtomPrimitive::Symbol { element, .. }) => {
+            element != &isotope.element()
+        }
+        (
+            AtomPrimitive::Symbol {
+                element,
+                aromatic: _,
+            },
+            AtomPrimitive::AtomicNumber(atomic_number),
+        )
+        | (
+            AtomPrimitive::AtomicNumber(atomic_number),
+            AtomPrimitive::Symbol {
+                element,
+                aromatic: _,
+            },
+        ) => u16::from(element.atomic_number()) != *atomic_number,
+        (
+            AtomPrimitive::Isotope {
+                isotope,
+                aromatic: _,
+            },
+            AtomPrimitive::AtomicNumber(atomic_number),
+        )
+        | (
+            AtomPrimitive::AtomicNumber(atomic_number),
+            AtomPrimitive::Isotope {
+                isotope,
+                aromatic: _,
+            },
+        ) => u16::from(isotope.element().atomic_number()) != *atomic_number,
+        (AtomPrimitive::AtomicNumber(left), AtomPrimitive::AtomicNumber(right)) => left != right,
+        _ => false,
+    }
+}
+
+fn atom_isotope_identities_are_mutually_exclusive(
+    left: &AtomPrimitive,
+    right: &AtomPrimitive,
+) -> bool {
+    match (left, right) {
+        (
+            AtomPrimitive::Isotope {
+                isotope: left_isotope,
+                ..
+            },
+            AtomPrimitive::Isotope {
+                isotope: right_isotope,
+                ..
+            },
+        ) => left_isotope != right_isotope,
+        (AtomPrimitive::Isotope { isotope, .. }, AtomPrimitive::IsotopeWildcard(mass_number))
+        | (AtomPrimitive::IsotopeWildcard(mass_number), AtomPrimitive::Isotope { isotope, .. }) => {
+            isotope.mass_number() != *mass_number
+        }
+        (AtomPrimitive::IsotopeWildcard(left), AtomPrimitive::IsotopeWildcard(right)) => {
+            left != right
+        }
+        _ => false,
+    }
+}
+
+fn atom_numeric_queries_are_mutually_exclusive(
+    left: &AtomPrimitive,
+    right: &AtomPrimitive,
+) -> bool {
+    match (left, right) {
+        (AtomPrimitive::Degree(left), AtomPrimitive::Degree(right))
+        | (AtomPrimitive::Connectivity(left), AtomPrimitive::Connectivity(right))
+        | (AtomPrimitive::Valence(left), AtomPrimitive::Valence(right))
+        | (AtomPrimitive::HeteroNeighbor(left), AtomPrimitive::HeteroNeighbor(right))
+        | (
+            AtomPrimitive::AliphaticHeteroNeighbor(left),
+            AtomPrimitive::AliphaticHeteroNeighbor(right),
+        ) => intersect_numeric_ranges(numeric_count_range(*left), numeric_count_range(*right))
+            .is_none(),
+        (AtomPrimitive::Hydrogen(left_kind, left), AtomPrimitive::Hydrogen(right_kind, right))
+            if left_kind == right_kind =>
+        {
+            intersect_numeric_ranges(numeric_count_range(*left), numeric_count_range(*right))
+                .is_none()
+        }
+        (AtomPrimitive::RingMembership(left), AtomPrimitive::RingMembership(right))
+        | (AtomPrimitive::RingSize(left), AtomPrimitive::RingSize(right))
+        | (AtomPrimitive::RingConnectivity(left), AtomPrimitive::RingConnectivity(right)) => {
+            intersect_numeric_ranges(numeric_ring_range(*left), numeric_ring_range(*right))
+                .is_none()
+        }
+        (AtomPrimitive::Hybridization(left), AtomPrimitive::Hybridization(right)) => {
+            intersect_numeric_ranges(numeric_query_range(*left), numeric_query_range(*right))
+                .is_none()
+        }
+        _ => false,
+    }
+}
+
+fn bracket_or_contains_aliphatic_and_aromatic_any(items: &[BracketExprTree]) -> bool {
+    items.iter().any(is_aliphatic_any) && items.iter().any(is_aromatic_any)
+}
+
+fn remove_absorbed_bracket_disjunction_terms(items: &mut Vec<BracketExprTree>) {
+    let mut index = 0usize;
+    while index < items.len() {
+        let is_absorbed = items.iter().enumerate().any(|(other_index, other)| {
+            other_index != index && bracket_or_item_absorbs(other, &items[index])
+        });
+        if is_absorbed {
+            items.remove(index);
+        } else {
+            index += 1;
+        }
+    }
+}
+
+fn bracket_or_item_absorbs(base: &BracketExprTree, candidate: &BracketExprTree) -> bool {
+    if bracket_tree_implies(candidate, base) {
+        return true;
+    }
+    match candidate {
+        BracketExprTree::HighAnd(items) | BracketExprTree::LowAnd(items) => items
+            .iter()
+            .any(|item| item == base || bracket_tree_implies(item, base)),
+        _ => false,
+    }
+}
+
+fn can_render_bracket_and_as_high_and(items: &[BracketExprTree]) -> bool {
+    items
+        .iter()
+        .all(|item| !matches!(item, BracketExprTree::Or(_) | BracketExprTree::LowAnd(_)))
+}
+
+const fn is_aliphatic_any(item: &BracketExprTree) -> bool {
+    matches!(
+        item,
+        BracketExprTree::Primitive(AtomPrimitive::AliphaticAny)
+    )
+}
+
+const fn is_aromatic_any(item: &BracketExprTree) -> bool {
+    matches!(item, BracketExprTree::Primitive(AtomPrimitive::AromaticAny))
 }
 
 fn canonical_bond_expr(expr: &BondExpr) -> BondExpr {
@@ -848,6 +1829,7 @@ fn canonical_bond_expr(expr: &BondExpr) -> BondExpr {
             normalize_bond_tree(&mut normalized)
                 .unwrap_or_else(|_| unreachable!("parsed SMARTS expressions are never empty"));
             let mut canonical = canonical_bond_tree(normalized);
+            canonical = simplify_bond_tree(canonical);
             normalize_bond_tree(&mut canonical)
                 .unwrap_or_else(|_| unreachable!("parsed SMARTS expressions are never empty"));
             let has_up = bond_tree_contains_direction(&canonical, Bond::Up);
@@ -857,6 +1839,7 @@ fn canonical_bond_expr(expr: &BondExpr) -> BondExpr {
             }
             if has_up && has_down {
                 canonical = collapse_mixed_directional_polarity(canonical);
+                canonical = simplify_bond_tree(canonical);
                 normalize_bond_tree(&mut canonical)
                     .unwrap_or_else(|_| unreachable!("parsed SMARTS expressions are never empty"));
             }
@@ -948,6 +1931,223 @@ fn canonical_bond_tree(tree: BondExprTree) -> BondExprTree {
             BondExprTree::LowAnd(items)
         }
     }
+}
+
+fn simplify_bond_tree(tree: BondExprTree) -> BondExprTree {
+    match tree {
+        BondExprTree::Primitive(primitive) => BondExprTree::Primitive(primitive),
+        BondExprTree::Not(inner) => simplify_bond_not(simplify_bond_tree(*inner)),
+        BondExprTree::HighAnd(items) => simplify_bond_and(items, BondAndKind::High),
+        BondExprTree::LowAnd(items) => simplify_bond_and(items, BondAndKind::Low),
+        BondExprTree::Or(items) => simplify_bond_or(items),
+    }
+}
+
+fn simplify_bond_not(inner: BondExprTree) -> BondExprTree {
+    if is_false_bond_tree(&inner) {
+        BondExprTree::Primitive(BondPrimitive::Any)
+    } else {
+        BondExprTree::Not(Box::new(inner))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BondAndKind {
+    High,
+    Low,
+}
+
+fn simplify_bond_and(items: Vec<BondExprTree>, kind: BondAndKind) -> BondExprTree {
+    let mut items = items
+        .into_iter()
+        .map(simplify_bond_tree)
+        .collect::<Vec<_>>();
+    if items.iter().any(is_false_bond_tree) || bond_and_contains_mutually_exclusive_pair(&items) {
+        return false_bond_tree();
+    }
+    if items.len() > 1 {
+        items.retain(|item| !matches!(item, BondExprTree::Primitive(BondPrimitive::Any)));
+    }
+    items.sort_by_cached_key(BondExprTree::to_string);
+    items.dedup();
+    match items.as_slice() {
+        [] => BondExprTree::Primitive(BondPrimitive::Any),
+        [single] => single.clone(),
+        _ if kind == BondAndKind::Low && !can_render_bond_and_as_high_and(&items) => {
+            BondExprTree::LowAnd(items)
+        }
+        _ => BondExprTree::HighAnd(items),
+    }
+}
+
+fn simplify_bond_or(items: Vec<BondExprTree>) -> BondExprTree {
+    let mut items = items
+        .into_iter()
+        .map(simplify_bond_tree)
+        .collect::<Vec<_>>();
+    if items.len() > 1 {
+        items.retain(|item| !is_false_bond_tree(item));
+    }
+    if items
+        .iter()
+        .any(|item| matches!(item, BondExprTree::Primitive(BondPrimitive::Any)))
+        || bond_or_contains_complement_pair(&items)
+        || bond_or_contains_implied_complement_pair(&items)
+    {
+        return BondExprTree::Primitive(BondPrimitive::Any);
+    }
+    remove_absorbed_bond_disjunction_terms(&mut items);
+    items.sort_by_cached_key(BondExprTree::to_string);
+    items.dedup();
+    match items.as_slice() {
+        [] => false_bond_tree(),
+        [single] => single.clone(),
+        _ => BondExprTree::Or(items),
+    }
+}
+
+fn false_bond_tree() -> BondExprTree {
+    BondExprTree::Not(Box::new(BondExprTree::Primitive(BondPrimitive::Any)))
+}
+
+fn is_false_bond_tree(tree: &BondExprTree) -> bool {
+    matches!(
+        tree,
+        BondExprTree::Not(inner)
+            if matches!(inner.as_ref(), BondExprTree::Primitive(BondPrimitive::Any))
+    )
+}
+
+fn bond_and_contains_mutually_exclusive_pair(items: &[BondExprTree]) -> bool {
+    items.iter().enumerate().any(|(left_index, left)| {
+        items.iter().enumerate().any(|(right_index, right)| {
+            left_index != right_index && bond_trees_are_mutually_exclusive(left, right)
+        })
+    })
+}
+
+fn bond_or_contains_complement_pair(items: &[BondExprTree]) -> bool {
+    items.iter().any(|item| {
+        items.iter().any(|other| match other {
+            BondExprTree::Not(inner) => inner.as_ref() == item,
+            _ => false,
+        })
+    })
+}
+
+fn bond_or_contains_implied_complement_pair(items: &[BondExprTree]) -> bool {
+    items.iter().any(|item| {
+        items.iter().any(|other| match other {
+            BondExprTree::Not(inner) => bond_tree_implies(inner, item),
+            _ => false,
+        })
+    })
+}
+
+fn remove_absorbed_bond_disjunction_terms(items: &mut Vec<BondExprTree>) {
+    let mut index = 0usize;
+    while index < items.len() {
+        let is_absorbed = items.iter().enumerate().any(|(other_index, other)| {
+            other_index != index && bond_or_item_absorbs(other, &items[index])
+        });
+        if is_absorbed {
+            items.remove(index);
+        } else {
+            index += 1;
+        }
+    }
+}
+
+fn bond_or_item_absorbs(base: &BondExprTree, candidate: &BondExprTree) -> bool {
+    if bond_tree_implies(candidate, base) {
+        return true;
+    }
+    match candidate {
+        BondExprTree::HighAnd(items) | BondExprTree::LowAnd(items) => items
+            .iter()
+            .any(|item| item == base || bond_tree_implies(item, base)),
+        _ => false,
+    }
+}
+
+fn bond_tree_implies(specific: &BondExprTree, general: &BondExprTree) -> bool {
+    match (specific, general) {
+        (specific, general) if specific == general => true,
+        (BondExprTree::Not(specific), BondExprTree::Not(general)) => {
+            bond_tree_implies(general, specific)
+        }
+        (_, BondExprTree::Not(excluded)) => bond_trees_are_mutually_exclusive(specific, excluded),
+        (BondExprTree::HighAnd(items) | BondExprTree::LowAnd(items), _) => {
+            items.iter().any(|item| bond_tree_implies(item, general))
+        }
+        (_, BondExprTree::HighAnd(items) | BondExprTree::LowAnd(items)) => {
+            items.iter().all(|item| bond_tree_implies(specific, item))
+        }
+        (BondExprTree::Primitive(specific), BondExprTree::Primitive(general)) => {
+            bond_primitive_implies(*specific, *general)
+        }
+        _ => false,
+    }
+}
+
+fn bond_primitive_implies(specific: BondPrimitive, general: BondPrimitive) -> bool {
+    specific == general || matches!(general, BondPrimitive::Any)
+}
+
+fn bond_trees_are_mutually_exclusive(left: &BondExprTree, right: &BondExprTree) -> bool {
+    let left_items = bond_conjunction_items(left);
+    let right_items = bond_conjunction_items(right);
+    left_items.iter().any(|left_item| {
+        right_items
+            .iter()
+            .any(|right_item| bond_tree_pair_is_mutually_exclusive(left_item, right_item))
+    })
+}
+
+fn bond_conjunction_items(tree: &BondExprTree) -> &[BondExprTree] {
+    match tree {
+        BondExprTree::HighAnd(items) | BondExprTree::LowAnd(items) => items,
+        other => core::slice::from_ref(other),
+    }
+}
+
+fn bond_tree_pair_is_mutually_exclusive(left: &BondExprTree, right: &BondExprTree) -> bool {
+    match (left, right) {
+        (BondExprTree::Not(_), BondExprTree::Not(_)) => false,
+        (BondExprTree::Not(excluded), candidate) | (candidate, BondExprTree::Not(excluded)) => {
+            bond_tree_implies(candidate, excluded)
+        }
+        (BondExprTree::Primitive(left), BondExprTree::Primitive(right)) => {
+            bond_primitives_are_mutually_exclusive(*left, *right)
+        }
+        _ => false,
+    }
+}
+
+const fn bond_primitives_are_mutually_exclusive(left: BondPrimitive, right: BondPrimitive) -> bool {
+    match (left, right) {
+        (BondPrimitive::Any | BondPrimitive::Ring, _)
+        | (_, BondPrimitive::Any | BondPrimitive::Ring) => false,
+        (BondPrimitive::Bond(left), BondPrimitive::Bond(right)) => {
+            bond_kind_class(left) != bond_kind_class(right)
+        }
+    }
+}
+
+const fn bond_kind_class(bond: Bond) -> u8 {
+    match bond {
+        Bond::Single | Bond::Up | Bond::Down => 0,
+        Bond::Double => 1,
+        Bond::Triple => 2,
+        Bond::Aromatic => 3,
+        Bond::Quadruple => 4,
+    }
+}
+
+fn can_render_bond_and_as_high_and(items: &[BondExprTree]) -> bool {
+    items
+        .iter()
+        .all(|item| !matches!(item, BondExprTree::Or(_) | BondExprTree::LowAnd(_)))
 }
 
 fn flip_directional_bond_expr(expr: &BondExpr) -> BondExpr {
@@ -1538,6 +2738,7 @@ fn bond_expr_contains_direction(expr: &BondExpr) -> bool {
 mod tests {
     use alloc::{
         boxed::Box,
+        format,
         string::{String, ToString},
         vec,
         vec::Vec,
@@ -1783,6 +2984,255 @@ mod tests {
         assert_eq!(canonical_string("[C&X4&H2]"), canonical_string("[H2&C&X4]"));
         assert_same_canonical_group(&["[C;H1;X4]", "[X4;C;H1]", "[H1;X4;C]", "[C;X4;H1]"]);
         assert_same_canonical_group(&["[C,N,O]", "[O,N,C]", "[N,O,C]", "[C,O,N]"]);
+    }
+
+    #[test]
+    fn canonicalize_deduplicates_equivalent_bracket_boolean_children() {
+        assert_eq!(canonical_string("[#6&#6]"), "[#6]");
+        assert_eq!(canonical_string("[#6;#6]"), "[#6]");
+        assert_eq!(canonical_string("[#6,#6]"), "[#6]");
+        assert_eq!(canonical_string("[!#6&!#6]"), "[!#6]");
+        assert_eq!(canonical_string("[#6;#6;#6]"), "[#6]");
+
+        for term in [
+            "#7", "C", "c", "N", "n", "R", "r6", "+0", "H0", "D3", "X4", "v4", "x2", "A", "a",
+            "$([#6])",
+        ] {
+            let expected = format!("[{term}]");
+            assert_eq!(canonical_string(&format!("[{term}&{term}]")), expected);
+            assert_eq!(canonical_string(&format!("[{term};{term}]")), expected);
+            assert_eq!(canonical_string(&format!("[{term},{term}]")), expected);
+            assert_eq!(
+                canonical_string(&format!("[!{term}&!{term}]")),
+                format!("[!{term}]")
+            );
+        }
+    }
+
+    #[test]
+    fn canonicalize_simplifies_equivalent_atom_boolean_forms() {
+        for (source, expected) in [
+            ("[#6;R]", "[#6&R]"),
+            ("[#6;#7]", "[!*]"),
+            ("[#6,#6&R]", "[#6]"),
+            ("[C,C&R]", "[C]"),
+            ("[#6,!#6]", "*"),
+            ("[A,a]", "*"),
+            ("[C&#6]", "[C]"),
+            ("[c&#6]", "[c]"),
+            ("[N&#7]", "[N]"),
+            ("[n&#7]", "[n]"),
+            ("[O&#8]", "[O]"),
+            ("[o&#8]", "[o]"),
+            ("[C&A]", "[C]"),
+            ("[c&a]", "[c]"),
+            ("[#1&A]", "[#1]"),
+            ("[#5&A]", "[B]"),
+            ("[#5&a]", "[b]"),
+            ("[#6&A]", "[C]"),
+            ("[#6&a]", "[c]"),
+            ("[#7&A]", "[N]"),
+            ("[#7&a]", "[n]"),
+            ("[#8&A]", "[O]"),
+            ("[#8&a]", "[o]"),
+            ("[#15&A]", "[P]"),
+            ("[#15&a]", "[p]"),
+            ("[#16&A]", "[S]"),
+            ("[#16&a]", "[s]"),
+            ("[#33&a]", "[as]"),
+            ("[#34&a]", "[se]"),
+            ("[#9&A]", "[F]"),
+            ("[#17&A]", "[Cl]"),
+            ("[#35&A]", "[Br]"),
+            ("[#53&A]", "[I]"),
+            ("[#6,#6&H3,#6&R]", "[#6]"),
+            ("[!#6,!#6&R]", "[!#6]"),
+            ("[C,#6]", "[#6]"),
+            ("[c,#6]", "[#6]"),
+            ("[C,A]", "[A]"),
+            ("[c,a]", "[a]"),
+            ("[#6,C&H3]", "[#6]"),
+            ("[#6,12C&H3]", "[#6]"),
+            ("[C,12C&H3]", "[C]"),
+            ("[A,12C&H3]", "[A]"),
+            ("[C,c]", "[#6]"),
+            ("[B,b]", "[#5]"),
+            ("[N,n]", "[#7]"),
+            ("[O,o]", "[#8]"),
+            ("[P,p]", "[#15]"),
+            ("[S,s]", "[#16]"),
+            ("[As,as]", "[#33]"),
+            ("[Se,se]", "[#34]"),
+            ("[#6&A,#6&a]", "[#6]"),
+            ("[C,c,!#6]", "*"),
+            ("[R,!R]", "*"),
+            ("[r6,!r6]", "*"),
+            ("[H0,!H0]", "*"),
+            ("[#6,!C]", "*"),
+            ("[#6,!c]", "*"),
+            ("[12*,!12C]", "*"),
+            ("[D{2-4},!D3]", "*"),
+            ("[#6&A,!C]", "*"),
+            ("[12*&C,!12C]", "*"),
+            ("[D{2-4}&D3,!D3]", "*"),
+            ("[#6;R;H1]", "[#6&H&R]"),
+        ] {
+            assert_eq!(canonical_string(source), expected, "{source}");
+        }
+    }
+
+    #[test]
+    fn canonicalize_simplifies_negated_mutually_exclusive_atom_forms() {
+        for (source, expected) in [
+            ("[!C,!c]", "*"),
+            ("[!#6,!#7]", "*"),
+            ("[!A,!a]", "*"),
+            ("[!D1,!D2]", "*"),
+            ("[!R1,!R2]", "*"),
+            ("[!+0,!+]", "*"),
+            ("[#6,!C,!c]", "*"),
+            ("[!12C,!12c]", "*"),
+            ("[#6,!#6&!#7]", "[!#7]"),
+            ("[!#6&!C]", "[!#6]"),
+            ("[!D{2-4}&!D3]", "[!D{2-4}]"),
+            ("[!#6,!C]", "[!C]"),
+            ("[!D{2-4},!D3]", "[!D3]"),
+        ] {
+            assert_eq!(canonical_string(source), expected, "{source}");
+        }
+    }
+
+    #[test]
+    fn canonicalize_simplifies_false_atom_boolean_forms() {
+        for (source, expected) in [
+            ("[!*]", "[!*]"),
+            ("[#6&!#6]", "[!*]"),
+            ("[C&!C]", "[!*]"),
+            ("[#6&#7]", "[!*]"),
+            ("[C&c]", "[!*]"),
+            ("[A&a]", "[!*]"),
+            ("[12C&13C]", "[!*]"),
+            ("[12C&13*]", "[!*]"),
+            ("[+0&+]", "[!*]"),
+            ("[D1&D2]", "[!*]"),
+            ("[D{1-2}&D{3-4}]", "[!*]"),
+            ("[R0&R]", "[!*]"),
+            ("[r0&r]", "[!*]"),
+            ("[C&!#6]", "[!*]"),
+            ("[c&!#6]", "[!*]"),
+            ("[12C&!12*]", "[!*]"),
+            ("[D&!D1]", "[!*]"),
+            ("[D3&!D{2-4}]", "[!*]"),
+            ("[R&!R{1-}]", "[!*]"),
+            ("[#6&A&!C]", "[!*]"),
+            ("[#6&a&!c]", "[!*]"),
+            ("[12*&C&!12C]", "[!*]"),
+            ("[D{2-4}&D3&!D3]", "[!*]"),
+            ("[!*,#6]", "[#6]"),
+            ("[!*&#6]", "[!*]"),
+            ("[!*,!*]", "[!*]"),
+            ("[#6&!#6,#7]", "[#7]"),
+            ("[#6&!#6,#7&!#7]", "[!*]"),
+            ("[#6,!*]", "[#6]"),
+            ("[#6,!#6&!*]", "[#6]"),
+        ] {
+            assert_eq!(canonical_string(source), expected, "{source}");
+        }
+    }
+
+    #[test]
+    fn canonicalize_simplifies_isotope_and_numeric_atom_forms() {
+        for (source, expected) in [
+            ("[12C&#6]", "[12C]"),
+            ("[12C&C]", "[12C]"),
+            ("[12C&A]", "[12C]"),
+            ("[12c&#6]", "[12c]"),
+            ("[12c&c]", "[12c]"),
+            ("[12c&a]", "[12c]"),
+            ("[2H&#1]", "[2H]"),
+            ("[12C,#6]", "[#6]"),
+            ("[12C,C]", "[C]"),
+            ("[12C,A]", "[A]"),
+            ("[12c,#6]", "[#6]"),
+            ("[12c,c]", "[c]"),
+            ("[12c,a]", "[a]"),
+            ("[12C&12*]", "[12C]"),
+            ("[12C,12*]", "[12*]"),
+            ("[12*&C]", "[12C]"),
+            ("[12*&c]", "[12c]"),
+            ("[12*&#6&A]", "[12C]"),
+            ("[12C,12c]", "[#6&12*]"),
+            ("[12*&C,12*&c]", "[#6&12*]"),
+            ("[12*&C,12*]", "[12*]"),
+            ("[12C,12c,12*]", "[12*]"),
+            ("[12C,12c,#6]", "[#6]"),
+            ("[12C,12c,!#6]", "[!#6,#6&12*]"),
+            ("[D1]", "[D]"),
+            ("[D{1-1}]", "[D]"),
+            ("[D{-0}]", "[D0]"),
+            ("[D{0-}]", "[D{-}]"),
+            ("[X1]", "[X]"),
+            ("[v1]", "[v]"),
+            ("[H1]", "[#1]"),
+            ("[#6&H1]", "[#6&H]"),
+            ("[h1]", "[h]"),
+            ("[z1]", "[z]"),
+            ("[Z1]", "[Z]"),
+            ("[R{1-1}]", "[R1]"),
+            ("[r{5-5}]", "[r5]"),
+            ("[x{1-1}]", "[x1]"),
+            ("[D&D1]", "[D]"),
+            ("[D,D1]", "[D]"),
+            ("[R1&R]", "[R1]"),
+            ("[R1,R]", "[R]"),
+            ("[r5&r]", "[r5]"),
+            ("[r5,r]", "[r]"),
+            ("[D3&D{2-4}]", "[D3]"),
+            ("[D3,D{2-4}]", "[D{2-4}]"),
+            ("[D{2-3}&D{1-4}]", "[D{2-3}]"),
+            ("[D{2-3},D{1-4}]", "[D{1-4}]"),
+            ("[D{2-4}&D{3-5}]", "[D{3-4}]"),
+            ("[D{2-4},D{3-5}]", "[D{2-5}]"),
+            ("[R1&R{1-3}]", "[R1]"),
+            ("[R1,R{2-3}]", "[R{1-3}]"),
+            ("[r5&r{4-6}]", "[r5]"),
+            ("[r4,r{5-6}]", "[r{4-6}]"),
+            ("[D,D{2-}]", "[D{1-}]"),
+            ("[D0,D{1-}]", "[D{-}]"),
+            ("[D{0-2},D{3-}]", "[D{-}]"),
+            ("[R,R0]", "[R{-}]"),
+            ("[R0,R{1-}]", "[R{-}]"),
+            ("[r,r0]", "[r{-}]"),
+            ("[x,x0]", "[x{-}]"),
+            ("[z,z0]", "[z{-1}]"),
+            ("[Z,Z0]", "[Z{-1}]"),
+        ] {
+            assert_eq!(canonical_string(source), expected, "{source}");
+        }
+    }
+
+    #[test]
+    fn canonicalize_simplifies_equivalent_bond_boolean_forms() {
+        for (source, expected) in [
+            ("[#6]-&~[#7]", "[#6]-[#7]"),
+            ("[#6]-,~[#7]", "[#6]~[#7]"),
+            ("[#6]@&~[#7]", "[#6]@[#7]"),
+            ("[#6]-;@[#7]", "[#6]-&@[#7]"),
+            ("[#6]-&!~[#7]", "[#6]!~[#7]"),
+            ("[#6]-&!-[#7]", "[#6]!~[#7]"),
+            ("[#6]~&!-&!:[#7]", "[#6]!-&!:[#7]"),
+            ("[#6]-,!-[#7]", "[#6]~[#7]"),
+            ("[#6]-,!~[#7]", "[#6]-[#7]"),
+            ("[#6]-,@&-[#7]", "[#6]-[#7]"),
+            ("[#6]@,@&-[#7]", "[#6]@[#7]"),
+            ("[#6]-&~&@[#7]", "[#6]-&@[#7]"),
+            ("[#6]-;~;@[#7]", "[#6]-&@[#7]"),
+            ("[#6]-&-&~[#7]", "[#6]-[#7]"),
+            ("[#6]-,=,-[#7]", "[#6]-,=[#7]"),
+            ("[#6]~,!~[#7]", "[#6]~[#7]"),
+        ] {
+            assert_eq!(canonical_string(source), expected, "{source}");
+        }
     }
 
     #[test]
