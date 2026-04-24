@@ -1531,10 +1531,20 @@ fn compiled_query_atom_matches(
     query_atom: QueryAtomId,
     target_atom: usize,
 ) -> bool {
+    let atom_matcher = &query.atom_matchers[query_atom];
+    if is_hidden_attached_hydrogen(target, target_atom) {
+        return false;
+    }
+    if !atom_fast_predicates_match(atom_matcher, target, target_atom) {
+        return false;
+    }
+    if atom_matcher.complete {
+        return true;
+    }
+
     let mut context = AtomMatchContext::new(query, target, recursive_cache);
-    cached_query_atom_matches(
+    atom_expr_matches(
         &query.query.atoms()[query_atom].expr,
-        &query.atom_matchers[query_atom],
         query_atom,
         target_atom,
         &mut context,
@@ -2115,10 +2125,7 @@ fn for_each_three_atom_unfixed_leaves(
     search: &mut ThreeAtomCenterSearch<'_, '_>,
     visit: &mut impl FnMut(&[Option<usize>]) -> bool,
 ) -> bool {
-    let neighbors = search
-        .target
-        .neighbors(search.target_center)
-        .collect::<alloc::vec::Vec<_>>();
+    let neighbors = search.target.neighbor_slice(search.target_center);
     let mut left_index = 0usize;
     while left_index < neighbors.len() {
         let (target_left, left_bond) = neighbors[left_index];
@@ -2946,11 +2953,9 @@ fn search_mapping_candidates(
         query_neighbor: seed_query_neighbor,
     }) = best_mapped_neighbor_seed(query_atom, target, context)
     else {
-        let mut target_atoms = alloc::vec::Vec::new();
-        if collect_atom_matcher_anchor_candidates(
+        if let Some(target_atoms) = atom_matcher_anchor_candidates(
             &context.compiled_query.atom_matchers[query_atom],
             target,
-            &mut target_atoms,
         ) {
             return search_mapping_unanchored_candidates(
                 query,
@@ -2958,7 +2963,7 @@ fn search_mapping_candidates(
                 context,
                 mapped_count,
                 query_atom,
-                target_atoms.into_iter(),
+                target_atoms.iter().copied(),
             );
         }
         return search_mapping_unanchored_candidates(
@@ -3664,25 +3669,6 @@ fn atom_expr_matches(
             bracket_tree_matches(&bracket_tree_expr.tree, query_atom_id, atom_id, context)
         }
     }
-}
-
-fn cached_query_atom_matches(
-    expr: &AtomExpr,
-    atom_matcher: &CompiledAtomMatcher,
-    query_atom_id: QueryAtomId,
-    atom_id: usize,
-    context: &mut AtomMatchContext<'_, '_>,
-) -> bool {
-    if is_hidden_attached_hydrogen(context.target, atom_id) {
-        return false;
-    }
-    if !atom_fast_predicates_match(atom_matcher, context.target, atom_id) {
-        return false;
-    }
-    if atom_matcher.complete {
-        return true;
-    }
-    atom_expr_matches(expr, query_atom_id, atom_id, context)
 }
 
 fn atom_fast_predicates_match(

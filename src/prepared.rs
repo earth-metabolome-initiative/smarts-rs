@@ -374,6 +374,14 @@ impl PreparedTarget {
         self.effective_neighbors.values[atom_id].iter().copied()
     }
 
+    /// Returns the prepared neighbor slice for hot paths that need indexed
+    /// neighbor-pair iteration without allocating.
+    #[inline]
+    #[must_use]
+    pub(crate) fn neighbor_slice(&self, atom_id: AtomId) -> &[(AtomId, BondLabel)] {
+        &self.effective_neighbors.values[atom_id]
+    }
+
     /// Returns whether the provided bond is aromatic under the prepared view.
     #[inline]
     #[must_use]
