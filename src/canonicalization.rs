@@ -886,6 +886,18 @@ fn simplify_bracket_and(items: Vec<BracketExprTree>, kind: BracketAndKind) -> Br
     merge_numeric_bracket_conjunctions(&mut items);
     synthesize_symbol_conjunctions(&mut items);
     synthesize_isotope_conjunctions(&mut items);
+    while let Some(changed) = prune_bracket_disjunctions_against_conjunction_terms(&mut items) {
+        if !changed {
+            break;
+        }
+    }
+    while subtract_negated_bracket_conjunction_terms(&mut items) {}
+    if items.iter().any(is_false_bracket_tree)
+        || bracket_and_contains_complement_pair(&items)
+        || bracket_and_contains_mutually_exclusive_pair(&items)
+    {
+        return false_bracket_tree();
+    }
     remove_implied_bracket_conjunction_terms(&mut items);
     items.sort_by_cached_key(BracketExprTree::to_string);
     items.dedup();
@@ -912,6 +924,239 @@ fn is_false_bracket_tree(tree: &BracketExprTree) -> bool {
         BracketExprTree::Not(inner)
             if matches!(inner.as_ref(), BracketExprTree::Primitive(AtomPrimitive::Wildcard))
     )
+}
+
+fn prune_bracket_disjunctions_against_conjunction_terms(
+    items: &mut [BracketExprTree],
+) -> Option<bool> {
+    for disjunction_index in 0..items.len() {
+        let BracketExprTree::Or(alternatives) = &items[disjunction_index] else {
+            continue;
+        };
+        let retained = alternatives
+            .iter()
+            .filter(|alternative| {
+                !items.iter().enumerate().any(|(other_index, other)| {
+                    other_index != disjunction_index
+                        && bracket_trees_are_mutually_exclusive(alternative, other)
+                })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+
+        if retained.is_empty() {
+            items[disjunction_index] = false_bracket_tree();
+            return None;
+        }
+        if retained.len() != alternatives.len() {
+            items[disjunction_index] = simplify_bracket_or(retained);
+            return Some(true);
+        }
+    }
+
+    Some(false)
+}
+
+fn subtract_negated_bracket_conjunction_terms(items: &mut Vec<BracketExprTree>) -> bool {
+    for negated_index in 0..items.len() {
+        let BracketExprTree::Not(excluded) = &items[negated_index] else {
+            continue;
+        };
+        for base_index in 0..items.len() {
+            if base_index == negated_index {
+                continue;
+            }
+            let Some(replacement) = subtract_bracket_tree(&items[base_index], excluded) else {
+                continue;
+            };
+
+            if base_index > negated_index {
+                items.remove(base_index);
+                items.remove(negated_index);
+            } else {
+                items.remove(negated_index);
+                items.remove(base_index);
+            }
+            items.push(replacement);
+            return true;
+        }
+    }
+
+    false
+}
+
+fn subtract_bracket_tree(
+    base: &BracketExprTree,
+    excluded: &BracketExprTree,
+) -> Option<BracketExprTree> {
+    match (base, excluded) {
+        (
+            BracketExprTree::Primitive(base_primitive),
+            BracketExprTree::Primitive(excluded_primitive),
+        ) => subtract_atom_primitive(base_primitive, excluded_primitive),
+        _ => None,
+    }
+}
+
+fn subtract_atom_primitive(
+    base: &AtomPrimitive,
+    excluded: &AtomPrimitive,
+) -> Option<BracketExprTree> {
+    subtract_atomic_number_primitive(base, excluded)
+        .or_else(|| subtract_numeric_atom_primitive(base, excluded))
+}
+
+fn subtract_atomic_number_primitive(
+    base: &AtomPrimitive,
+    excluded: &AtomPrimitive,
+) -> Option<BracketExprTree> {
+    let AtomPrimitive::AtomicNumber(atomic_number) = base else {
+        return None;
+    };
+    let (element, aromatic) = match excluded {
+        AtomPrimitive::Symbol { element, aromatic } => (*element, !*aromatic),
+        AtomPrimitive::AliphaticAny => {
+            (element_for_symbol_conjunction(*atomic_number, true)?, true)
+        }
+        AtomPrimitive::AromaticAny => (
+            element_for_symbol_conjunction(*atomic_number, false)?,
+            false,
+        ),
+        _ => return None,
+    };
+    if u16::from(element.atomic_number()) != *atomic_number {
+        return None;
+    }
+    if aromatic && !element_supports_aromatic_bracket_symbol(element) {
+        return None;
+    }
+    Some(BracketExprTree::Primitive(AtomPrimitive::Symbol {
+        element,
+        aromatic,
+    }))
+}
+
+fn subtract_numeric_atom_primitive(
+    base: &AtomPrimitive,
+    excluded: &AtomPrimitive,
+) -> Option<BracketExprTree> {
+    match (base, excluded) {
+        (AtomPrimitive::Degree(base), AtomPrimitive::Degree(excluded)) => {
+            subtract_count_query(*base, *excluded, AtomPrimitive::Degree)
+        }
+        (AtomPrimitive::Connectivity(base), AtomPrimitive::Connectivity(excluded)) => {
+            subtract_count_query(*base, *excluded, AtomPrimitive::Connectivity)
+        }
+        (AtomPrimitive::Valence(base), AtomPrimitive::Valence(excluded)) => {
+            subtract_count_query(*base, *excluded, AtomPrimitive::Valence)
+        }
+        (AtomPrimitive::HeteroNeighbor(base), AtomPrimitive::HeteroNeighbor(excluded)) => {
+            subtract_count_query(*base, *excluded, AtomPrimitive::HeteroNeighbor)
+        }
+        (
+            AtomPrimitive::AliphaticHeteroNeighbor(base),
+            AtomPrimitive::AliphaticHeteroNeighbor(excluded),
+        ) => subtract_count_query(*base, *excluded, AtomPrimitive::AliphaticHeteroNeighbor),
+        (
+            AtomPrimitive::Hydrogen(base_kind, base),
+            AtomPrimitive::Hydrogen(excluded_kind, excluded),
+        ) if base_kind == excluded_kind => subtract_numeric_query_range(
+            numeric_count_range(*base),
+            numeric_count_range(*excluded),
+            |range| {
+                BracketExprTree::Primitive(AtomPrimitive::Hydrogen(
+                    *base_kind,
+                    count_query_from_range(range).into_option(),
+                ))
+            },
+        ),
+        (AtomPrimitive::RingMembership(base), AtomPrimitive::RingMembership(excluded)) => {
+            subtract_ring_query(*base, *excluded, AtomPrimitive::RingMembership)
+        }
+        (AtomPrimitive::RingSize(base), AtomPrimitive::RingSize(excluded)) => {
+            subtract_ring_query(*base, *excluded, AtomPrimitive::RingSize)
+        }
+        (AtomPrimitive::RingConnectivity(base), AtomPrimitive::RingConnectivity(excluded)) => {
+            subtract_ring_query(*base, *excluded, AtomPrimitive::RingConnectivity)
+        }
+        (AtomPrimitive::Hybridization(base), AtomPrimitive::Hybridization(excluded)) => {
+            subtract_numeric_query_range(
+                numeric_query_range(*base),
+                numeric_query_range(*excluded),
+                |range| {
+                    BracketExprTree::Primitive(AtomPrimitive::Hybridization(
+                        numeric_query_from_range(range),
+                    ))
+                },
+            )
+        }
+        _ => None,
+    }
+}
+
+fn subtract_count_query(
+    base: Option<NumericQuery>,
+    excluded: Option<NumericQuery>,
+    build: impl Fn(Option<NumericQuery>) -> AtomPrimitive,
+) -> Option<BracketExprTree> {
+    subtract_numeric_query_range(
+        numeric_count_range(base),
+        numeric_count_range(excluded),
+        |range| BracketExprTree::Primitive(build(count_query_from_range(range).into_option())),
+    )
+}
+
+fn subtract_ring_query(
+    base: Option<NumericQuery>,
+    excluded: Option<NumericQuery>,
+    build: impl Fn(Option<NumericQuery>) -> AtomPrimitive,
+) -> Option<BracketExprTree> {
+    subtract_numeric_query_range(
+        numeric_ring_range(base),
+        numeric_ring_range(excluded),
+        |range| BracketExprTree::Primitive(build(ring_query_from_range(range).into_option())),
+    )
+}
+
+fn subtract_numeric_query_range(
+    base: NumericRange,
+    excluded: NumericRange,
+    build: impl Fn(NumericRange) -> BracketExprTree,
+) -> Option<BracketExprTree> {
+    let overlap = intersect_numeric_ranges(base, excluded)?;
+    if overlap == base {
+        return Some(false_bracket_tree());
+    }
+
+    let base_min = base.min.unwrap_or(0);
+    let overlap_min = overlap.min.unwrap_or(0);
+    let mut retained = Vec::new();
+    if base_min < overlap_min {
+        retained.push(NumericRange {
+            min: Some(base_min),
+            max: Some(overlap_min - 1),
+        });
+    }
+    if let Some(overlap_max) = overlap.max {
+        let next_min = overlap_max.saturating_add(1);
+        if base.max.is_none_or(|base_max| next_min <= base_max) {
+            retained.push(NumericRange {
+                min: Some(next_min),
+                max: base.max,
+            });
+        }
+    }
+
+    match retained.as_slice() {
+        [] => Some(false_bracket_tree()),
+        [single] => Some(build(canonical_numeric_range(*single))),
+        _ => Some(simplify_bracket_or(
+            retained
+                .into_iter()
+                .map(|range| build(canonical_numeric_range(range)))
+                .collect(),
+        )),
+    }
 }
 
 fn synthesize_symbol_conjunctions(items: &mut Vec<BracketExprTree>) {
@@ -1048,6 +1293,12 @@ fn bracket_tree_implies(specific: &BracketExprTree, general: &BracketExprTree) -
         (BracketExprTree::Not(specific), BracketExprTree::Not(general)) => {
             bracket_tree_implies(general, specific)
         }
+        (BracketExprTree::Or(items), _) => {
+            items.iter().all(|item| bracket_tree_implies(item, general))
+        }
+        (_, BracketExprTree::Or(items)) => items
+            .iter()
+            .any(|item| bracket_tree_implies(specific, item)),
         (_, BracketExprTree::Not(excluded)) => {
             bracket_trees_are_mutually_exclusive(specific, excluded)
         }
@@ -1619,6 +1870,9 @@ fn bracket_tree_pair_is_mutually_exclusive(
         (BracketExprTree::Not(_), BracketExprTree::Not(_)) => false,
         (BracketExprTree::Not(excluded), candidate)
         | (candidate, BracketExprTree::Not(excluded)) => bracket_tree_implies(candidate, excluded),
+        (BracketExprTree::Or(items), other) | (other, BracketExprTree::Or(items)) => items
+            .iter()
+            .all(|item| bracket_trees_are_mutually_exclusive(item, other)),
         (
             BracketExprTree::Primitive(left_primitive),
             BracketExprTree::Primitive(right_primitive),
@@ -1968,6 +2222,15 @@ fn simplify_bond_and(items: Vec<BondExprTree>, kind: BondAndKind) -> BondExprTre
     if items.len() > 1 {
         items.retain(|item| !matches!(item, BondExprTree::Primitive(BondPrimitive::Any)));
     }
+    while let Some(changed) = prune_bond_disjunctions_against_conjunction_terms(&mut items) {
+        if !changed {
+            break;
+        }
+    }
+    if items.iter().any(is_false_bond_tree) || bond_and_contains_mutually_exclusive_pair(&items) {
+        return false_bond_tree();
+    }
+    remove_implied_bond_conjunction_terms(&mut items);
     items.sort_by_cached_key(BondExprTree::to_string);
     items.dedup();
     match items.as_slice() {
@@ -2016,6 +2279,49 @@ fn is_false_bond_tree(tree: &BondExprTree) -> bool {
         BondExprTree::Not(inner)
             if matches!(inner.as_ref(), BondExprTree::Primitive(BondPrimitive::Any))
     )
+}
+
+fn prune_bond_disjunctions_against_conjunction_terms(items: &mut [BondExprTree]) -> Option<bool> {
+    for disjunction_index in 0..items.len() {
+        let BondExprTree::Or(alternatives) = &items[disjunction_index] else {
+            continue;
+        };
+        let retained = alternatives
+            .iter()
+            .filter(|alternative| {
+                !items.iter().enumerate().any(|(other_index, other)| {
+                    other_index != disjunction_index
+                        && bond_trees_are_mutually_exclusive(alternative, other)
+                })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+
+        if retained.is_empty() {
+            items[disjunction_index] = false_bond_tree();
+            return None;
+        }
+        if retained.len() != alternatives.len() {
+            items[disjunction_index] = simplify_bond_or(retained);
+            return Some(true);
+        }
+    }
+
+    Some(false)
+}
+
+fn remove_implied_bond_conjunction_terms(items: &mut Vec<BondExprTree>) {
+    let mut index = 0usize;
+    while index < items.len() {
+        let is_implied = items.iter().enumerate().any(|(other_index, other)| {
+            other_index != index && bond_tree_implies(other, &items[index])
+        });
+        if is_implied {
+            items.remove(index);
+        } else {
+            index += 1;
+        }
+    }
 }
 
 fn bond_and_contains_mutually_exclusive_pair(items: &[BondExprTree]) -> bool {
@@ -2076,6 +2382,8 @@ fn bond_tree_implies(specific: &BondExprTree, general: &BondExprTree) -> bool {
         (BondExprTree::Not(specific), BondExprTree::Not(general)) => {
             bond_tree_implies(general, specific)
         }
+        (BondExprTree::Or(items), _) => items.iter().all(|item| bond_tree_implies(item, general)),
+        (_, BondExprTree::Or(items)) => items.iter().any(|item| bond_tree_implies(specific, item)),
         (_, BondExprTree::Not(excluded)) => bond_trees_are_mutually_exclusive(specific, excluded),
         (BondExprTree::HighAnd(items) | BondExprTree::LowAnd(items), _) => {
             items.iter().any(|item| bond_tree_implies(item, general))
@@ -2117,6 +2425,9 @@ fn bond_tree_pair_is_mutually_exclusive(left: &BondExprTree, right: &BondExprTre
         (BondExprTree::Not(excluded), candidate) | (candidate, BondExprTree::Not(excluded)) => {
             bond_tree_implies(candidate, excluded)
         }
+        (BondExprTree::Or(items), other) | (other, BondExprTree::Or(items)) => items
+            .iter()
+            .all(|item| bond_trees_are_mutually_exclusive(item, other)),
         (BondExprTree::Primitive(left), BondExprTree::Primitive(right)) => {
             bond_primitives_are_mutually_exclusive(*left, *right)
         }
@@ -3230,6 +3541,51 @@ mod tests {
             ("[#6]-&-&~[#7]", "[#6]-[#7]"),
             ("[#6]-,=,-[#7]", "[#6]-,=[#7]"),
             ("[#6]~,!~[#7]", "[#6]~[#7]"),
+        ] {
+            assert_eq!(canonical_string(source), expected, "{source}");
+        }
+    }
+
+    #[test]
+    fn canonicalize_simplifies_low_precedence_absorption_forms() {
+        for (source, expected) in [
+            ("[#6;#6,#7]", "[#6]"),
+            ("[#6;!#6,#7]", "[!*]"),
+            ("[#6,#7;#6]", "[#6]"),
+            ("[#6,!#6;#7]", "[#7]"),
+            ("[#6,#7;!#6]", "[#7]"),
+            ("[#6,!#6;!#7]", "[!#7]"),
+            ("[#6;#7,#8]", "[!*]"),
+            ("[#6,#7;#8]", "[!*]"),
+            ("[#6,#7;!#8]", "[#6,#7]"),
+            ("[#6,!#6;#6]", "[#6]"),
+            ("[#6;R,#6]", "[#6]"),
+            ("[C;R,C]", "[C]"),
+            ("[R;#6,R]", "[R]"),
+            ("[!#6;R,!#6]", "[!#6]"),
+            ("[#6;!#6,R]", "[#6&R]"),
+            ("[D2,D3;D{2-4}]", "[D{2-3}]"),
+            ("[D{2-4};D2,D5]", "[D2]"),
+            ("[D2,D3;!D2]", "[D3]"),
+            ("[D2,D3;!D{2-3}]", "[!*]"),
+            ("[C,c;#6]", "[#6]"),
+            ("[C,c;A]", "[C]"),
+            ("[C,c;!C]", "[c]"),
+            ("[12C,13C;#6]", "[12C,13C]"),
+            ("[12C,13C;12*]", "[12C]"),
+            ("[12C,13C;!12*]", "[13C]"),
+            ("[12C,12c;12*]", "[#6&12*]"),
+            ("[#6]-;-,=[#7]", "[#6]-[#7]"),
+            ("[#6]-;!-,=[#7]", "[#6]!~[#7]"),
+            ("[#6]-,=;-[#7]", "[#6]-[#7]"),
+            ("[#6]-,!-;=[#7]", "[#6]=[#7]"),
+            ("[#6]-,=;!-[#7]", "[#6]=[#7]"),
+            ("[#6]-,=;!:[#7]", "[#6]-,=[#7]"),
+            ("[#6]-;=,#[#7]", "[#6]!~[#7]"),
+            ("[#6]-,=;#[#7]", "[#6]!~[#7]"),
+            ("[#6]-;@,-[#7]", "[#6]-[#7]"),
+            ("[#6]@;-,@[#7]", "[#6]@[#7]"),
+            ("[#6]-;!-,@[#7]", "[#6]-&@[#7]"),
         ] {
             assert_eq!(canonical_string(source), expected, "{source}");
         }
