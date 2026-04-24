@@ -181,10 +181,7 @@ fn build_candidate_sets(
     target_index: &TargetCorpusIndex,
 ) -> Vec<TargetCandidateSet> {
     let mut scratch = TargetCorpusScratch::new();
-    query_screens
-        .iter()
-        .map(|screen| target_index.candidate_set_with_scratch(screen, &mut scratch))
-        .collect()
+    target_index.candidate_sets_with_scratch(query_screens, &mut scratch)
 }
 
 fn matrix_match_count_scalar(queries: &[CompiledQuery], targets: &[PreparedTarget]) -> usize {
@@ -231,6 +228,30 @@ fn matrix_match_count_indexed_rayon_queries(
                 .sum::<usize>()
         })
         .sum()
+}
+
+fn matrix_match_count_indexed_batched_scalar(
+    queries: &[CompiledQuery],
+    query_screens: &[QueryScreen],
+    target_index: &TargetCorpusIndex,
+    targets: &[PreparedTarget],
+) -> usize {
+    let mut corpus_scratch = TargetCorpusScratch::new();
+    let candidate_sets =
+        target_index.candidate_sets_with_scratch(query_screens, &mut corpus_scratch);
+    matrix_match_count_indexed_scalar(queries, &candidate_sets, targets)
+}
+
+fn matrix_match_count_indexed_batched_rayon_queries(
+    queries: &[CompiledQuery],
+    query_screens: &[QueryScreen],
+    target_index: &TargetCorpusIndex,
+    targets: &[PreparedTarget],
+) -> usize {
+    let mut corpus_scratch = TargetCorpusScratch::new();
+    let candidate_sets =
+        target_index.candidate_sets_with_scratch(query_screens, &mut corpus_scratch);
+    matrix_match_count_indexed_rayon_queries(queries, &candidate_sets, targets)
 }
 
 fn matrix_match_count_indexed_streaming_scalar(
@@ -361,6 +382,44 @@ fn bench_evolution_matrix(c: &mut Criterion) {
                 black_box(total);
             });
         });
+
+        group.bench_function(
+            BenchmarkId::new("indexed_batched_scalar", dataset.id),
+            |b| {
+                b.iter(|| {
+                    let total = matrix_match_count_indexed_batched_scalar(
+                        black_box(&dataset.queries),
+                        black_box(&dataset.query_screens),
+                        black_box(&target_index),
+                        black_box(&targets),
+                    );
+                    assert_eq!(
+                        total, dataset.expected_total_matches,
+                        "batched indexed benchmark changed match count"
+                    );
+                    black_box(total);
+                });
+            },
+        );
+
+        group.bench_function(
+            BenchmarkId::new("indexed_batched_rayon_queries", dataset.id),
+            |b| {
+                b.iter(|| {
+                    let total = matrix_match_count_indexed_batched_rayon_queries(
+                        black_box(&dataset.queries),
+                        black_box(&dataset.query_screens),
+                        black_box(&target_index),
+                        black_box(&targets),
+                    );
+                    assert_eq!(
+                        total, dataset.expected_total_matches,
+                        "batched indexed rayon benchmark changed match count"
+                    );
+                    black_box(total);
+                });
+            },
+        );
 
         group.bench_function(
             BenchmarkId::new("indexed_streaming_scalar", dataset.id),

@@ -240,12 +240,11 @@ fn main() {
 
         let phase = Instant::now();
         let mut scratch = TargetCorpusScratch::new();
-        let mut candidates = Vec::new();
-        let mut indexed_counts = Vec::with_capacity(query_screens.len());
-        for query in &query_screens {
-            index.candidate_ids_with_scratch_into(query, &mut scratch, &mut candidates);
-            indexed_counts.push(candidates.len());
-        }
+        let candidate_sets = index.candidate_sets_with_scratch(&query_screens, &mut scratch);
+        let indexed_counts = candidate_sets
+            .iter()
+            .map(smarts_rs::TargetCandidateSet::len)
+            .collect::<Vec<_>>();
         eprintln!("counted {name} indexed pairs in {:?}", phase.elapsed());
 
         println!("fixture: {name}");

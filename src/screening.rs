@@ -100,7 +100,7 @@ pub struct QueryScreenFeatureStats {
     pub star3_feature_masks: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum QueryFeatureFilter {
     Edge {
         feature: EdgeFeature,
@@ -450,6 +450,8 @@ pub struct TargetCorpusScratch<'a> {
     candidate_mask: Vec<u64>,
     active_candidate_mask: Vec<u64>,
     filters: Vec<RequiredCountFilter<'a>>,
+    feature_filters_to_prime: Vec<QueryFeatureFilter>,
+    repeated_feature_filters: Vec<QueryFeatureFilter>,
     cache_owner: Option<usize>,
     edge_mask_cache: BTreeMap<(EdgeFeature, u16), CachedFeatureMask>,
     edge_count_by_target: Vec<u16>,
@@ -512,6 +514,8 @@ impl TargetCorpusScratch<'_> {
             candidate_mask: Vec::new(),
             active_candidate_mask: Vec::new(),
             filters: Vec::new(),
+            feature_filters_to_prime: Vec::new(),
+            repeated_feature_filters: Vec::new(),
             cache_owner: None,
             edge_mask_cache: BTreeMap::new(),
             edge_count_by_target: Vec::new(),
@@ -628,6 +632,35 @@ impl QueryFeatureFilter {
                 active_candidate_mask,
                 scratch,
             ),
+        }
+    }
+
+    fn is_cached(self, scratch: &TargetCorpusScratch<'_>) -> bool {
+        match self {
+            Self::Edge {
+                feature,
+                required_count,
+            } => scratch
+                .edge_mask_cache
+                .contains_key(&(feature, required_count)),
+            Self::Path3 {
+                feature,
+                required_count,
+            } => scratch
+                .path3_mask_cache
+                .contains_key(&(feature, required_count)),
+            Self::Path4 {
+                feature,
+                required_count,
+            } => scratch
+                .path4_mask_cache
+                .contains_key(&(feature, required_count)),
+            Self::Star3 {
+                feature,
+                required_count,
+            } => scratch
+                .star3_mask_cache
+                .contains_key(&(feature, required_count)),
         }
     }
 
@@ -1039,6 +1072,32 @@ impl TargetCorpusIndex {
         out
     }
 
+    /// Builds reusable candidate sets for a batch of queries.
+    ///
+    /// This primes repeated local-signature masks across the batch before
+    /// screening individual queries. It is intended for generation-style
+    /// workloads where many SMARTS queries are evaluated against the same
+    /// fixed target corpus.
+    #[must_use]
+    pub fn candidate_sets(&self, queries: &[QueryScreen]) -> Vec<TargetCandidateSet> {
+        let mut scratch = TargetCorpusScratch::new();
+        self.candidate_sets_with_scratch(queries, &mut scratch)
+    }
+
+    /// Builds reusable candidate sets for a batch of queries using reusable
+    /// scratch buffers.
+    pub fn candidate_sets_with_scratch<'idx>(
+        &'idx self,
+        queries: &[QueryScreen],
+        scratch: &mut TargetCorpusScratch<'idx>,
+    ) -> Vec<TargetCandidateSet> {
+        self.prime_repeated_feature_filter_cache(queries, scratch);
+        queries
+            .iter()
+            .map(|query| self.candidate_set_with_scratch(query, scratch))
+            .collect()
+    }
+
     /// Builds a reusable candidate set for one query.
     ///
     /// This is useful when the same query/target candidate list is consumed by
@@ -1122,6 +1181,48 @@ impl TargetCorpusIndex {
             return;
         }
         for_each_set_bit(&scratch.candidate_mask, self.screens.len(), f);
+    }
+
+    fn prime_repeated_feature_filter_cache<'idx>(
+        &'idx self,
+        queries: &[QueryScreen],
+        scratch: &mut TargetCorpusScratch<'idx>,
+    ) {
+        if self.screens.is_empty() || queries.is_empty() {
+            return;
+        }
+
+        scratch.ensure_cache_owner(core::ptr::from_ref(self) as usize);
+
+        let mut filters = core::mem::take(&mut scratch.feature_filters_to_prime);
+        filters.clear();
+        filters.extend(
+            queries
+                .iter()
+                .flat_map(|query| query.planned_feature_filters.iter().copied()),
+        );
+        filters.sort_unstable();
+
+        let mut repeated = core::mem::take(&mut scratch.repeated_feature_filters);
+        repeated.clear();
+        let mut start = 0usize;
+        while start < filters.len() {
+            let filter = filters[start];
+            let mut end = start + 1;
+            while end < filters.len() && filters[end] == filter {
+                end += 1;
+            }
+            if end - start > 1 && !filter.is_cached(scratch) {
+                repeated.push(filter);
+            }
+            start = end;
+        }
+
+        scratch.feature_filters_to_prime = filters;
+        for filter in repeated.iter().copied() {
+            filter.populate_candidate_mask(self, None, scratch);
+        }
+        scratch.repeated_feature_filters = repeated;
     }
 
     fn collect_required_count_filters<'idx>(
@@ -1887,23 +1988,23 @@ impl TargetCorpusIndex {
                     arms: [
                         Star3OrientationArmFeatureMask {
                             query: query_feature.arms[0],
-                            atoms: target_atom_matches[order[0]],
+                            atoms: target_atom_matches[0],
                             atom_index: target_atom_indexes[order[0]],
-                            bonds: target_bond_matches[order[0]],
+                            bonds: target_bond_matches[0],
                             bond_index: target_bond_indexes[order[0]],
                         },
                         Star3OrientationArmFeatureMask {
                             query: query_feature.arms[1],
-                            atoms: target_atom_matches[order[1]],
+                            atoms: target_atom_matches[1],
                             atom_index: target_atom_indexes[order[1]],
-                            bonds: target_bond_matches[order[1]],
+                            bonds: target_bond_matches[1],
                             bond_index: target_bond_indexes[order[1]],
                         },
                         Star3OrientationArmFeatureMask {
                             query: query_feature.arms[2],
-                            atoms: target_atom_matches[order[2]],
+                            atoms: target_atom_matches[2],
                             atom_index: target_atom_indexes[order[2]],
-                            bonds: target_bond_matches[order[2]],
+                            bonds: target_bond_matches[2],
                             bond_index: target_bond_indexes[order[2]],
                         },
                     ],

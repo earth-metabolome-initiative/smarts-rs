@@ -236,6 +236,63 @@ fn indexed_execution_matches_naive_exact_matrix() {
 }
 
 #[test]
+fn indexed_execution_keeps_reported_amphetamine_scalar_matches() {
+    let smarts = "[#6](~[#7])(~[#7])=[#8]";
+    let target_cases = [
+        "CCCN1C2=CC=CC=C2N(C1=O)CCC(=O)NC(C)CC3=CC=CC=C3F",
+        "CC1=CC=CC=C1C[C@@H](C(=O)NC2=NC(=CS2)C(=O)OC)N3C(=C(NC3=O)C4=CC5=C(C=C4)OCO5)O",
+        "C1[C@@H](O[C@@H]([C@@]1(C(=O)[C@H](CC2=CC=C(C=C2)F)N)O)C(C(=O)[C@H](CC3=CC=C(C=C3)F)N)O)N4C=C(C(=O)NC4=O)/C=C/Br",
+        "CC(C)(CC1=CC=CC=C1)N(C)C(=O)CN(CCOC(=O)N2CCC(=CC2)N3C4=CC=CC=C4NC3=O)CC(=O)N(C)C(C)(C)CC5=CC=CC=C5",
+        "CC(C)(C)OC(=O)N(CC1=CC=CC=C1)[C@H](CC2=CC=CC=C2)COC(=O)N3CCC(CC3)N4C5=CC=CC=C5NC4=O",
+        "COC1=NC(=NC(=C1)C(=O)NC(CC2=CC=CC=C2)C=NN3C=C(NC3=O)O)OC",
+        "C1=CC(=CC=C1CCN)CNC(=O)C2=CNC(=O)N2",
+        "CN1C(=O)C2=C(N=NC(=N2)C3=CC=C(C=C3)CCN(C)C)N(C1=O)C4=CC=CC=C4",
+        "CN1C(=C(C(=O)NC1=O)NCCC2=CC=C(C=C2)OC)N",
+    ];
+
+    let query = QueryMol::from_str(smarts).unwrap();
+    let compiled = CompiledQuery::new(query.clone()).unwrap();
+    let query_screen = QueryScreen::new(&query);
+    let targets = target_cases
+        .into_iter()
+        .map(|smiles| PreparedTarget::new(Smiles::from_str(smiles).unwrap()))
+        .collect::<alloc::vec::Vec<_>>();
+    let index = TargetCorpusIndex::new(&targets);
+
+    let mut match_scratch = MatchScratch::new();
+    let scalar_matches = targets
+        .iter()
+        .enumerate()
+        .filter_map(|(target_id, target)| {
+            compiled
+                .matches_with_scratch(target, &mut match_scratch)
+                .then_some(target_id)
+        })
+        .collect::<alloc::vec::Vec<_>>();
+    assert_eq!(
+        scalar_matches,
+        (0..target_cases.len()).collect::<alloc::vec::Vec<_>>()
+    );
+
+    let candidate_ids = index.candidate_ids(&query_screen);
+    for &target_id in &scalar_matches {
+        assert!(
+            candidate_ids.contains(&target_id),
+            "index missed scalar match target_id={target_id}: {}",
+            target_cases[target_id]
+        );
+    }
+
+    let mut match_scratch = MatchScratch::new();
+    let indexed_matches = candidate_ids
+        .iter()
+        .copied()
+        .filter(|&target_id| compiled.matches_with_scratch(&targets[target_id], &mut match_scratch))
+        .collect::<alloc::vec::Vec<_>>();
+    assert_eq!(indexed_matches, scalar_matches);
+}
+
+#[test]
 fn edge_feature_count_filter_respects_required_multiplicity() {
     let prepared_targets = ["CCO", "CCC", "CC(C)C"]
         .into_iter()
@@ -418,6 +475,39 @@ fn cached_feature_masks_can_be_reused_after_scalar_filters() {
 }
 
 #[test]
+fn batched_candidate_sets_match_individual_candidate_sets() {
+    let prepared_targets = [
+        "CCO",
+        "CCOC",
+        "ClCCO",
+        "NCCO",
+        "CCCC",
+        "COC",
+        "CCN",
+        "OCCO",
+        "CC(O)(N)Cl",
+        "CC(O)(N)F",
+    ]
+    .into_iter()
+    .map(|smiles| PreparedTarget::new(Smiles::from_str(smiles).unwrap()))
+    .collect::<alloc::vec::Vec<_>>();
+    let query_screens = ["CO", "[Cl].CO", "COCO", "C(O)(N)Cl", "CCO"]
+        .into_iter()
+        .map(|smarts| QueryScreen::new(&QueryMol::from_str(smarts).unwrap()))
+        .collect::<alloc::vec::Vec<_>>();
+    let index = TargetCorpusIndex::new(&prepared_targets);
+
+    let mut scratch = TargetCorpusScratch::new();
+    let batched = index.candidate_sets_with_scratch(&query_screens, &mut scratch);
+    let individual = query_screens
+        .iter()
+        .map(|screen| index.candidate_set(screen))
+        .collect::<alloc::vec::Vec<_>>();
+
+    assert_eq!(batched, individual);
+}
+
+#[test]
 fn star3_feature_filter_rejects_missing_branch_context() {
     let prepared_targets = ["CC(O)(N)Cl", "CC(O)(N)F", "CC(O)Cl", "CC(Cl)(N)O"]
         .into_iter()
@@ -429,6 +519,32 @@ fn star3_feature_filter_rejects_missing_branch_context() {
     assert_eq!(query.required_star3_features.len(), 1);
     assert_eq!(query.required_star3_feature_counts.len(), 1);
     assert_eq!(index.candidate_ids(&query), alloc::vec![0, 3]);
+}
+
+#[test]
+fn star3_feature_filter_keeps_matches_with_permuted_wildcard_arms() {
+    let prepared_targets = ["CC(N)O", "CC(O)O"]
+        .into_iter()
+        .map(|smiles| PreparedTarget::new(Smiles::from_str(smiles).unwrap()))
+        .collect::<alloc::vec::Vec<_>>();
+    let index = TargetCorpusIndex::new(&prepared_targets);
+    let query = QueryMol::from_str("C(*)(*)N").unwrap();
+    let compiled = CompiledQuery::new(query.clone()).unwrap();
+    let query_screen = QueryScreen::new(&query);
+
+    let mut match_scratch = MatchScratch::new();
+    let expected = prepared_targets
+        .iter()
+        .enumerate()
+        .filter_map(|(target_id, target)| {
+            compiled
+                .matches_with_scratch(target, &mut match_scratch)
+                .then_some(target_id)
+        })
+        .collect::<alloc::vec::Vec<_>>();
+
+    assert_eq!(expected, alloc::vec![0]);
+    assert_eq!(index.candidate_ids(&query_screen), expected);
 }
 
 #[test]
@@ -486,6 +602,52 @@ fn screen_never_filters_true_matches_from_frozen_fixtures() {
                 index.candidate_ids(&query_screen),
                 alloc::vec![0],
                 "index rejected known true match: SMARTS {:?} vs SMILES {:?}",
+                case.smarts,
+                case.smiles
+            );
+        }
+    }
+}
+
+#[test]
+fn index_never_filters_scalar_matches_from_frozen_fixtures() {
+    for fixture in [
+        include_str!("../../corpus/matching/single-atom-v0.rdkit.json"),
+        include_str!("../../corpus/matching/connected-v0.rdkit.json"),
+        include_str!("../../corpus/matching/ring-v0.rdkit.json"),
+        include_str!("../../corpus/matching/counts-v0.rdkit.json"),
+        include_str!("../../corpus/matching/disconnected-v0.rdkit.json"),
+        include_str!("../../corpus/matching/recursive-v0.rdkit.json"),
+        include_str!("../../corpus/matching/stereo-v0.rdkit.json"),
+        include_str!("../../corpus/matching/stereo-gap-v1.rdkit.json"),
+        include_str!("../../corpus/matching/stereo-gap-v2.rdkit.json"),
+        include_str!("../../corpus/matching/stereo-gap-v3.rdkit.json"),
+        include_str!("../../corpus/matching/stereo-gap-v4.rdkit.json"),
+        include_str!("../../corpus/matching/stereo-gap-v5.rdkit.json"),
+        include_str!("../../corpus/matching/stereo-gap-v6.rdkit.json"),
+        include_str!("../../corpus/matching/stereo-gap-v7.rdkit.json"),
+        include_str!("../../corpus/matching/benchmark-alerts-v0.rdkit.json"),
+        include_str!("../../corpus/matching/benchmark-aromaticity-v0.rdkit.json"),
+        include_str!("../../corpus/matching/benchmark-counted-v0.rdkit.json"),
+        include_str!("../../corpus/matching/benchmark-extensions-v0.rdkit.json"),
+    ] {
+        let cases: alloc::vec::Vec<ExpectedCase> =
+            serde_json::from_str(fixture).expect("valid frozen fixture");
+        for case in cases {
+            let query = QueryMol::from_str(&case.smarts).expect("valid SMARTS");
+            let compiled = CompiledQuery::new(query.clone()).expect("supported SMARTS");
+            let target = PreparedTarget::new(case.smiles.parse::<Smiles>().expect("valid SMILES"));
+            let mut match_scratch = MatchScratch::new();
+            if !compiled.matches_with_scratch(&target, &mut match_scratch) {
+                continue;
+            }
+
+            let query_screen = QueryScreen::new(&query);
+            let index = TargetCorpusIndex::new(alloc::slice::from_ref(&target));
+            assert_eq!(
+                index.candidate_ids(&query_screen),
+                alloc::vec![0],
+                "index rejected scalar match: SMARTS {:?} vs SMILES {:?}",
                 case.smarts,
                 case.smiles
             );
