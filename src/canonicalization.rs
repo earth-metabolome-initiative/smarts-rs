@@ -3079,8 +3079,21 @@ fn bracket_disjunction_consensus(
     left: &BracketExprTree,
     right: &BracketExprTree,
 ) -> Option<BracketExprTree> {
-    let (left_items, left_kind) = bracket_consensus_items(left);
-    let (right_items, right_kind) = bracket_consensus_items(right);
+    bracket_disjunction_consensus_with_items(left, right, bracket_consensus_items).or_else(|| {
+        bracket_disjunction_consensus_with_items(left, right, bracket_complement_consensus_items)
+    })
+}
+
+fn bracket_disjunction_consensus_with_items<F>(
+    left: &BracketExprTree,
+    right: &BracketExprTree,
+    items_for: F,
+) -> Option<BracketExprTree>
+where
+    F: Fn(&BracketExprTree) -> (Vec<BracketExprTree>, BracketAndKind),
+{
+    let (left_items, left_kind) = items_for(left);
+    let (right_items, right_kind) = items_for(right);
     let kind = if left_kind == BracketAndKind::Low || right_kind == BracketAndKind::Low {
         BracketAndKind::Low
     } else {
@@ -3109,6 +3122,64 @@ fn bracket_disjunction_consensus(
     }
 
     None
+}
+
+fn bracket_complement_consensus_items(
+    tree: &BracketExprTree,
+) -> (Vec<BracketExprTree>, BracketAndKind) {
+    match tree {
+        BracketExprTree::HighAnd(items) => (
+            expanded_bracket_complement_consensus_items(items),
+            BracketAndKind::High,
+        ),
+        BracketExprTree::LowAnd(items) => (
+            expanded_bracket_complement_consensus_items(items),
+            BracketAndKind::Low,
+        ),
+        other => (
+            expanded_bracket_complement_consensus_item(other.clone()),
+            BracketAndKind::High,
+        ),
+    }
+}
+
+fn expanded_bracket_complement_consensus_items(items: &[BracketExprTree]) -> Vec<BracketExprTree> {
+    items
+        .iter()
+        .cloned()
+        .flat_map(expanded_bracket_complement_consensus_item)
+        .collect()
+}
+
+fn expanded_bracket_complement_consensus_item(item: BracketExprTree) -> Vec<BracketExprTree> {
+    match item {
+        BracketExprTree::Primitive(AtomPrimitive::Symbol { element, aromatic }) => {
+            vec![
+                BracketExprTree::Primitive(AtomPrimitive::AtomicNumber(u16::from(
+                    element.atomic_number(),
+                ))),
+                aromaticity_class_tree(aromatic),
+            ]
+        }
+        BracketExprTree::Primitive(AtomPrimitive::Isotope { isotope, aromatic }) => {
+            vec![
+                BracketExprTree::Primitive(AtomPrimitive::AtomicNumber(u16::from(
+                    isotope.element().atomic_number(),
+                ))),
+                BracketExprTree::Primitive(AtomPrimitive::IsotopeWildcard(isotope.mass_number())),
+                aromaticity_class_tree(aromatic),
+            ]
+        }
+        other => expanded_bracket_consensus_item(other),
+    }
+}
+
+const fn aromaticity_class_tree(aromatic: bool) -> BracketExprTree {
+    BracketExprTree::Primitive(if aromatic {
+        AtomPrimitive::AromaticAny
+    } else {
+        AtomPrimitive::AliphaticAny
+    })
 }
 
 fn bracket_consensus_items(tree: &BracketExprTree) -> (Vec<BracketExprTree>, BracketAndKind) {
@@ -5361,6 +5432,14 @@ mod tests {
             ("[#6&H0&C,#6&H0&!C]", "[#6&H0]"),
             ("[#7&R&N,#7&R&!N]", "[#7&R]"),
             ("[$([#6])&#6&C,$([#6])&#6&!C]", "[#6]"),
+            ("[#6&A,!#6&A]", "[A]"),
+            ("[#6&a,!#6&a]", "[a]"),
+            ("[#7&A,!#7&A]", "[A]"),
+            ("[#7&a,!#7&a]", "[a]"),
+            ("[C,A&!#6]", "[A]"),
+            ("[c,a&!#6]", "[a]"),
+            ("[N,A&!#7]", "[A]"),
+            ("[n,a&!#7]", "[a]"),
         ] {
             assert_eq!(canonical_string(source), expected, "{source}");
         }
