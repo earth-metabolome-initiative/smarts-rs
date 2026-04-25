@@ -1098,6 +1098,29 @@ impl TargetCorpusIndex {
             .collect()
     }
 
+    /// Streams candidate target ids for a batch of queries using reusable
+    /// scratch buffers.
+    ///
+    /// This primes repeated local-signature masks across the batch, like
+    /// [`TargetCorpusIndex::candidate_sets_with_scratch`], but avoids
+    /// materializing [`TargetCandidateSet`] values when callers can consume
+    /// `(query_id, target_id)` pairs immediately.
+    pub fn for_each_candidate_id_batch_with_scratch<'idx, F>(
+        &'idx self,
+        queries: &[QueryScreen],
+        scratch: &mut TargetCorpusScratch<'idx>,
+        mut f: F,
+    ) where
+        F: FnMut(usize, usize),
+    {
+        self.prime_repeated_feature_filter_cache(queries, scratch);
+        for (query_id, query) in queries.iter().enumerate() {
+            self.for_each_candidate_id_with_scratch(query, scratch, |target_id| {
+                f(query_id, target_id);
+            });
+        }
+    }
+
     /// Builds a reusable candidate set for one query.
     ///
     /// This is useful when the same query/target candidate list is consumed by

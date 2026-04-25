@@ -552,6 +552,43 @@ fn batched_candidate_sets_match_individual_candidate_sets() {
 }
 
 #[test]
+fn batched_streaming_candidates_match_candidate_sets() {
+    let prepared_targets = [
+        "CCO",
+        "CCOC",
+        "ClCCO",
+        "NCCO",
+        "CCCC",
+        "COC",
+        "CCN",
+        "OCCO",
+        "CC(O)(N)Cl",
+        "CC(O)(N)F",
+    ]
+    .into_iter()
+    .map(|smiles| PreparedTarget::new(Smiles::from_str(smiles).unwrap()))
+    .collect::<alloc::vec::Vec<_>>();
+    let query_screens = ["CO", "[Cl].CO", "COCO", "C(O)(N)Cl", "CCO"]
+        .into_iter()
+        .map(|smarts| QueryScreen::new(&QueryMol::from_str(smarts).unwrap()))
+        .collect::<alloc::vec::Vec<_>>();
+    let index = TargetCorpusIndex::new(&prepared_targets);
+
+    let mut scratch = TargetCorpusScratch::new();
+    let expected = index.candidate_sets_with_scratch(&query_screens, &mut scratch);
+    let mut actual = alloc::vec![alloc::vec::Vec::new(); query_screens.len()];
+    index.for_each_candidate_id_batch_with_scratch(
+        &query_screens,
+        &mut scratch,
+        |query_id, target_id| actual[query_id].push(target_id),
+    );
+
+    for (actual, expected) in actual.iter().zip(&expected) {
+        assert_eq!(actual.as_slice(), expected.target_ids());
+    }
+}
+
+#[test]
 fn star3_feature_filter_rejects_missing_branch_context() {
     let prepared_targets = ["CC(O)(N)Cl", "CC(O)(N)F", "CC(O)Cl", "CC(Cl)(N)O"]
         .into_iter()

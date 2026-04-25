@@ -263,12 +263,15 @@ fn matrix_match_count_indexed_streaming_scalar(
     let mut total = 0usize;
     let mut corpus_scratch = TargetCorpusScratch::new();
     let mut match_scratch = MatchScratch::new();
-    for (query, screen) in queries.iter().zip(query_screens) {
-        target_index.for_each_candidate_id_with_scratch(screen, &mut corpus_scratch, |target_id| {
-            total +=
-                usize::from(query.matches_with_scratch(&targets[target_id], &mut match_scratch));
-        });
-    }
+    target_index.for_each_candidate_id_batch_with_scratch(
+        query_screens,
+        &mut corpus_scratch,
+        |query_id, target_id| {
+            total += usize::from(
+                queries[query_id].matches_with_scratch(&targets[target_id], &mut match_scratch),
+            );
+        },
+    );
     total
 }
 
