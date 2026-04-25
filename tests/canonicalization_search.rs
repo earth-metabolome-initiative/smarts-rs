@@ -494,6 +494,82 @@ fn synthetic_recursive_multigraphs_keep_canonicalization_stable() {
 
 #[test]
 #[ignore = "deterministic stress search for local canonicalization investigation"]
+fn connected_component_group_equivalence_groups_converge() {
+    let mut groups = Vec::new();
+    collect_connected_component_group_equivalence_groups(&mut groups);
+
+    let mut checked = 0usize;
+    for group in groups {
+        checked += assert_parseable_group_converges(&group);
+    }
+
+    assert!(
+        checked > 1_000,
+        "connected component-group equivalence search should check many variants; checked {checked}"
+    );
+    eprintln!("checked {checked} connected component-group canonicalization variants");
+}
+
+#[test]
+#[ignore = "deterministic stress search for local canonicalization investigation"]
+fn synthetic_connected_component_groups_keep_canonicalization_stable() {
+    let cases = collect_synthetic_connected_component_group_cases();
+
+    let mut checked = 0usize;
+    for (case_name, query) in cases {
+        query.validate().unwrap_or_else(|error| {
+            panic!("synthetic connected component group {case_name} should validate: {error}")
+        });
+        let canonical = query.canonicalize();
+        assert_eq!(
+            canonical,
+            canonical.canonicalize(),
+            "synthetic connected component group {case_name} is not idempotent"
+        );
+        assert!(
+            canonical.is_canonical(),
+            "synthetic connected component group {case_name} did not produce a canonical result: {canonical}"
+        );
+
+        for order in relabel_orders(query.atom_count()) {
+            let relabeled = relabel_query(&query, &order);
+            relabeled.validate().unwrap_or_else(|error| {
+                panic!(
+                    "synthetic connected component group relabeling {case_name} {order:?} should validate: {error}"
+                )
+            });
+            assert_eq!(
+                canonical,
+                relabeled.canonicalize(),
+                "synthetic connected component group relabeling changed canonical form for {case_name}: {order:?}"
+            );
+            checked += 1;
+        }
+
+        for (variant_name, variant) in graph_construction_variants(&query) {
+            variant.validate().unwrap_or_else(|error| {
+                panic!(
+                    "synthetic connected component group variant {case_name}/{variant_name} should validate: {error}"
+                )
+            });
+            assert_eq!(
+                canonical,
+                variant.canonicalize(),
+                "synthetic connected component group variant {variant_name} changed canonical form for {case_name}"
+            );
+            checked += 1;
+        }
+    }
+
+    assert!(
+        checked > 5_000,
+        "synthetic connected component-group search should check many variants; checked {checked}"
+    );
+    eprintln!("checked {checked} synthetic connected component-group variants");
+}
+
+#[test]
+#[ignore = "deterministic stress search for local canonicalization investigation"]
 fn synthetic_expression_trees_converge() {
     let mut checked = 0usize;
 
@@ -593,6 +669,24 @@ fn numeric_atom_query_equivalence_groups_converge() {
         "numeric atom-query equivalence search should check many variants; checked {checked}"
     );
     eprintln!("checked {checked} numeric atom-query canonicalization variants");
+}
+
+#[test]
+#[ignore = "deterministic stress search for local canonicalization investigation"]
+fn atom_primitive_synthesis_equivalence_groups_converge() {
+    let mut groups = Vec::new();
+    collect_atom_primitive_synthesis_equivalence_groups(&mut groups);
+
+    let mut checked = 0usize;
+    for group in groups {
+        checked += assert_parseable_group_converges(&group);
+    }
+
+    assert!(
+        checked > 300,
+        "atom primitive synthesis equivalence search should check many variants; checked {checked}"
+    );
+    eprintln!("checked {checked} atom primitive synthesis canonicalization variants");
 }
 
 #[test]
@@ -1089,6 +1183,165 @@ fn collect_numeric_atom_query_equivalence_groups(groups: &mut Vec<Vec<String>>) 
     groups.push(vec!["[--]".to_owned(), "[-2]".to_owned()]);
 }
 
+fn collect_atom_primitive_synthesis_equivalence_groups(groups: &mut Vec<Vec<String>>) {
+    collect_aromatic_element_synthesis_groups(groups);
+    collect_aliphatic_element_synthesis_groups(groups);
+    collect_isotope_synthesis_groups(groups);
+    collect_explicit_mapped_atom_synthesis_groups(groups);
+}
+
+fn collect_aromatic_element_synthesis_groups(groups: &mut Vec<Vec<String>>) {
+    for (aliphatic, aromatic, atomic_number) in [
+        ("B", "b", 5),
+        ("C", "c", 6),
+        ("N", "n", 7),
+        ("O", "o", 8),
+        ("P", "p", 15),
+        ("S", "s", 16),
+        ("As", "as", 33),
+        ("Se", "se", 34),
+    ] {
+        groups.push(vec![
+            format!("[{aliphatic}]"),
+            format!("[#{atomic_number}&A]"),
+            format!("[A&#{atomic_number}]"),
+            format!("[{aliphatic}&#{atomic_number}]"),
+            format!("[{aliphatic}&A]"),
+        ]);
+        groups.push(vec![
+            format!("[{aromatic}]"),
+            format!("[#{atomic_number}&a]"),
+            format!("[a&#{atomic_number}]"),
+            format!("[{aromatic}&#{atomic_number}]"),
+            format!("[{aromatic}&a]"),
+        ]);
+        groups.push(vec![
+            format!("[#{atomic_number}]"),
+            format!("[{aliphatic},{aromatic}]"),
+            format!("[#{atomic_number}&A,#{atomic_number}&a]"),
+            format!("[{aliphatic},#{atomic_number}&a]"),
+        ]);
+        groups.push(vec![
+            format!("[!#{atomic_number}]"),
+            format!("[!{aliphatic}&!{aromatic}]"),
+        ]);
+        groups.push(vec![
+            format!("[{aromatic}]"),
+            format!("[#{atomic_number}&!{aliphatic}]"),
+            format!("[#{atomic_number}&!A]"),
+        ]);
+        groups.push(vec![
+            format!("[{aliphatic}]"),
+            format!("[#{atomic_number}&!{aromatic}]"),
+            format!("[#{atomic_number}&!a]"),
+        ]);
+
+        groups.push(vec![
+            format!("[{aliphatic}:{atomic_number}]"),
+            format!("[#{atomic_number}&A:{atomic_number}]"),
+            format!("[{aliphatic}&#{atomic_number}:{atomic_number}]"),
+            format!("[$([{aliphatic}]):{atomic_number}]"),
+        ]);
+        groups.push(vec![
+            format!("[{aromatic}:{atomic_number}]"),
+            format!("[#{atomic_number}&a:{atomic_number}]"),
+            format!("[{aromatic}&#{atomic_number}:{atomic_number}]"),
+            format!("[$([{aromatic}]):{atomic_number}]"),
+        ]);
+        groups.push(vec![
+            format!("[#{atomic_number}:{}]", atomic_number + 100),
+            format!("[{aliphatic},{aromatic}:{}]", atomic_number + 100),
+            format!(
+                "[#{atomic_number}&A,#{atomic_number}&a:{}]",
+                atomic_number + 100
+            ),
+        ]);
+        groups.push(vec![
+            format!("[!#{atomic_number}:{}]", atomic_number + 200),
+            format!("[!{aliphatic}&!{aromatic}:{}]", atomic_number + 200),
+        ]);
+    }
+}
+
+fn collect_aliphatic_element_synthesis_groups(groups: &mut Vec<Vec<String>>) {
+    for (aliphatic, atomic_number) in [("F", 9), ("Cl", 17), ("Br", 35), ("I", 53)] {
+        groups.push(vec![
+            format!("[{aliphatic}]"),
+            format!("[#{atomic_number}&A]"),
+            format!("[A&#{atomic_number}]"),
+            format!("[{aliphatic}&#{atomic_number}]"),
+            format!("[{aliphatic}&A]"),
+        ]);
+        groups.push(vec![
+            format!("[{aliphatic}:{atomic_number}]"),
+            format!("[#{atomic_number}&A:{atomic_number}]"),
+            format!("[{aliphatic}&#{atomic_number}:{atomic_number}]"),
+        ]);
+    }
+}
+
+fn collect_isotope_synthesis_groups(groups: &mut Vec<Vec<String>>) {
+    for (mass, aliphatic, aromatic, atomic_number) in
+        [(12, "C", "c", 6), (13, "C", "c", 6), (15, "N", "n", 7)]
+    {
+        groups.push(vec![
+            format!("[{mass}{aliphatic}]"),
+            format!("[{mass}*&{aliphatic}]"),
+            format!("[{mass}*&#{atomic_number}&A]"),
+            format!("[{mass}*&{aliphatic}&#{atomic_number}]"),
+        ]);
+        groups.push(vec![
+            format!("[{mass}{aromatic}]"),
+            format!("[{mass}*&{aromatic}]"),
+            format!("[{mass}*&#{atomic_number}&a]"),
+            format!("[{mass}*&{aromatic}&#{atomic_number}]"),
+        ]);
+        groups.push(vec![
+            format!("[#{atomic_number}&{mass}*]"),
+            format!("[{mass}{aliphatic},{mass}{aromatic}]"),
+            format!("[{mass}*&{aliphatic},{mass}*&{aromatic}]"),
+        ]);
+    }
+}
+
+fn collect_explicit_mapped_atom_synthesis_groups(groups: &mut Vec<Vec<String>>) {
+    groups.push(vec!["[!A]".to_owned(), "[a]".to_owned()]);
+    groups.push(vec!["[!a]".to_owned(), "[A]".to_owned()]);
+    groups.push(vec!["[*:7]".to_owned(), "[A,a:7]".to_owned()]);
+    groups.push(vec![
+        "[C:1]".to_owned(),
+        "[#6&A:1]".to_owned(),
+        "[C&#6:1]".to_owned(),
+        "[$([C]):1]".to_owned(),
+    ]);
+    groups.push(vec![
+        "[c:2]".to_owned(),
+        "[#6&a:2]".to_owned(),
+        "[c&#6:2]".to_owned(),
+        "[$([c]):2]".to_owned(),
+    ]);
+    groups.push(vec![
+        "[#6:3]".to_owned(),
+        "[C,c:3]".to_owned(),
+        "[#6&A,#6&a:3]".to_owned(),
+    ]);
+    groups.push(vec![
+        "[!#6:4]".to_owned(),
+        "[!C&!c:4]".to_owned(),
+        "[!$([C])&!$([c]):4]".to_owned(),
+    ]);
+    groups.push(vec![
+        "[12C:5]".to_owned(),
+        "[12*&C:5]".to_owned(),
+        "[12*&#6&A:5]".to_owned(),
+    ]);
+    groups.push(vec![
+        "[#6&12*:6]".to_owned(),
+        "[12C,12c:6]".to_owned(),
+        "[12*&C,12*&c:6]".to_owned(),
+    ]);
+}
+
 fn collect_single_atom_recursive_equivalence_groups(groups: &mut Vec<Vec<String>>) {
     let bracket_terms = [
         "*", "C", "N", "O", "c", "n", "#1", "#6", "#7", "#8", "H", "H1", "D2", "X3", "R", "R0",
@@ -1220,6 +1473,38 @@ fn collect_topology_equivalence_groups(groups: &mut Vec<Vec<String>>) {
                     format!("[$({c}~{b}~{a})]"),
                     format!("[$({b}(~{a})~{c})]"),
                 ]);
+            }
+        }
+    }
+}
+
+fn collect_connected_component_group_equivalence_groups(groups: &mut Vec<Vec<String>>) {
+    let components = ["C-N", "N=O", "O~S", "c:n", "[#6]-[#7]", "[C:1]-[N:2]"];
+
+    for first in components {
+        for second in components {
+            for third in components {
+                groups.push(vec![
+                    format!("({first}.{second}).{third}"),
+                    format!("({second}.{first}).{third}"),
+                    format!("{third}.({first}.{second})"),
+                    format!("{third}.({second}.{first})"),
+                ]);
+            }
+        }
+    }
+
+    for first in components {
+        for second in components {
+            for third in components {
+                for fourth in components {
+                    groups.push(vec![
+                        format!("({first}.{second}).({third}.{fourth})"),
+                        format!("({second}.{first}).({third}.{fourth})"),
+                        format!("({fourth}.{third}).({second}.{first})"),
+                        format!("({third}.{fourth}).({first}.{second})"),
+                    ]);
+                }
             }
         }
     }
@@ -1371,6 +1656,131 @@ fn collect_synthetic_grouped_component_cases(
             }
         }
     }
+}
+
+#[derive(Clone)]
+struct SyntheticComponentTemplate {
+    name: &'static str,
+    atom_labels: Vec<&'static str>,
+    edges: Vec<(usize, usize, BondExpr)>,
+}
+
+fn collect_synthetic_connected_component_group_cases() -> Vec<(String, QueryMol)> {
+    let templates = synthetic_connected_component_templates();
+    let group_patterns = [
+        vec![Some(0), None, Some(0), Some(1)],
+        vec![Some(0), Some(1), None, Some(0)],
+        vec![None, Some(0), Some(0), None],
+        vec![Some(0), Some(0), Some(1), Some(1)],
+    ];
+    let mut cases = Vec::new();
+
+    for first in 0..templates.len() {
+        for second in 0..templates.len() {
+            for third in 0..templates.len() {
+                for fourth in 0..templates.len() {
+                    let components = [
+                        &templates[first],
+                        &templates[second],
+                        &templates[third],
+                        &templates[fourth],
+                    ];
+                    for group_pattern in &group_patterns {
+                        cases.push((
+                            format!(
+                                "connected_groups_{}_{}_{}_{}_{}",
+                                components[0].name,
+                                components[1].name,
+                                components[2].name,
+                                components[3].name,
+                                cases.len()
+                            ),
+                            synthetic_component_query(&components, group_pattern.clone()),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    cases
+}
+
+fn synthetic_connected_component_templates() -> Vec<SyntheticComponentTemplate> {
+    vec![
+        SyntheticComponentTemplate {
+            name: "single_c",
+            atom_labels: vec!["C"],
+            edges: Vec::new(),
+        },
+        SyntheticComponentTemplate {
+            name: "single_mapped_n",
+            atom_labels: vec!["[N:2]"],
+            edges: Vec::new(),
+        },
+        SyntheticComponentTemplate {
+            name: "single_recursive_o",
+            atom_labels: vec!["[$([#8])]"],
+            edges: Vec::new(),
+        },
+        SyntheticComponentTemplate {
+            name: "single_disjunction",
+            atom_labels: vec!["[C,N]"],
+            edges: Vec::new(),
+        },
+        SyntheticComponentTemplate {
+            name: "single_negated",
+            atom_labels: vec!["[!#1]"],
+            edges: Vec::new(),
+        },
+        SyntheticComponentTemplate {
+            name: "chain_cn",
+            atom_labels: vec!["C", "N"],
+            edges: vec![(0, 1, synthetic_single_bond())],
+        },
+        SyntheticComponentTemplate {
+            name: "chain_ox",
+            atom_labels: vec!["O", "[#6]"],
+            edges: vec![(0, 1, synthetic_double_bond())],
+        },
+        SyntheticComponentTemplate {
+            name: "branch_cno",
+            atom_labels: vec!["C", "N", "O"],
+            edges: vec![
+                (0, 1, synthetic_single_bond()),
+                (0, 2, synthetic_any_bond()),
+            ],
+        },
+    ]
+}
+
+fn synthetic_component_query(
+    components: &[&SyntheticComponentTemplate],
+    component_groups: Vec<Option<usize>>,
+) -> QueryMol {
+    let mut atoms = Vec::new();
+    let mut bonds = Vec::new();
+
+    for (component_id, component) in components.iter().enumerate() {
+        let atom_offset = atoms.len();
+        for &label in &component.atom_labels {
+            atoms.push(QueryAtom {
+                id: atoms.len(),
+                component: component_id,
+                expr: parsed_atom_expr(label),
+            });
+        }
+        for &(src, dst, ref expr) in &component.edges {
+            bonds.push(QueryBond {
+                id: bonds.len(),
+                src: atom_offset + src,
+                dst: atom_offset + dst,
+                expr: expr.clone(),
+            });
+        }
+    }
+
+    QueryMol::from_parts(atoms, bonds, components.len(), component_groups)
 }
 
 fn synthetic_query(
