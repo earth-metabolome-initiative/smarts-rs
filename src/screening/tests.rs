@@ -135,6 +135,26 @@ fn corpus_index_filters_exact_degree_and_total_hydrogen_counts() {
 }
 
 #[test]
+fn corpus_index_counts_candidates_without_materializing_ids() {
+    let prepared_targets = ["CC", "C=C", "CC(C)(C)C"]
+        .into_iter()
+        .map(|smiles| PreparedTarget::new(Smiles::from_str(smiles).unwrap()))
+        .collect::<alloc::vec::Vec<_>>();
+    let index = TargetCorpusIndex::new(&prepared_targets);
+    let query = QueryScreen::new(&QueryMol::from_str("[#6;D1;H3]").unwrap());
+    let mut scratch = TargetCorpusScratch::new();
+
+    assert_eq!(
+        index.candidate_count(&query),
+        index.candidate_ids(&query).len()
+    );
+    assert_eq!(
+        index.candidate_count_with_scratch(&query, &mut scratch),
+        index.candidate_ids(&query).len()
+    );
+}
+
+#[test]
 fn corpus_index_candidates_are_a_subset_of_pairwise_screening() {
     let prepared_targets = ["CC", "C.C", "c1ccccc1", "ClCCl", "C1CCCCC1", "C=C", "C#N"]
         .into_iter()

@@ -21,15 +21,40 @@ use smiles_parser::Smiles;
 let query = QueryMol::from_str("[#6]-[#8]").unwrap();
 assert_eq!(query.atom_count(), 2);
 assert_eq!(query.bond_count(), 1);
-assert!(query.complexity() > 0);
 
 assert!(query.matches("CCO").unwrap());
 assert!(!query.matches("CCCC").unwrap());
 
 let compiled = CompiledQuery::new(query).unwrap();
-assert_eq!(compiled.complexity(), compiled.query().complexity());
 let ethanol = PreparedTarget::new(Smiles::from_str("CCO").unwrap());
 assert!(compiled.matches(&ethanol));
+```
+
+## Matching Safety Fuse
+
+Use `CompiledQuery::matches_with_scratch_and_interrupt` when query evaluation
+must remain cancellable. The interrupt predicate is polled cooperatively from
+the matcher, so this works on `wasm32-unknown-unknown` by closing over a
+host-provided clock instead of relying on Rust's unsupported wasm `Instant`.
+
+```rust
+use core::str::FromStr;
+
+use smarts_rs::{CompiledQuery, MatchLimitResult, MatchScratch, PreparedTarget, QueryMol};
+use smiles_parser::Smiles;
+
+let query = CompiledQuery::new(QueryMol::from_str("[#6]-[#8]").unwrap()).unwrap();
+let target = PreparedTarget::new(Smiles::from_str("CCO").unwrap());
+let mut scratch = MatchScratch::new();
+
+let mut polls = 0;
+let result = query.matches_with_scratch_and_interrupt(&target, &mut scratch, || {
+    polls += 1;
+    false
+});
+
+assert_eq!(result, MatchLimitResult::Complete(true));
+assert!(polls > 0);
 ```
 
 ## Canonicalization

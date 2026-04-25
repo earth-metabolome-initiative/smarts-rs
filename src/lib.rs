@@ -2,7 +2,7 @@
 #![doc = include_str!("../README.md")]
 
 extern crate alloc;
-#[cfg(test)]
+#[cfg(any(test, feature = "std"))]
 extern crate std;
 
 #[cfg(feature = "serde")]
@@ -46,7 +46,7 @@ pub use edit::{
     EditError, EditableQueryMol, ExprPath, ExprPathSegment,
 };
 pub use error::{SmartsMatchError, SmartsParseError, SmartsParseErrorKind, UnsupportedFeature};
-pub use matching::{CompiledQuery, MatchBudgetResult, MatchScratch};
+pub use matching::{CompiledQuery, MatchLimitResult, MatchScratch};
 pub use parse::parse_smarts;
 pub use prepared::{EdgeProps, NodeProps, PreparedMolecule, PreparedTarget};
 pub use query::{
@@ -165,67 +165,6 @@ mod tests {
         let direct = parse_smarts("C=C").unwrap();
         assert_same_query_structure(&parsed, &direct);
         assert_eq!(parsed.to_string(), "C=C");
-    }
-
-    #[test]
-    fn query_complexity_orders_common_matching_cost_drivers() {
-        let single_atom = parse_smarts("C").unwrap();
-        let chain = parse_smarts("CCO").unwrap();
-        let disconnected = parse_smarts("C.C.C").unwrap();
-        let recursive_disconnected = parse_smarts("[!r6&$([#6,#7])].[R]").unwrap();
-        let logged_pathology =
-            parse_smarts("[!!12C,16O,D,D11,h,v14].([!r6&$([#6,#7]):57773].[R:30837])").unwrap();
-        let repeated_logged_pathology = parse_smarts(
-            "*.[!!37585*,!v{10-};#79;#85;v9;x11,o,z11;53903*;A;A;r;r30,r15].[!#6][$([!#1])&c]",
-        )
-        .unwrap();
-        let carotenoids_logged_pathology = parse_smarts(
-            "*[!!H,H10;z{8-},as,x14,#50;#67,#84;a,$([!67*;#71&$([#6]~[#8])&$([#8])&z{2-};$([#6]~[#8]);-3;9875*;R&14n&16o&Z11;A;D{-13};r{-31}]@[#7]),$([#6]),+0,21451*,@TB13,A,A,D{2-};H;Ir&x0;X;X{-12},z4,z{13-15};z,R{-3}].*([!$([!#1]);R:32752])-,/[#6]",
-        )
-        .unwrap();
-        let record_logged_pathology = parse_smarts(
-            "([!!-2,8610*,A,X16&!58236*&@TH1&R15,Z{-16},h16,#50].[!#6;X3][!a,!r{8-}&40476*;X;v&A;R1;Z{7-};$([#6]~[#8]);a&R{14-}&v2][#6].[!$([!#1])])",
-        )
-        .unwrap();
-        let broad_disconnected_bond_pathology =
-            parse_smarts("*!:;~[!^{-16}].[r].[v2:14569]").unwrap();
-        let grouped_recursive_bond_pathology =
-            parse_smarts("([!#6]-[!$([#7]~[48054*]):23558]#&/[!$([!#1:31672])].[$([!#1])])")
-                .unwrap();
-        let recursive_grouped_singleton_pathology = parse_smarts(
-            "[!-2,8610*,A,X16&!58236*&@TH1&R15,Z{-16},h16,#50:41291].(*-[#6].[$([!#1&$([#6]-[#8].[#7])]):26257])",
-        )
-        .unwrap();
-        let recursive_singleton_pathology = parse_smarts(
-            "[!-2,8610*,A,X16&!58236*&@TH1&R15,Z{-16},h16,#50:41291].[#6].[$([!#6,#7]!-[$([!R&!z10&$([#8]);A;H8;z{-13};$([#6,#7]),$([#6,#7]),H{-12},^12&A&H{-0};Sc&Pu&r32;Z{6-};z15])])]",
-        )
-        .unwrap();
-
-        assert!(chain.complexity() > single_atom.complexity());
-        assert!(disconnected.complexity() > chain.complexity());
-        assert!(recursive_disconnected.complexity() > disconnected.complexity());
-        assert!(logged_pathology.complexity() > recursive_disconnected.complexity());
-        assert!(repeated_logged_pathology.complexity() > disconnected.complexity());
-        assert!(carotenoids_logged_pathology.complexity() > recursive_disconnected.complexity());
-        assert!(record_logged_pathology.complexity() > logged_pathology.complexity());
-        assert!(broad_disconnected_bond_pathology.complexity() > logged_pathology.complexity());
-        assert!(
-            record_logged_pathology.complexity() > broad_disconnected_bond_pathology.complexity()
-        );
-        assert!(
-            grouped_recursive_bond_pathology.complexity() > recursive_disconnected.complexity()
-        );
-        assert!(
-            recursive_grouped_singleton_pathology.complexity()
-                > record_logged_pathology.complexity()
-        );
-        assert!(
-            recursive_singleton_pathology.complexity()
-                > recursive_grouped_singleton_pathology.complexity()
-        );
-
-        let compiled = CompiledQuery::new(logged_pathology.clone()).unwrap();
-        assert_eq!(compiled.complexity(), logged_pathology.complexity());
     }
 
     #[test]

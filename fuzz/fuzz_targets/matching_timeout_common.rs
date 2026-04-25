@@ -12,7 +12,6 @@ pub const MAX_TARGET_LEN: usize = 192;
 pub const MAX_QUERY_ATOMS: usize = 32;
 pub const MAX_QUERY_BONDS: usize = 48;
 pub const MAX_QUERY_COMPONENTS: usize = 10;
-pub const MAX_QUERY_COMPLEXITY: usize = 250_000;
 pub const TARGETS_PER_INPUT: usize = 8;
 pub const PHASE_SLOW_LIMIT: Duration = Duration::from_secs(30);
 
@@ -150,7 +149,6 @@ pub fn query_is_too_large(query_text: &str, query: &QueryMol) -> bool {
         || query.atom_count() > MAX_QUERY_ATOMS
         || query.bond_count() > MAX_QUERY_BONDS
         || query.component_count() > MAX_QUERY_COMPONENTS
-        || query.complexity() > MAX_QUERY_COMPLEXITY
 }
 
 pub fn run_phase_with_slow_guard<R>(
@@ -164,12 +162,11 @@ pub fn run_phase_with_slow_guard<R>(
     let elapsed = started.elapsed();
     assert!(
         elapsed <= PHASE_SLOW_LIMIT,
-        "slow matching-timeout fuzz phase `{phase}` after {:?} on input `{input}` (atoms={}, bonds={}, components={}, complexity={})",
+        "slow matching-timeout fuzz phase `{phase}` after {:?} on input `{input}` (atoms={}, bonds={}, components={})",
         elapsed,
         query.atom_count(),
         query.bond_count(),
         query.component_count(),
-        query.complexity()
     );
     result
 }

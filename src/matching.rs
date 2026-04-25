@@ -1,5 +1,10 @@
 use alloc::{boxed::Box, collections::BTreeMap, string::String, string::ToString};
-use core::cell::Cell;
+use core::cell::{Cell, RefCell};
+#[cfg(all(
+    feature = "std",
+    not(all(target_family = "wasm", target_os = "unknown"))
+))]
+use std::time::{Duration, Instant};
 
 use crate::{
     AtomExpr, AtomId as QueryAtomId, AtomPrimitive, BondExpr, BondExprTree, BondPrimitive,
@@ -26,7 +31,7 @@ type AtomStereoCache = BTreeMap<AtomStereoCacheKey, Option<Chirality>>;
 type UniqueMatches = BTreeMap<Box<[usize]>, Box<[usize]>>;
 type MatchKeys = alloc::vec::Vec<Box<[usize]>>;
 
-struct SearchContext<'a> {
+struct SearchContext<'a, L: MatchLimiter> {
     compiled_query: &'a CompiledQuery,
     query_neighbors: &'a [alloc::vec::Vec<(QueryAtomId, usize)>],
     query_atom_scores: &'a [usize],
@@ -41,10 +46,10 @@ struct SearchContext<'a> {
     bondless_seen_targets: &'a mut alloc::vec::Vec<bool>,
     atom_stereo_cache: &'a mut AtomStereoCache,
     recursive_cache: &'a mut RecursiveMatchCache,
-    budget: Option<&'a MatchStepBudget>,
+    limit: &'a L,
 }
 
-struct SearchScratchView<'a> {
+struct SearchScratchView<'a, L: MatchLimiter> {
     query_atom_anchor_widths: &'a [usize],
     query_to_target: &'a mut [Option<usize>],
     used_target_atoms: &'a mut [u32],
@@ -54,7 +59,7 @@ struct SearchScratchView<'a> {
     bondless_candidates: &'a mut alloc::vec::Vec<usize>,
     bondless_target_assignments: &'a mut alloc::vec::Vec<Option<QueryAtomId>>,
     bondless_seen_targets: &'a mut alloc::vec::Vec<bool>,
-    budget: Option<&'a MatchStepBudget>,
+    limit: &'a L,
 }
 
 #[derive(Debug, Clone)]
@@ -75,14 +80,14 @@ impl FreshSearchBuffers {
         target: &PreparedTarget,
         recursive_cache: &mut RecursiveMatchCache,
     ) -> Self {
-        Self::new_with_budget(query, target, recursive_cache, None)
+        Self::new_with_limit(query, target, recursive_cache, &NO_MATCH_LIMIT)
     }
 
-    fn new_with_budget(
+    fn new_with_limit<L: MatchLimiter>(
         query: &CompiledQuery,
         target: &PreparedTarget,
         recursive_cache: &mut RecursiveMatchCache,
-        budget: Option<&MatchStepBudget>,
+        limit: &L,
     ) -> Self {
         let mut query_atom_anchor_widths = alloc::vec::Vec::new();
         prepare_query_atom_search_widths(
@@ -90,7 +95,7 @@ impl FreshSearchBuffers {
             query,
             target,
             recursive_cache,
-            budget,
+            limit,
         );
         Self {
             query_atom_anchor_widths,
@@ -104,14 +109,14 @@ impl FreshSearchBuffers {
         }
     }
 
-    fn view(&mut self) -> SearchScratchView<'_> {
-        self.view_with_budget(None)
+    fn view(&mut self) -> SearchScratchView<'_, NoMatchLimit> {
+        self.view_with_limit(&NO_MATCH_LIMIT)
     }
 
-    fn view_with_budget<'a>(
+    fn view_with_limit<'a, L: MatchLimiter>(
         &'a mut self,
-        budget: Option<&'a MatchStepBudget>,
-    ) -> SearchScratchView<'a> {
+        limit: &'a L,
+    ) -> SearchScratchView<'a, L> {
         SearchScratchView {
             query_atom_anchor_widths: &self.query_atom_anchor_widths,
             query_to_target: &mut self.query_to_target,
@@ -122,43 +127,43 @@ impl FreshSearchBuffers {
             bondless_candidates: &mut self.bondless_candidates,
             bondless_target_assignments: &mut self.bondless_target_assignments,
             bondless_seen_targets: &mut self.bondless_seen_targets,
-            budget,
+            limit,
         }
     }
 }
 
-struct AtomMatchContext<'a, 'cache> {
+struct AtomMatchContext<'a, 'cache, L: MatchLimiter> {
     target: &'a PreparedTarget,
     recursive_query_lookup: &'a BTreeMap<usize, usize>,
     recursive_queries: &'a [RecursiveQueryEntry],
     recursive_cache: &'cache mut RecursiveMatchCache,
-    budget: Option<&'a MatchStepBudget>,
+    limit: &'a L,
 }
 
-impl<'a, 'cache> AtomMatchContext<'a, 'cache> {
+impl<'a, 'cache, L: MatchLimiter> AtomMatchContext<'a, 'cache, L> {
     const fn new(
         query: &'a CompiledQuery,
         target: &'a PreparedTarget,
         recursive_cache: &'cache mut RecursiveMatchCache,
-        budget: Option<&'a MatchStepBudget>,
+        limit: &'a L,
     ) -> Self {
         Self {
             target,
             recursive_query_lookup: &query.recursive_query_lookup,
             recursive_queries: &query.recursive_queries,
             recursive_cache,
-            budget,
+            limit,
         }
     }
 }
 
-impl<'a> SearchScratchView<'a> {
+impl<'a, L: MatchLimiter> SearchScratchView<'a, L> {
     fn into_context(
         self,
         query: &'a CompiledQuery,
         atom_stereo_cache: &'a mut AtomStereoCache,
         recursive_cache: &'a mut RecursiveMatchCache,
-    ) -> SearchContext<'a> {
+    ) -> SearchContext<'a, L> {
         SearchContext {
             compiled_query: query,
             query_neighbors: &query.query_neighbors,
@@ -174,15 +179,15 @@ impl<'a> SearchScratchView<'a> {
             bondless_seen_targets: self.bondless_seen_targets,
             atom_stereo_cache,
             recursive_cache,
-            budget: self.budget,
+            limit: self.limit,
         }
     }
 }
 
-impl SearchContext<'_> {
+impl<L: MatchLimiter> SearchContext<'_, L> {
     #[inline]
-    fn consume_step(&self) -> bool {
-        self.budget.is_none_or(MatchStepBudget::consume)
+    fn continue_search(&self) -> bool {
+        self.limit.continue_search()
     }
 
     #[inline]
@@ -280,50 +285,145 @@ struct RecursiveMatchCache {
     values: alloc::vec::Vec<Option<bool>>,
 }
 
-struct MatchStepBudget {
-    remaining: Cell<usize>,
-    exceeded: Cell<bool>,
+trait MatchLimiter {
+    fn continue_search(&self) -> bool;
+
+    fn exceeded(&self) -> bool;
 }
 
-impl MatchStepBudget {
-    const fn new(max_steps: usize) -> Self {
-        Self {
-            remaining: Cell::new(max_steps),
-            exceeded: Cell::new(false),
-        }
-    }
+const MATCH_LIMIT_POLL_INTERVAL: usize = 4096;
 
-    fn consume(&self) -> bool {
-        if self.exceeded.get() {
-            return false;
-        }
-        let remaining = self.remaining.get();
-        if remaining == 0 {
-            self.exceeded.set(true);
-            return false;
-        }
-        self.remaining.set(remaining - 1);
+struct NoMatchLimit;
+
+static NO_MATCH_LIMIT: NoMatchLimit = NoMatchLimit;
+
+impl MatchLimiter for NoMatchLimit {
+    #[inline]
+    fn continue_search(&self) -> bool {
         true
     }
 
-    const fn exceeded(&self) -> bool {
+    #[inline]
+    fn exceeded(&self) -> bool {
+        false
+    }
+}
+
+struct MatchInterrupt<F> {
+    checks_until_poll: Cell<usize>,
+    exceeded: Cell<bool>,
+    should_stop: RefCell<F>,
+}
+
+impl<F> MatchInterrupt<F> {
+    const fn new(should_stop: F) -> Self {
+        Self {
+            checks_until_poll: Cell::new(0),
+            exceeded: Cell::new(false),
+            should_stop: RefCell::new(should_stop),
+        }
+    }
+}
+
+impl<F> MatchLimiter for MatchInterrupt<F>
+where
+    F: FnMut() -> bool,
+{
+    #[inline]
+    fn continue_search(&self) -> bool {
+        if self.exceeded.get() {
+            return false;
+        }
+
+        let checks_until_poll = self.checks_until_poll.get();
+        if checks_until_poll > 0 {
+            self.checks_until_poll.set(checks_until_poll - 1);
+            return true;
+        }
+        self.checks_until_poll.set(MATCH_LIMIT_POLL_INTERVAL);
+
+        if (self.should_stop.borrow_mut())() {
+            self.exceeded.set(true);
+            return false;
+        }
+        true
+    }
+
+    #[inline]
+    fn exceeded(&self) -> bool {
         self.exceeded.get()
     }
 }
 
-/// Result of a budgeted boolean SMARTS match.
+#[cfg(all(
+    feature = "std",
+    not(all(target_family = "wasm", target_os = "unknown"))
+))]
+struct MatchTimeLimit {
+    deadline: Instant,
+    checks_until_poll: Cell<usize>,
+    exceeded: Cell<bool>,
+}
+
+#[cfg(all(
+    feature = "std",
+    not(all(target_family = "wasm", target_os = "unknown"))
+))]
+impl MatchTimeLimit {
+    fn new(max_elapsed: Duration) -> Self {
+        let started = Instant::now();
+        Self {
+            deadline: started.checked_add(max_elapsed).unwrap_or(started),
+            checks_until_poll: Cell::new(0),
+            exceeded: Cell::new(false),
+        }
+    }
+}
+
+#[cfg(all(
+    feature = "std",
+    not(all(target_family = "wasm", target_os = "unknown"))
+))]
+impl MatchLimiter for MatchTimeLimit {
+    #[inline]
+    fn continue_search(&self) -> bool {
+        if self.exceeded.get() {
+            return false;
+        }
+
+        let checks_until_poll = self.checks_until_poll.get();
+        if checks_until_poll > 0 {
+            self.checks_until_poll.set(checks_until_poll - 1);
+            return true;
+        }
+        self.checks_until_poll.set(MATCH_LIMIT_POLL_INTERVAL);
+
+        if Instant::now() >= self.deadline {
+            self.exceeded.set(true);
+            return false;
+        }
+        true
+    }
+
+    #[inline]
+    fn exceeded(&self) -> bool {
+        self.exceeded.get()
+    }
+}
+
+/// Result of a limited boolean SMARTS match.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MatchBudgetResult {
-    /// Matching completed within the requested budget.
+pub enum MatchLimitResult {
+    /// Matching completed within the requested limit.
     Complete(bool),
-    /// Matching stopped because the step budget was exhausted.
+    /// Matching stopped because the limit was exceeded.
     Exceeded,
 }
 
-impl MatchBudgetResult {
+impl MatchLimitResult {
     /// Converts the result to an optional boolean.
     ///
-    /// Returns `None` when the step budget was exhausted.
+    /// Returns `None` when the limit was exceeded.
     #[inline]
     #[must_use]
     pub const fn into_option(self) -> Option<bool> {
@@ -598,24 +698,24 @@ impl MatchScratch {
 
     fn prepare(&mut self, query: &CompiledQuery, target: &PreparedTarget) {
         self.prepare_caches(query, target);
-        self.prepare_search_buffers(query, target, None);
+        self.prepare_search_buffers(query, target, &NO_MATCH_LIMIT);
     }
 
-    fn prepare_with_budget(
+    fn prepare_with_limit<L: MatchLimiter>(
         &mut self,
         query: &CompiledQuery,
         target: &PreparedTarget,
-        budget: &MatchStepBudget,
+        limit: &L,
     ) {
         self.prepare_caches(query, target);
-        self.prepare_search_buffers(query, target, Some(budget));
+        self.prepare_search_buffers(query, target, limit);
     }
 
-    fn prepare_search_buffers(
+    fn prepare_search_buffers<L: MatchLimiter>(
         &mut self,
         query: &CompiledQuery,
         target: &PreparedTarget,
-        budget: Option<&MatchStepBudget>,
+        limit: &L,
     ) {
         let query_atom_count = query.query.atom_count();
         prepare_query_atom_search_widths(
@@ -623,7 +723,7 @@ impl MatchScratch {
             query,
             target,
             &mut self.recursive_cache,
-            budget,
+            limit,
         );
         self.prepare_mapping_buffers(query_atom_count, target);
     }
@@ -861,15 +961,6 @@ impl CompiledQuery {
         &self.query
     }
 
-    /// Returns the target-independent matching-cost estimate for this query.
-    ///
-    /// This delegates to [`QueryMol::complexity`].
-    #[inline]
-    #[must_use]
-    pub fn complexity(&self) -> usize {
-        self.query.complexity()
-    }
-
     /// Match this compiled SMARTS query against a prepared target.
     #[inline]
     #[must_use]
@@ -889,36 +980,85 @@ impl CompiledQuery {
         query_matches_with_scratch(self, target, scratch)
     }
 
-    /// Match this compiled SMARTS query with a deterministic step budget.
+    /// Match this compiled SMARTS query with a cooperative caller-provided
+    /// interrupt predicate.
     ///
-    /// The budget is not a wall-clock timeout. It counts candidate atom-match
-    /// and bondless-assignment attempts, so callers can stop pathological
-    /// searches reproducibly and log the rejected SMARTS/target pair.
+    /// The matcher calls `should_stop` periodically from its search loop. This
+    /// is a portable safety fuse for targets without a Rust `Instant`, including
+    /// `wasm32-unknown-unknown`. A result of [`MatchLimitResult::Exceeded`]
+    /// means the truth value is unknown.
     #[inline]
     #[must_use]
-    pub fn matches_with_step_limit(
+    pub fn matches_with_interrupt<F>(
         &self,
         target: &PreparedTarget,
-        max_steps: usize,
-    ) -> MatchBudgetResult {
+        should_stop: F,
+    ) -> MatchLimitResult
+    where
+        F: FnMut() -> bool,
+    {
         let mut scratch = MatchScratch::new();
-        self.matches_with_scratch_and_step_limit(target, &mut scratch, max_steps)
+        self.matches_with_scratch_and_interrupt(target, &mut scratch, should_stop)
     }
 
-    /// Match this compiled SMARTS query with reusable scratch and a
-    /// deterministic step budget.
+    /// Match this compiled SMARTS query with reusable scratch and a cooperative
+    /// caller-provided interrupt predicate.
     ///
-    /// Returns [`MatchBudgetResult::Exceeded`] if the search budget is
-    /// exhausted before proving either a match or a non-match.
+    /// Use this for wasm by closing over a host-provided clock, for example a
+    /// JavaScript deadline check. The predicate is polled periodically; it is
+    /// not hard preemption.
     #[inline]
     #[must_use]
-    pub fn matches_with_scratch_and_step_limit(
+    pub fn matches_with_scratch_and_interrupt<F>(
         &self,
         target: &PreparedTarget,
         scratch: &mut MatchScratch,
-        max_steps: usize,
-    ) -> MatchBudgetResult {
-        query_matches_with_scratch_and_step_limit(self, target, scratch, max_steps)
+        should_stop: F,
+    ) -> MatchLimitResult
+    where
+        F: FnMut() -> bool,
+    {
+        query_matches_with_scratch_and_interrupt(self, target, scratch, should_stop)
+    }
+
+    /// Match this compiled SMARTS query with a cooperative wall-clock limit.
+    ///
+    /// The matcher checks the clock periodically from its search loop. This is
+    /// a safety fuse, not hard preemption: a result of
+    /// [`MatchLimitResult::Exceeded`] means the truth value is unknown.
+    #[cfg(all(
+        feature = "std",
+        not(all(target_family = "wasm", target_os = "unknown"))
+    ))]
+    #[inline]
+    #[must_use]
+    pub fn matches_with_time_limit(
+        &self,
+        target: &PreparedTarget,
+        max_elapsed: Duration,
+    ) -> MatchLimitResult {
+        let mut scratch = MatchScratch::new();
+        self.matches_with_scratch_and_time_limit(target, &mut scratch, max_elapsed)
+    }
+
+    /// Match this compiled SMARTS query with reusable scratch and a cooperative
+    /// wall-clock limit.
+    ///
+    /// Returns [`MatchLimitResult::Exceeded`] if the limit is exceeded before
+    /// proving either a match or a non-match.
+    #[cfg(all(
+        feature = "std",
+        not(all(target_family = "wasm", target_os = "unknown"))
+    ))]
+    #[inline]
+    #[must_use]
+    pub fn matches_with_scratch_and_time_limit(
+        &self,
+        target: &PreparedTarget,
+        scratch: &mut MatchScratch,
+        max_elapsed: Duration,
+    ) -> MatchLimitResult {
+        query_matches_with_scratch_and_time_limit(self, target, scratch, max_elapsed)
     }
 
     /// Collect all unique accepted substructure matches against one prepared
@@ -1635,34 +1775,56 @@ fn query_matches_with_scratch(
             bondless_candidates: &mut scratch.bondless_candidates,
             bondless_target_assignments: &mut scratch.bondless_target_assignments,
             bondless_seen_targets: &mut scratch.bondless_seen_targets,
-            budget: None,
+            limit: &NO_MATCH_LIMIT,
         },
         initial_mapping,
     )
 }
 
-fn query_matches_with_scratch_and_step_limit(
+fn query_matches_with_scratch_and_interrupt<F>(
     query: &CompiledQuery,
     target: &PreparedTarget,
     scratch: &mut MatchScratch,
-    max_steps: usize,
-) -> MatchBudgetResult {
-    let budget = MatchStepBudget::new(max_steps);
-    let matched = query_matches_with_scratch_budget(query, target, scratch, &budget);
-    if budget.exceeded() {
-        MatchBudgetResult::Exceeded
+    should_stop: F,
+) -> MatchLimitResult
+where
+    F: FnMut() -> bool,
+{
+    let limit = MatchInterrupt::new(should_stop);
+    let matched = query_matches_with_scratch_limit(query, target, scratch, &limit);
+    if limit.exceeded() {
+        MatchLimitResult::Exceeded
     } else {
-        MatchBudgetResult::Complete(matched)
+        MatchLimitResult::Complete(matched)
     }
 }
 
-fn query_matches_with_scratch_budget(
+#[cfg(all(
+    feature = "std",
+    not(all(target_family = "wasm", target_os = "unknown"))
+))]
+fn query_matches_with_scratch_and_time_limit(
     query: &CompiledQuery,
     target: &PreparedTarget,
     scratch: &mut MatchScratch,
-    budget: &MatchStepBudget,
+    max_elapsed: Duration,
+) -> MatchLimitResult {
+    let limit = MatchTimeLimit::new(max_elapsed);
+    let matched = query_matches_with_scratch_limit(query, target, scratch, &limit);
+    if limit.exceeded() {
+        MatchLimitResult::Exceeded
+    } else {
+        MatchLimitResult::Complete(matched)
+    }
+}
+
+fn query_matches_with_scratch_limit<L: MatchLimiter>(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    scratch: &mut MatchScratch,
+    limit: &L,
 ) -> bool {
-    scratch.prepare_with_budget(query, target, budget);
+    scratch.prepare_with_limit(query, target, limit);
     query_matches_with_mapping_state(
         query,
         target,
@@ -1678,7 +1840,7 @@ fn query_matches_with_scratch_budget(
             bondless_candidates: &mut scratch.bondless_candidates,
             bondless_target_assignments: &mut scratch.bondless_target_assignments,
             bondless_seen_targets: &mut scratch.bondless_seen_targets,
-            budget: Some(budget),
+            limit,
         },
         InitialAtomMapping::default(),
     )
@@ -1757,12 +1919,12 @@ fn query_matches_with_mapping(
     )
 }
 
-fn query_matches_with_mapping_state(
+fn query_matches_with_mapping_state<L: MatchLimiter>(
     query: &CompiledQuery,
     target: &PreparedTarget,
     atom_stereo_cache: &mut AtomStereoCache,
     recursive_cache: &mut RecursiveMatchCache,
-    scratch: SearchScratchView<'_>,
+    scratch: SearchScratchView<'_, L>,
     initial_mapping: InitialAtomMapping,
 ) -> bool {
     let mut context = scratch.into_context(query, atom_stereo_cache, recursive_cache);
@@ -1770,7 +1932,7 @@ fn query_matches_with_mapping_state(
     else {
         return false;
     };
-    if mapped_count == 0 && !component_prechecks_match(query, target, context.budget) {
+    if mapped_count == 0 && !component_prechecks_match(query, target, context.limit) {
         return false;
     }
 
@@ -1786,23 +1948,20 @@ fn query_matches_with_mapping_state(
     search_mapping(&query.query, target, &mut context, mapped_count)
 }
 
-fn component_prechecks_match(
+fn component_prechecks_match<L: MatchLimiter>(
     query: &CompiledQuery,
     target: &PreparedTarget,
-    budget: Option<&MatchStepBudget>,
+    limit: &L,
 ) -> bool {
     if query.component_prechecks.is_empty() {
         return true;
     }
 
     let mut scratch = MatchScratch::new();
-    query.component_prechecks.iter().all(|component| {
-        if let Some(budget) = budget {
-            query_matches_with_scratch_budget(component, target, &mut scratch, budget)
-        } else {
-            component.matches_with_scratch(target, &mut scratch)
-        }
-    })
+    query
+        .component_prechecks
+        .iter()
+        .all(|component| query_matches_with_scratch_limit(component, target, &mut scratch, limit))
 }
 
 fn with_fresh_bound_search_context<R>(
@@ -1811,7 +1970,7 @@ fn with_fresh_bound_search_context<R>(
     atom_stereo_cache: &mut AtomStereoCache,
     recursive_cache: &mut RecursiveMatchCache,
     initial_mapping: InitialAtomMapping,
-    run: impl FnOnce(&mut SearchContext<'_>, usize) -> R,
+    run: impl FnOnce(&mut SearchContext<'_, NoMatchLimit>, usize) -> R,
 ) -> Option<R> {
     let mut scratch = FreshSearchBuffers::new(query, target, recursive_cache);
     let mut context = scratch
@@ -1821,10 +1980,10 @@ fn with_fresh_bound_search_context<R>(
     Some(run(&mut context, mapped_count))
 }
 
-fn bind_initial_mapping(
+fn bind_initial_mapping<L: MatchLimiter>(
     query: &CompiledQuery,
     target: &PreparedTarget,
-    context: &mut SearchContext<'_>,
+    context: &mut SearchContext<'_, L>,
     initial_mapping: InitialAtomMapping,
 ) -> Option<usize> {
     let Some((query_atom, target_atom)) = initial_mapping.pair() else {
@@ -1847,13 +2006,13 @@ fn bind_initial_mapping(
     {
         return None;
     }
-    if !compiled_query_atom_matches_with_budget(
+    if !compiled_query_atom_matches_with_limit(
         query,
         target,
         context.recursive_cache,
         query_atom,
         target_atom,
-        context.budget,
+        context.limit,
     ) {
         return None;
     }
@@ -1869,25 +2028,25 @@ fn compiled_query_atom_matches(
     query_atom: QueryAtomId,
     target_atom: usize,
 ) -> bool {
-    compiled_query_atom_matches_with_budget(
+    compiled_query_atom_matches_with_limit(
         query,
         target,
         recursive_cache,
         query_atom,
         target_atom,
-        None,
+        &NO_MATCH_LIMIT,
     )
 }
 
-fn compiled_query_atom_matches_with_budget(
+fn compiled_query_atom_matches_with_limit<L: MatchLimiter>(
     query: &CompiledQuery,
     target: &PreparedTarget,
     recursive_cache: &mut RecursiveMatchCache,
     query_atom: QueryAtomId,
     target_atom: usize,
-    budget: Option<&MatchStepBudget>,
+    limit: &L,
 ) -> bool {
-    if budget.is_some_and(|budget| !budget.consume()) {
+    if !limit.continue_search() {
         return false;
     }
     let atom_matcher = &query.atom_matchers[query_atom];
@@ -1901,7 +2060,7 @@ fn compiled_query_atom_matches_with_budget(
         return true;
     }
 
-    let mut context = AtomMatchContext::new(query, target, recursive_cache, budget);
+    let mut context = AtomMatchContext::new(query, target, recursive_cache, limit);
     atom_expr_matches(
         &query.query.atoms()[query_atom].expr,
         query_atom,
@@ -3282,7 +3441,7 @@ fn bond_tree_contains_directional_primitive(tree: &BondExprTree) -> bool {
 fn search_mapping(
     query: &QueryMol,
     target: &PreparedTarget,
-    context: &mut SearchContext<'_>,
+    context: &mut SearchContext<'_, impl MatchLimiter>,
     mapped_count: usize,
 ) -> bool {
     if mapped_count == query.atom_count() {
@@ -3301,7 +3460,7 @@ fn search_mapping(
 fn search_bondless_mapping(
     query: &QueryMol,
     target: &PreparedTarget,
-    context: &mut SearchContext<'_>,
+    context: &mut SearchContext<'_, impl MatchLimiter>,
     mapped_count: usize,
 ) -> bool {
     if mapped_count == query.atom_count() {
@@ -3323,7 +3482,7 @@ fn search_bondless_mapping(
 fn search_bondless_assignment(
     query: &QueryMol,
     target: &PreparedTarget,
-    context: &mut SearchContext<'_>,
+    context: &mut SearchContext<'_, impl MatchLimiter>,
     mapped_count: usize,
 ) -> bool {
     if mapped_count == query.atom_count() {
@@ -3347,7 +3506,7 @@ fn search_bondless_assignment(
         context.bondless_candidates,
         context.bondless_target_assignments,
         context.bondless_seen_targets,
-        context.budget,
+        context.limit,
     )
 }
 
@@ -3361,7 +3520,7 @@ fn bondless_assignment_exists(
     candidates: &[usize],
     target_assignments: &mut [Option<QueryAtomId>],
     seen_targets: &mut [bool],
-    budget: Option<&MatchStepBudget>,
+    limit: &impl MatchLimiter,
 ) -> bool {
     for &query_atom in query_order {
         seen_targets.fill(false);
@@ -3371,7 +3530,7 @@ fn bondless_assignment_exists(
             candidates,
             target_assignments,
             seen_targets,
-            budget,
+            limit,
         ) {
             return false;
         }
@@ -3386,7 +3545,7 @@ fn assign_bondless_query_atom(
     candidates: &[usize],
     target_assignments: &mut [Option<QueryAtomId>],
     seen_targets: &mut [bool],
-    budget: Option<&MatchStepBudget>,
+    limit: &impl MatchLimiter,
 ) -> bool {
     let start = candidate_offsets[query_atom];
     let end = candidate_offsets[query_atom + 1];
@@ -3395,7 +3554,7 @@ fn assign_bondless_query_atom(
         if seen_targets[target_atom] {
             continue;
         }
-        if budget.is_some_and(|budget| !budget.consume()) {
+        if !limit.continue_search() {
             return false;
         }
         seen_targets[target_atom] = true;
@@ -3408,7 +3567,7 @@ fn assign_bondless_query_atom(
                 candidates,
                 target_assignments,
                 seen_targets,
-                budget,
+                limit,
             )
         }) {
             target_assignments[target_atom] = Some(query_atom);
@@ -3421,7 +3580,7 @@ fn assign_bondless_query_atom(
 
 fn should_precompute_bondless_candidates(
     target: &PreparedTarget,
-    context: &SearchContext<'_>,
+    context: &SearchContext<'_, impl MatchLimiter>,
 ) -> bool {
     const MIN_TARGET_ATOMS: usize = 64;
     const MAX_ANCHORED_FRACTION: usize = 4;
@@ -3446,7 +3605,7 @@ fn should_precompute_bondless_candidates(
 fn prepare_bondless_query_candidates(
     query: &QueryMol,
     target: &PreparedTarget,
-    context: &mut SearchContext<'_>,
+    context: &mut SearchContext<'_, impl MatchLimiter>,
 ) -> bool {
     context.bondless_query_order.clear();
     context.bondless_candidate_offsets.clear();
@@ -3488,7 +3647,7 @@ fn prepare_bondless_query_candidates(
 fn push_bondless_atom_candidates(
     query: &QueryMol,
     target: &PreparedTarget,
-    context: &mut SearchContext<'_>,
+    context: &mut SearchContext<'_, impl MatchLimiter>,
     query_atom: QueryAtomId,
 ) {
     if let Some(target_atoms) =
@@ -3508,7 +3667,7 @@ fn push_bondless_atom_candidates(
 fn push_bondless_atom_candidate(
     query: &QueryMol,
     target: &PreparedTarget,
-    context: &mut SearchContext<'_>,
+    context: &mut SearchContext<'_, impl MatchLimiter>,
     query_atom: QueryAtomId,
     target_atom: usize,
 ) {
@@ -3526,13 +3685,13 @@ fn push_bondless_atom_candidate(
     {
         return;
     }
-    if compiled_query_atom_matches_with_budget(
+    if compiled_query_atom_matches_with_limit(
         context.compiled_query,
         target,
         context.recursive_cache,
         query_atom,
         target_atom,
-        context.budget,
+        context.limit,
     ) {
         context.bondless_candidates.push(target_atom);
     }
@@ -3541,7 +3700,7 @@ fn push_bondless_atom_candidate(
 fn search_bondless_mapping_candidates(
     query: &QueryMol,
     target: &PreparedTarget,
-    context: &mut SearchContext<'_>,
+    context: &mut SearchContext<'_, impl MatchLimiter>,
     mapped_count: usize,
     order_index: usize,
 ) -> bool {
@@ -3567,7 +3726,7 @@ fn search_bondless_mapping_candidates(
         if context.target_atom_is_used(target_atom) {
             continue;
         }
-        if !context.consume_step() {
+        if !context.continue_search() {
             return false;
         }
         if context.compiled_query.has_component_constraints
@@ -3602,7 +3761,7 @@ fn search_bondless_mapping_candidates(
 }
 
 fn next_unmapped_bondless_query_atom(
-    context: &SearchContext<'_>,
+    context: &SearchContext<'_, impl MatchLimiter>,
     mut order_index: usize,
 ) -> Option<(usize, QueryAtomId)> {
     while order_index < context.bondless_query_order.len() {
@@ -3619,7 +3778,7 @@ fn next_unmapped_bondless_query_atom(
 fn search_mapping_candidates(
     query: &QueryMol,
     target: &PreparedTarget,
-    context: &mut SearchContext<'_>,
+    context: &mut SearchContext<'_, impl MatchLimiter>,
     mapped_count: usize,
     query_atom: QueryAtomId,
 ) -> bool {
@@ -3704,7 +3863,7 @@ fn search_mapping_candidates(
 fn search_mapping_unanchored_candidates(
     query: &QueryMol,
     target: &PreparedTarget,
-    context: &mut SearchContext<'_>,
+    context: &mut SearchContext<'_, impl MatchLimiter>,
     mapped_count: usize,
     query_atom: QueryAtomId,
     target_atoms: impl Iterator<Item = usize>,
@@ -3733,7 +3892,7 @@ fn search_mapping_unanchored_candidates(
 fn search_mapping_candidate(
     query: &QueryMol,
     target: &PreparedTarget,
-    context: &mut SearchContext<'_>,
+    context: &mut SearchContext<'_, impl MatchLimiter>,
     mapped_count: usize,
     query_atom: QueryAtomId,
     target_atom: usize,
@@ -3749,13 +3908,13 @@ fn search_mapping_candidate(
     {
         return false;
     }
-    if !compiled_query_atom_matches_with_budget(
+    if !compiled_query_atom_matches_with_limit(
         context.compiled_query,
         target,
         context.recursive_cache,
         query_atom,
         target_atom,
-        context.budget,
+        context.limit,
     ) {
         return false;
     }
@@ -3771,7 +3930,7 @@ fn search_mapping_candidate(
 fn collect_mappings(
     query: &QueryMol,
     target: &PreparedTarget,
-    context: &mut SearchContext<'_>,
+    context: &mut SearchContext<'_, NoMatchLimit>,
     mapped_count: usize,
     matches: &mut UniqueMatches,
 ) {
@@ -3829,7 +3988,7 @@ fn collect_mappings(
 fn collect_match_keys(
     query: &QueryMol,
     target: &PreparedTarget,
-    context: &mut SearchContext<'_>,
+    context: &mut SearchContext<'_, NoMatchLimit>,
     mapped_count: usize,
     matches: &mut MatchKeys,
 ) {
@@ -3991,7 +4150,9 @@ fn select_next_query_atom(
     best_atom.expect("at least one unmapped query atom must remain")
 }
 
-fn select_next_query_atom_for_target(context: &SearchContext<'_>) -> QueryAtomId {
+fn select_next_query_atom_for_target(
+    context: &SearchContext<'_, impl MatchLimiter>,
+) -> QueryAtomId {
     let mut best_atom = None;
     let mut best_key = (
         0usize,
@@ -4033,7 +4194,7 @@ fn select_next_query_atom_for_target(context: &SearchContext<'_>) -> QueryAtomId
 fn best_mapped_neighbor_seed(
     query_atom: QueryAtomId,
     target: &PreparedTarget,
-    context: &SearchContext<'_>,
+    context: &SearchContext<'_, impl MatchLimiter>,
 ) -> Option<MappedNeighborSeed> {
     let mut best = None;
 
@@ -4055,12 +4216,12 @@ fn best_mapped_neighbor_seed(
     best.map(|(_, seed)| seed)
 }
 
-fn prepare_query_atom_search_widths(
+fn prepare_query_atom_search_widths<L: MatchLimiter>(
     widths: &mut alloc::vec::Vec<usize>,
     query: &CompiledQuery,
     target: &PreparedTarget,
     recursive_cache: &mut RecursiveMatchCache,
-    budget: Option<&MatchStepBudget>,
+    limit: &L,
 ) {
     let fallback = target.atom_count();
     widths.clear();
@@ -4068,12 +4229,12 @@ fn prepare_query_atom_search_widths(
         atom_matcher_anchor_candidates(&query.atom_matchers[query_atom], target).map_or_else(
             || {
                 if should_scan_query_atom_for_ordering(query, query_atom) {
-                    count_query_atom_target_matches_with_budget(
+                    count_query_atom_target_matches_with_limit(
                         query,
                         target,
                         recursive_cache,
                         query_atom,
-                        budget,
+                        limit,
                     )
                 } else {
                     fallback
@@ -4126,22 +4287,22 @@ fn bracket_tree_may_filter_without_fast_anchor(tree: &BracketExprTree) -> bool {
     }
 }
 
-fn count_query_atom_target_matches_with_budget(
+fn count_query_atom_target_matches_with_limit<L: MatchLimiter>(
     query: &CompiledQuery,
     target: &PreparedTarget,
     recursive_cache: &mut RecursiveMatchCache,
     query_atom: QueryAtomId,
-    budget: Option<&MatchStepBudget>,
+    limit: &L,
 ) -> usize {
     (0..target.atom_count())
         .filter(|&target_atom| {
-            compiled_query_atom_matches_with_budget(
+            compiled_query_atom_matches_with_limit(
                 query,
                 target,
                 recursive_cache,
                 query_atom,
                 target_atom,
-                budget,
+                limit,
             )
         })
         .count()
@@ -4150,7 +4311,7 @@ fn count_query_atom_target_matches_with_budget(
 fn candidate_target_atoms(
     query_atom: QueryAtomId,
     target: &PreparedTarget,
-    context: &SearchContext<'_>,
+    context: &SearchContext<'_, NoMatchLimit>,
 ) -> alloc::vec::Vec<usize> {
     let query_degree = context.query_neighbors[query_atom].len();
     let Some(MappedNeighborSeed {
@@ -4407,11 +4568,11 @@ fn query_bond_matches(
     matcher.state_mask & bond_state_bit(target_bond, ring) != 0
 }
 
-fn atom_expr_matches(
+fn atom_expr_matches<L: MatchLimiter>(
     expr: &AtomExpr,
     query_atom_id: QueryAtomId,
     atom_id: usize,
-    context: &mut AtomMatchContext<'_, '_>,
+    context: &mut AtomMatchContext<'_, '_, L>,
 ) -> bool {
     match expr {
         AtomExpr::Wildcard => true,
@@ -4502,11 +4663,11 @@ fn atom_fast_predicate_matches(
     }
 }
 
-fn bracket_tree_matches(
+fn bracket_tree_matches<L: MatchLimiter>(
     tree: &BracketExprTree,
     query_atom_id: QueryAtomId,
     atom_id: usize,
-    context: &mut AtomMatchContext<'_, '_>,
+    context: &mut AtomMatchContext<'_, '_, L>,
 ) -> bool {
     match tree {
         BracketExprTree::Primitive(primitive) => {
@@ -4524,11 +4685,11 @@ fn bracket_tree_matches(
     }
 }
 
-fn atom_primitive_matches(
+fn atom_primitive_matches<L: MatchLimiter>(
     primitive: &AtomPrimitive,
     _query_atom_id: QueryAtomId,
     atom_id: usize,
-    context: &mut AtomMatchContext<'_, '_>,
+    context: &mut AtomMatchContext<'_, '_, L>,
 ) -> bool {
     let target = context.target;
     let atom = target.atom(atom_id);
@@ -4606,7 +4767,7 @@ fn atom_primitive_matches(
             context.recursive_query_lookup,
             context.recursive_queries,
             context.recursive_cache,
-            context.budget,
+            context.limit,
         ),
     }
 }
@@ -4720,14 +4881,14 @@ fn stereo_constraints_match(
         })
 }
 
-fn recursive_query_matches(
+fn recursive_query_matches<L: MatchLimiter>(
     query: &QueryMol,
     target: &PreparedTarget,
     atom_id: usize,
     recursive_query_lookup: &BTreeMap<usize, usize>,
     recursive_queries: &[RecursiveQueryEntry],
     recursive_cache: &mut RecursiveMatchCache,
-    budget: Option<&MatchStepBudget>,
+    limit: &L,
 ) -> bool {
     let query_key = core::ptr::from_ref(query) as usize;
     let Some(entry_index) = recursive_query_lookup.get(&query_key).copied() else {
@@ -4745,32 +4906,17 @@ fn recursive_query_matches(
     }
 
     let mut atom_stereo_cache = AtomStereoCache::new();
-    let anchored = if let Some(budget) = budget {
-        let mut scratch = FreshSearchBuffers::new_with_budget(
-            entry.compiled.as_ref(),
-            target,
-            recursive_cache,
-            Some(budget),
-        );
-        query_matches_with_mapping_state(
-            entry.compiled.as_ref(),
-            target,
-            &mut atom_stereo_cache,
-            recursive_cache,
-            scratch.view_with_budget(Some(budget)),
-            InitialAtomMapping::new(Some(0), Some(atom_id)),
-        )
-    } else {
-        query_matches_with_mapping(
-            entry.compiled.as_ref(),
-            target,
-            &mut atom_stereo_cache,
-            recursive_cache,
-            Some(0),
-            Some(atom_id),
-        )
-    };
-    if !budget.is_some_and(MatchStepBudget::exceeded) {
+    let mut scratch =
+        FreshSearchBuffers::new_with_limit(entry.compiled.as_ref(), target, recursive_cache, limit);
+    let anchored = query_matches_with_mapping_state(
+        entry.compiled.as_ref(),
+        target,
+        &mut atom_stereo_cache,
+        recursive_cache,
+        scratch.view_with_limit(limit),
+        InitialAtomMapping::new(Some(0), Some(atom_id)),
+    );
+    if !limit.exceeded() {
         recursive_cache.insert(entry.cache_slot, atom_id, anchored);
     }
     anchored
@@ -4821,10 +4967,10 @@ mod tests {
 
     use smiles_parser::Smiles;
 
+    use super::MatchLimitResult;
     use super::{
         component_constraints_match, select_next_query_atom, select_next_query_atom_for_target,
-        AtomStereoCache, CompiledQuery, FreshSearchBuffers, MatchBudgetResult, MatchScratch,
-        RecursiveMatchCache,
+        AtomStereoCache, CompiledQuery, FreshSearchBuffers, MatchScratch, RecursiveMatchCache,
     };
     use crate::error::SmartsMatchError;
     use crate::prepared::PreparedTarget;
@@ -4901,19 +5047,47 @@ mod tests {
     }
 
     #[test]
-    fn compiled_query_step_limit_reports_exhaustion_without_poisoning_scratch() {
+    fn compiled_query_interrupt_reports_exhaustion_without_poisoning_scratch() {
         let compiled =
             CompiledQuery::new(QueryMol::from_str("[$([#6]-[#6])].[#7]").unwrap()).unwrap();
         let target = PreparedTarget::new(Smiles::from_str("CCC.N").unwrap());
         let mut scratch = MatchScratch::new();
 
         assert_eq!(
-            compiled.matches_with_scratch_and_step_limit(&target, &mut scratch, 0),
-            MatchBudgetResult::Exceeded
+            compiled.matches_with_scratch_and_interrupt(&target, &mut scratch, || true),
+            MatchLimitResult::Exceeded
         );
         assert_eq!(
-            compiled.matches_with_scratch_and_step_limit(&target, &mut scratch, 10_000),
-            MatchBudgetResult::Complete(compiled.matches(&target))
+            compiled.matches_with_scratch_and_interrupt(&target, &mut scratch, || false),
+            MatchLimitResult::Complete(compiled.matches(&target))
+        );
+        assert!(compiled.matches(&target));
+    }
+
+    #[test]
+    #[cfg(all(
+        feature = "std",
+        not(all(target_family = "wasm", target_os = "unknown"))
+    ))]
+    fn compiled_query_time_limit_reports_exhaustion_without_poisoning_scratch() {
+        use std::time::Duration;
+
+        let compiled =
+            CompiledQuery::new(QueryMol::from_str("[$([#6]-[#6])].[#7]").unwrap()).unwrap();
+        let target = PreparedTarget::new(Smiles::from_str("CCC.N").unwrap());
+        let mut scratch = MatchScratch::new();
+
+        assert_eq!(
+            compiled.matches_with_scratch_and_time_limit(&target, &mut scratch, Duration::ZERO),
+            MatchLimitResult::Exceeded
+        );
+        assert_eq!(
+            compiled.matches_with_scratch_and_time_limit(
+                &target,
+                &mut scratch,
+                Duration::from_mins(1)
+            ),
+            MatchLimitResult::Complete(compiled.matches(&target))
         );
         assert!(compiled.matches(&target));
     }

@@ -11,7 +11,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-smarts-rs = { path = ".." }
+smarts-rs = { path = "..", features = ["std"] }
 smiles-parser = { git = "https://github.com/earth-metabolome-initiative/smiles-parser", branch = "main" }
 
 [[bin]]

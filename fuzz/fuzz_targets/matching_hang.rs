@@ -41,7 +41,7 @@ fn evaluate_query_variant(input: &str, _variant: &str, query: &QueryMol, data: &
     for &target_id in &candidate_ids {
         let target = &fixture.targets[target_id];
         let _target_smiles = target.smiles;
-        assert_unbudgeted_match_returns(
+        assert_plain_match_returns(
             MatchRun {
                 compiled: &compiled,
                 target: &target.prepared,
@@ -53,7 +53,7 @@ fn evaluate_query_variant(input: &str, _variant: &str, query: &QueryMol, data: &
     for target_id in selected_target_ids(data, fixture.targets.len()) {
         let target = &fixture.targets[target_id];
         let _target_smiles = target.smiles;
-        assert_unbudgeted_match_returns(
+        assert_plain_match_returns(
             MatchRun {
                 compiled: &compiled,
                 target: &target.prepared,
@@ -63,7 +63,7 @@ fn evaluate_query_variant(input: &str, _variant: &str, query: &QueryMol, data: &
     }
 }
 
-fn assert_unbudgeted_match_returns(run: MatchRun<'_>, scratch: &mut MatchScratch) {
+fn assert_plain_match_returns(run: MatchRun<'_>, scratch: &mut MatchScratch) {
     let _ = run.compiled.matches_with_scratch(run.target, scratch);
 }
 
@@ -90,7 +90,7 @@ fn evaluate_smarts_input(input: &str, data: &[u8]) {
             let target = PreparedTarget::new(target);
             if let Ok(compiled) = CompiledQuery::new(canonical.clone()) {
                 let mut scratch = MatchScratch::new();
-                assert_unbudgeted_match_returns(
+                assert_plain_match_returns(
                     MatchRun {
                         compiled: &compiled,
                         target: &target,

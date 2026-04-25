@@ -12,6 +12,7 @@ categories = ["parser-implementations", "science"]
 [features]
 default = []
 serde = ["dep:serde"]
+std = []
 
 [lints]
 workspace = true

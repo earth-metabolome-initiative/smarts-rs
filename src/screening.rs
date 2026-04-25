@@ -1064,6 +1064,29 @@ impl TargetCorpusIndex {
         self.for_each_candidate_id_with_scratch(query, scratch, |target_id| out.push(target_id));
     }
 
+    /// Counts candidate targets that pass the indexed screening stage.
+    ///
+    /// This avoids materializing a candidate id vector when callers only need
+    /// the size of the indexed exact-match workload.
+    #[must_use]
+    pub fn candidate_count(&self, query: &QueryScreen) -> usize {
+        let mut scratch = TargetCorpusScratch::new();
+        self.candidate_count_with_scratch(query, &mut scratch)
+    }
+
+    /// Counts candidate targets using reusable scratch buffers.
+    pub fn candidate_count_with_scratch<'idx>(
+        &'idx self,
+        query: &QueryScreen,
+        scratch: &mut TargetCorpusScratch<'idx>,
+    ) -> usize {
+        let mut count = 0usize;
+        self.for_each_candidate_id_with_scratch(query, scratch, |_| {
+            count = count.saturating_add(1);
+        });
+        count
+    }
+
     /// Returns candidate target ids that pass the indexed screening stage.
     #[must_use]
     pub fn candidate_ids(&self, query: &QueryScreen) -> Vec<usize> {

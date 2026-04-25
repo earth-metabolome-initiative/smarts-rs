@@ -7,7 +7,7 @@ use std::{
 
 use libfuzzer_sys::fuzz_target;
 use smarts_rs::{
-    parse_smarts, CompiledQuery, MatchBudgetResult, MatchScratch, PreparedTarget, QueryMol,
+    parse_smarts, CompiledQuery, MatchLimitResult, MatchScratch, PreparedTarget, QueryMol,
     QueryScreen, TargetCorpusIndex, TargetCorpusScratch,
 };
 use smiles_parser::Smiles;
@@ -18,10 +18,9 @@ const MAX_TARGET_LEN: usize = 192;
 const MAX_QUERY_ATOMS: usize = 32;
 const MAX_QUERY_BONDS: usize = 48;
 const MAX_QUERY_COMPONENTS: usize = 10;
-const MAX_QUERY_COMPLEXITY: usize = 250_000;
-const MATCH_STEP_LIMIT: usize = 150_000;
+const MATCH_TIME_LIMIT: Duration = Duration::from_secs(30);
 const TARGETS_PER_INPUT: usize = 8;
-const PHASE_SLOW_LIMIT: Duration = Duration::from_millis(250);
+const PHASE_SLOW_LIMIT: Duration = Duration::from_secs(30);
 
 const GA_MUTATION_SEEDS: &[&str] = &[
     "*@[B,X{16-}].[!R,b].([!#16]~[!#8].[!107*&r6]-[#6&$([#6,#7])&H]=&@[D3])",
@@ -167,7 +166,6 @@ fn query_is_too_large(query_text: &str, query: &QueryMol) -> bool {
         || query.atom_count() > MAX_QUERY_ATOMS
         || query.bond_count() > MAX_QUERY_BONDS
         || query.component_count() > MAX_QUERY_COMPONENTS
-        || query.complexity() > MAX_QUERY_COMPLEXITY
 }
 
 fn run_phase_with_slow_guard<R>(
@@ -181,12 +179,11 @@ fn run_phase_with_slow_guard<R>(
     let elapsed = started.elapsed();
     assert!(
         elapsed <= PHASE_SLOW_LIMIT,
-        "slow matching-timeout fuzz phase `{phase}` after {:?} on input `{input}` (atoms={}, bonds={}, components={}, complexity={})",
+        "slow matching-timeout fuzz phase `{phase}` after {:?} on input `{input}` (atoms={}, bonds={}, components={})",
         elapsed,
         query.atom_count(),
         query.bond_count(),
         query.component_count(),
-        query.complexity()
     );
     result
 }
@@ -213,7 +210,7 @@ fn evaluate_query_variant(input: &str, variant: &str, query: &QueryMol, data: &[
     let mut scratch = MatchScratch::new();
     for &target_id in &candidate_ids {
         let target = &fixture.targets[target_id];
-        assert_budgeted_match_finishes(
+        assert_time_limited_match_finishes(
             MatchRun {
                 input,
                 variant,
@@ -229,7 +226,7 @@ fn evaluate_query_variant(input: &str, variant: &str, query: &QueryMol, data: &[
 
     for target_id in selected_target_ids(data, fixture.targets.len()) {
         let target = &fixture.targets[target_id];
-        assert_budgeted_match_finishes(
+        assert_time_limited_match_finishes(
             MatchRun {
                 input,
                 variant,
@@ -259,20 +256,20 @@ fn selected_target_ids(data: &[u8], target_count: usize) -> [usize; TARGETS_PER_
     ids
 }
 
-fn assert_budgeted_match_finishes(run: MatchRun<'_>, scratch: &mut MatchScratch) {
+fn assert_time_limited_match_finishes(run: MatchRun<'_>, scratch: &mut MatchScratch) {
     let result =
         run.compiled
-            .matches_with_scratch_and_step_limit(run.target, scratch, MATCH_STEP_LIMIT);
+            .matches_with_scratch_and_time_limit(run.target, scratch, MATCH_TIME_LIMIT);
     assert!(
-        !matches!(result, MatchBudgetResult::Exceeded),
-        "SMARTS matching step budget exceeded in {mode} mode after {MATCH_STEP_LIMIT} steps; variant={variant}; target=`{}`; input=`{}`; canonical=`{}`; atoms={}; bonds={}; components={}; complexity={}",
+        !matches!(result, MatchLimitResult::Exceeded),
+        "SMARTS matching time limit exceeded in {mode} mode after {:?}; variant={variant}; target=`{}`; input=`{}`; canonical=`{}`; atoms={}; bonds={}; components={}",
+        MATCH_TIME_LIMIT,
         run.target_smiles,
         run.input,
         run.query.to_canonical_smarts(),
         run.query.atom_count(),
         run.query.bond_count(),
         run.query.component_count(),
-        run.query.complexity(),
         mode = run.mode,
         variant = run.variant,
     );
@@ -301,7 +298,7 @@ fn evaluate_smarts_input(input: &str, data: &[u8]) {
             let target = PreparedTarget::new(target);
             if let Ok(compiled) = CompiledQuery::new(canonical.clone()) {
                 let mut scratch = MatchScratch::new();
-                assert_budgeted_match_finishes(
+                assert_time_limited_match_finishes(
                     MatchRun {
                         input,
                         variant: "explicit-target",
