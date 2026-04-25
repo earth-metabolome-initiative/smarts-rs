@@ -102,6 +102,7 @@ fn build_logged_slow_cases() -> Vec<LoggedSlowCase> {
     let mut cases = Vec::new();
     cases.extend(build_alkaloids_logged_slow_cases());
     cases.extend(build_carotenoids_logged_slow_cases());
+    cases.extend(build_cytosporins_logged_slow_cases());
     cases
 }
 
@@ -246,6 +247,29 @@ const fn build_carotenoids_logged_slow_cases() -> [LoggedSlowCase; 9] {
             reported_elapsed_ms: 685_804,
             reported_targets: 229_455,
             reported_complexity: 13,
+        },
+    ]
+}
+
+const fn build_cytosporins_logged_slow_cases() -> [LoggedSlowCase; 2] {
+    [
+        LoggedSlowCase {
+            id: "cytosporins_generation_38_len70_complexity1376",
+            description: "generation 38 Cytosporins slow evaluation: 100.109s over 229455 targets",
+            smarts: "*@[B,X{16-}].[!R,b].([!#16]~[!#8].[!107*&r6]-[#6&$([#6,#7])&H]=&@[D3])",
+            reported_generation: 38,
+            reported_elapsed_ms: 100_109,
+            reported_targets: 229_455,
+            reported_complexity: 1_376,
+        },
+        LoggedSlowCase {
+            id: "cytosporins_generation_38_len72_complexity1108",
+            description: "generation 38 Cytosporins slow evaluation: 257.745s over 229455 targets",
+            smarts: "*-,:,=C.(*(!=[!-]-&@1)!-[#6]-&@1~[!#6&H]-[!Cl].[!#6&H]-[!Cl]-,/&@[#6&R])",
+            reported_generation: 38,
+            reported_elapsed_ms: 257_745,
+            reported_targets: 229_455,
+            reported_complexity: 1_108,
         },
     ]
 }

@@ -1,4 +1,5 @@
 use alloc::{boxed::Box, collections::BTreeMap, string::String, string::ToString};
+use core::cell::Cell;
 
 use crate::{
     AtomExpr, AtomId as QueryAtomId, AtomPrimitive, BondExpr, BondExprTree, BondPrimitive,
@@ -40,6 +41,7 @@ struct SearchContext<'a> {
     bondless_seen_targets: &'a mut alloc::vec::Vec<bool>,
     atom_stereo_cache: &'a mut AtomStereoCache,
     recursive_cache: &'a mut RecursiveMatchCache,
+    budget: Option<&'a MatchStepBudget>,
 }
 
 struct SearchScratchView<'a> {
@@ -52,6 +54,7 @@ struct SearchScratchView<'a> {
     bondless_candidates: &'a mut alloc::vec::Vec<usize>,
     bondless_target_assignments: &'a mut alloc::vec::Vec<Option<QueryAtomId>>,
     bondless_seen_targets: &'a mut alloc::vec::Vec<bool>,
+    budget: Option<&'a MatchStepBudget>,
 }
 
 #[derive(Debug, Clone)]
@@ -72,12 +75,22 @@ impl FreshSearchBuffers {
         target: &PreparedTarget,
         recursive_cache: &mut RecursiveMatchCache,
     ) -> Self {
+        Self::new_with_budget(query, target, recursive_cache, None)
+    }
+
+    fn new_with_budget(
+        query: &CompiledQuery,
+        target: &PreparedTarget,
+        recursive_cache: &mut RecursiveMatchCache,
+        budget: Option<&MatchStepBudget>,
+    ) -> Self {
         let mut query_atom_anchor_widths = alloc::vec::Vec::new();
         prepare_query_atom_search_widths(
             &mut query_atom_anchor_widths,
             query,
             target,
             recursive_cache,
+            budget,
         );
         Self {
             query_atom_anchor_widths,
@@ -92,6 +105,13 @@ impl FreshSearchBuffers {
     }
 
     fn view(&mut self) -> SearchScratchView<'_> {
+        self.view_with_budget(None)
+    }
+
+    fn view_with_budget<'a>(
+        &'a mut self,
+        budget: Option<&'a MatchStepBudget>,
+    ) -> SearchScratchView<'a> {
         SearchScratchView {
             query_atom_anchor_widths: &self.query_atom_anchor_widths,
             query_to_target: &mut self.query_to_target,
@@ -102,6 +122,7 @@ impl FreshSearchBuffers {
             bondless_candidates: &mut self.bondless_candidates,
             bondless_target_assignments: &mut self.bondless_target_assignments,
             bondless_seen_targets: &mut self.bondless_seen_targets,
+            budget,
         }
     }
 }
@@ -111,6 +132,7 @@ struct AtomMatchContext<'a, 'cache> {
     recursive_query_lookup: &'a BTreeMap<usize, usize>,
     recursive_queries: &'a [RecursiveQueryEntry],
     recursive_cache: &'cache mut RecursiveMatchCache,
+    budget: Option<&'a MatchStepBudget>,
 }
 
 impl<'a, 'cache> AtomMatchContext<'a, 'cache> {
@@ -118,12 +140,14 @@ impl<'a, 'cache> AtomMatchContext<'a, 'cache> {
         query: &'a CompiledQuery,
         target: &'a PreparedTarget,
         recursive_cache: &'cache mut RecursiveMatchCache,
+        budget: Option<&'a MatchStepBudget>,
     ) -> Self {
         Self {
             target,
             recursive_query_lookup: &query.recursive_query_lookup,
             recursive_queries: &query.recursive_queries,
             recursive_cache,
+            budget,
         }
     }
 }
@@ -150,11 +174,17 @@ impl<'a> SearchScratchView<'a> {
             bondless_seen_targets: self.bondless_seen_targets,
             atom_stereo_cache,
             recursive_cache,
+            budget: self.budget,
         }
     }
 }
 
 impl SearchContext<'_> {
+    #[inline]
+    fn consume_step(&self) -> bool {
+        self.budget.is_none_or(MatchStepBudget::consume)
+    }
+
     #[inline]
     fn target_atom_is_used(&self, target_atom: usize) -> bool {
         self.used_target_atoms[target_atom] == self.used_target_generation
@@ -248,6 +278,60 @@ enum AtomFastPredicate {
 struct RecursiveMatchCache {
     target_atom_count: usize,
     values: alloc::vec::Vec<Option<bool>>,
+}
+
+struct MatchStepBudget {
+    remaining: Cell<usize>,
+    exceeded: Cell<bool>,
+}
+
+impl MatchStepBudget {
+    const fn new(max_steps: usize) -> Self {
+        Self {
+            remaining: Cell::new(max_steps),
+            exceeded: Cell::new(false),
+        }
+    }
+
+    fn consume(&self) -> bool {
+        if self.exceeded.get() {
+            return false;
+        }
+        let remaining = self.remaining.get();
+        if remaining == 0 {
+            self.exceeded.set(true);
+            return false;
+        }
+        self.remaining.set(remaining - 1);
+        true
+    }
+
+    const fn exceeded(&self) -> bool {
+        self.exceeded.get()
+    }
+}
+
+/// Result of a budgeted boolean SMARTS match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchBudgetResult {
+    /// Matching completed within the requested budget.
+    Complete(bool),
+    /// Matching stopped because the step budget was exhausted.
+    Exceeded,
+}
+
+impl MatchBudgetResult {
+    /// Converts the result to an optional boolean.
+    ///
+    /// Returns `None` when the step budget was exhausted.
+    #[inline]
+    #[must_use]
+    pub const fn into_option(self) -> Option<bool> {
+        match self {
+            Self::Complete(matched) => Some(matched),
+            Self::Exceeded => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -514,16 +598,32 @@ impl MatchScratch {
 
     fn prepare(&mut self, query: &CompiledQuery, target: &PreparedTarget) {
         self.prepare_caches(query, target);
-        self.prepare_search_buffers(query, target);
+        self.prepare_search_buffers(query, target, None);
     }
 
-    fn prepare_search_buffers(&mut self, query: &CompiledQuery, target: &PreparedTarget) {
+    fn prepare_with_budget(
+        &mut self,
+        query: &CompiledQuery,
+        target: &PreparedTarget,
+        budget: &MatchStepBudget,
+    ) {
+        self.prepare_caches(query, target);
+        self.prepare_search_buffers(query, target, Some(budget));
+    }
+
+    fn prepare_search_buffers(
+        &mut self,
+        query: &CompiledQuery,
+        target: &PreparedTarget,
+        budget: Option<&MatchStepBudget>,
+    ) {
         let query_atom_count = query.query.atom_count();
         prepare_query_atom_search_widths(
             &mut self.query_atom_anchor_widths,
             query,
             target,
             &mut self.recursive_cache,
+            budget,
         );
         self.prepare_mapping_buffers(query_atom_count, target);
     }
@@ -702,6 +802,7 @@ pub struct CompiledQuery {
     recursive_cache_slots: usize,
     recursive_query_lookup: BTreeMap<usize, usize>,
     recursive_queries: Box<[RecursiveQueryEntry]>,
+    component_prechecks: Box<[Self]>,
 }
 
 impl CompiledQuery {
@@ -735,6 +836,7 @@ impl CompiledQuery {
             .enumerate()
             .map(|(index, entry)| (entry.query_key, index))
             .collect();
+        let component_prechecks = compile_component_prechecks(&query)?;
         Ok(Self {
             query,
             query_neighbors,
@@ -748,6 +850,7 @@ impl CompiledQuery {
             recursive_cache_slots: *next_recursive_cache_slot,
             recursive_query_lookup,
             recursive_queries,
+            component_prechecks,
         })
     }
 
@@ -784,6 +887,38 @@ impl CompiledQuery {
         scratch: &mut MatchScratch,
     ) -> bool {
         query_matches_with_scratch(self, target, scratch)
+    }
+
+    /// Match this compiled SMARTS query with a deterministic step budget.
+    ///
+    /// The budget is not a wall-clock timeout. It counts candidate atom-match
+    /// and bondless-assignment attempts, so callers can stop pathological
+    /// searches reproducibly and log the rejected SMARTS/target pair.
+    #[inline]
+    #[must_use]
+    pub fn matches_with_step_limit(
+        &self,
+        target: &PreparedTarget,
+        max_steps: usize,
+    ) -> MatchBudgetResult {
+        let mut scratch = MatchScratch::new();
+        self.matches_with_scratch_and_step_limit(target, &mut scratch, max_steps)
+    }
+
+    /// Match this compiled SMARTS query with reusable scratch and a
+    /// deterministic step budget.
+    ///
+    /// Returns [`MatchBudgetResult::Exceeded`] if the search budget is
+    /// exhausted before proving either a match or a non-match.
+    #[inline]
+    #[must_use]
+    pub fn matches_with_scratch_and_step_limit(
+        &self,
+        target: &PreparedTarget,
+        scratch: &mut MatchScratch,
+        max_steps: usize,
+    ) -> MatchBudgetResult {
+        query_matches_with_scratch_and_step_limit(self, target, scratch, max_steps)
     }
 
     /// Collect all unique accepted substructure matches against one prepared
@@ -1394,6 +1529,52 @@ fn collect_recursive_queries_from_bracket_tree(
     }
 }
 
+fn compile_component_prechecks(query: &QueryMol) -> Result<Box<[CompiledQuery]>, SmartsMatchError> {
+    if query.component_count() <= 1 {
+        return Ok(Box::default());
+    }
+
+    (0..query.component_count())
+        .map(|component_id| {
+            let component = extract_single_component_query(query, component_id);
+            CompiledQuery::new(component)
+        })
+        .collect()
+}
+
+fn extract_single_component_query(query: &QueryMol, component_id: usize) -> QueryMol {
+    let mut old_to_new = alloc::vec![None; query.atom_count()];
+    let atoms = query
+        .component_atoms(component_id)
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(new_atom_id, old_atom_id)| {
+            old_to_new[old_atom_id] = Some(new_atom_id);
+            let mut atom = query.atoms()[old_atom_id].clone();
+            atom.id = new_atom_id;
+            atom.component = 0;
+            atom
+        })
+        .collect::<alloc::vec::Vec<_>>();
+
+    let bonds = query
+        .component_bonds(component_id)
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(new_bond_id, old_bond_id)| {
+            let mut bond = query.bonds()[old_bond_id].clone();
+            bond.id = new_bond_id;
+            bond.src = old_to_new[bond.src].expect("component bond source must be remapped");
+            bond.dst = old_to_new[bond.dst].expect("component bond destination must be remapped");
+            bond
+        })
+        .collect::<alloc::vec::Vec<_>>();
+
+    QueryMol::from_parts(atoms, bonds, 1, alloc::vec![None])
+}
+
 fn query_matches(query: &CompiledQuery, target: &PreparedTarget) -> bool {
     let mut atom_stereo_cache = AtomStereoCache::new();
     let mut recursive_cache =
@@ -1454,8 +1635,52 @@ fn query_matches_with_scratch(
             bondless_candidates: &mut scratch.bondless_candidates,
             bondless_target_assignments: &mut scratch.bondless_target_assignments,
             bondless_seen_targets: &mut scratch.bondless_seen_targets,
+            budget: None,
         },
         initial_mapping,
+    )
+}
+
+fn query_matches_with_scratch_and_step_limit(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    scratch: &mut MatchScratch,
+    max_steps: usize,
+) -> MatchBudgetResult {
+    let budget = MatchStepBudget::new(max_steps);
+    let matched = query_matches_with_scratch_budget(query, target, scratch, &budget);
+    if budget.exceeded() {
+        MatchBudgetResult::Exceeded
+    } else {
+        MatchBudgetResult::Complete(matched)
+    }
+}
+
+fn query_matches_with_scratch_budget(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    scratch: &mut MatchScratch,
+    budget: &MatchStepBudget,
+) -> bool {
+    scratch.prepare_with_budget(query, target, budget);
+    query_matches_with_mapping_state(
+        query,
+        target,
+        &mut scratch.atom_stereo_cache,
+        &mut scratch.recursive_cache,
+        SearchScratchView {
+            query_atom_anchor_widths: &scratch.query_atom_anchor_widths,
+            query_to_target: &mut scratch.query_to_target,
+            used_target_atoms: &mut scratch.used_target_atoms,
+            used_target_generation: scratch.used_target_generation,
+            bondless_query_order: &mut scratch.bondless_query_order,
+            bondless_candidate_offsets: &mut scratch.bondless_candidate_offsets,
+            bondless_candidates: &mut scratch.bondless_candidates,
+            bondless_target_assignments: &mut scratch.bondless_target_assignments,
+            bondless_seen_targets: &mut scratch.bondless_seen_targets,
+            budget: Some(budget),
+        },
+        InitialAtomMapping::default(),
     )
 }
 
@@ -1545,6 +1770,9 @@ fn query_matches_with_mapping_state(
     else {
         return false;
     };
+    if mapped_count == 0 && !component_prechecks_match(query, target, context.budget) {
+        return false;
+    }
 
     if query.query.bond_count() == 0 {
         if can_solve_bondless_by_assignment(query) {
@@ -1556,6 +1784,25 @@ fn query_matches_with_mapping_state(
     }
 
     search_mapping(&query.query, target, &mut context, mapped_count)
+}
+
+fn component_prechecks_match(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    budget: Option<&MatchStepBudget>,
+) -> bool {
+    if query.component_prechecks.is_empty() {
+        return true;
+    }
+
+    let mut scratch = MatchScratch::new();
+    query.component_prechecks.iter().all(|component| {
+        if let Some(budget) = budget {
+            query_matches_with_scratch_budget(component, target, &mut scratch, budget)
+        } else {
+            component.matches_with_scratch(target, &mut scratch)
+        }
+    })
 }
 
 fn with_fresh_bound_search_context<R>(
@@ -1600,12 +1847,13 @@ fn bind_initial_mapping(
     {
         return None;
     }
-    if !compiled_query_atom_matches(
+    if !compiled_query_atom_matches_with_budget(
         query,
         target,
         context.recursive_cache,
         query_atom,
         target_atom,
+        context.budget,
     ) {
         return None;
     }
@@ -1621,6 +1869,27 @@ fn compiled_query_atom_matches(
     query_atom: QueryAtomId,
     target_atom: usize,
 ) -> bool {
+    compiled_query_atom_matches_with_budget(
+        query,
+        target,
+        recursive_cache,
+        query_atom,
+        target_atom,
+        None,
+    )
+}
+
+fn compiled_query_atom_matches_with_budget(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    recursive_cache: &mut RecursiveMatchCache,
+    query_atom: QueryAtomId,
+    target_atom: usize,
+    budget: Option<&MatchStepBudget>,
+) -> bool {
+    if budget.is_some_and(|budget| !budget.consume()) {
+        return false;
+    }
     let atom_matcher = &query.atom_matchers[query_atom];
     if is_hidden_attached_hydrogen(target, target_atom) {
         return false;
@@ -1632,7 +1901,7 @@ fn compiled_query_atom_matches(
         return true;
     }
 
-    let mut context = AtomMatchContext::new(query, target, recursive_cache);
+    let mut context = AtomMatchContext::new(query, target, recursive_cache, budget);
     atom_expr_matches(
         &query.query.atoms()[query_atom].expr,
         query_atom,
@@ -3078,6 +3347,7 @@ fn search_bondless_assignment(
         context.bondless_candidates,
         context.bondless_target_assignments,
         context.bondless_seen_targets,
+        context.budget,
     )
 }
 
@@ -3091,6 +3361,7 @@ fn bondless_assignment_exists(
     candidates: &[usize],
     target_assignments: &mut [Option<QueryAtomId>],
     seen_targets: &mut [bool],
+    budget: Option<&MatchStepBudget>,
 ) -> bool {
     for &query_atom in query_order {
         seen_targets.fill(false);
@@ -3100,6 +3371,7 @@ fn bondless_assignment_exists(
             candidates,
             target_assignments,
             seen_targets,
+            budget,
         ) {
             return false;
         }
@@ -3114,6 +3386,7 @@ fn assign_bondless_query_atom(
     candidates: &[usize],
     target_assignments: &mut [Option<QueryAtomId>],
     seen_targets: &mut [bool],
+    budget: Option<&MatchStepBudget>,
 ) -> bool {
     let start = candidate_offsets[query_atom];
     let end = candidate_offsets[query_atom + 1];
@@ -3121,6 +3394,9 @@ fn assign_bondless_query_atom(
         let target_atom = candidates[candidate_index];
         if seen_targets[target_atom] {
             continue;
+        }
+        if budget.is_some_and(|budget| !budget.consume()) {
+            return false;
         }
         seen_targets[target_atom] = true;
 
@@ -3132,6 +3408,7 @@ fn assign_bondless_query_atom(
                 candidates,
                 target_assignments,
                 seen_targets,
+                budget,
             )
         }) {
             target_assignments[target_atom] = Some(query_atom);
@@ -3249,12 +3526,13 @@ fn push_bondless_atom_candidate(
     {
         return;
     }
-    if compiled_query_atom_matches(
+    if compiled_query_atom_matches_with_budget(
         context.compiled_query,
         target,
         context.recursive_cache,
         query_atom,
         target_atom,
+        context.budget,
     ) {
         context.bondless_candidates.push(target_atom);
     }
@@ -3288,6 +3566,9 @@ fn search_bondless_mapping_candidates(
         let target_atom = context.bondless_candidates[candidate_index];
         if context.target_atom_is_used(target_atom) {
             continue;
+        }
+        if !context.consume_step() {
+            return false;
         }
         if context.compiled_query.has_component_constraints
             && !component_constraints_match(
@@ -3468,12 +3749,13 @@ fn search_mapping_candidate(
     {
         return false;
     }
-    if !compiled_query_atom_matches(
+    if !compiled_query_atom_matches_with_budget(
         context.compiled_query,
         target,
         context.recursive_cache,
         query_atom,
         target_atom,
+        context.budget,
     ) {
         return false;
     }
@@ -3778,6 +4060,7 @@ fn prepare_query_atom_search_widths(
     query: &CompiledQuery,
     target: &PreparedTarget,
     recursive_cache: &mut RecursiveMatchCache,
+    budget: Option<&MatchStepBudget>,
 ) {
     let fallback = target.atom_count();
     widths.clear();
@@ -3785,7 +4068,13 @@ fn prepare_query_atom_search_widths(
         atom_matcher_anchor_candidates(&query.atom_matchers[query_atom], target).map_or_else(
             || {
                 if should_scan_query_atom_for_ordering(query, query_atom) {
-                    count_query_atom_target_matches(query, target, recursive_cache, query_atom)
+                    count_query_atom_target_matches_with_budget(
+                        query,
+                        target,
+                        recursive_cache,
+                        query_atom,
+                        budget,
+                    )
                 } else {
                     fallback
                 }
@@ -3837,15 +4126,23 @@ fn bracket_tree_may_filter_without_fast_anchor(tree: &BracketExprTree) -> bool {
     }
 }
 
-fn count_query_atom_target_matches(
+fn count_query_atom_target_matches_with_budget(
     query: &CompiledQuery,
     target: &PreparedTarget,
     recursive_cache: &mut RecursiveMatchCache,
     query_atom: QueryAtomId,
+    budget: Option<&MatchStepBudget>,
 ) -> usize {
     (0..target.atom_count())
         .filter(|&target_atom| {
-            compiled_query_atom_matches(query, target, recursive_cache, query_atom, target_atom)
+            compiled_query_atom_matches_with_budget(
+                query,
+                target,
+                recursive_cache,
+                query_atom,
+                target_atom,
+                budget,
+            )
         })
         .count()
 }
@@ -4309,6 +4606,7 @@ fn atom_primitive_matches(
             context.recursive_query_lookup,
             context.recursive_queries,
             context.recursive_cache,
+            context.budget,
         ),
     }
 }
@@ -4429,6 +4727,7 @@ fn recursive_query_matches(
     recursive_query_lookup: &BTreeMap<usize, usize>,
     recursive_queries: &[RecursiveQueryEntry],
     recursive_cache: &mut RecursiveMatchCache,
+    budget: Option<&MatchStepBudget>,
 ) -> bool {
     let query_key = core::ptr::from_ref(query) as usize;
     let Some(entry_index) = recursive_query_lookup.get(&query_key).copied() else {
@@ -4446,15 +4745,34 @@ fn recursive_query_matches(
     }
 
     let mut atom_stereo_cache = AtomStereoCache::new();
-    let anchored = query_matches_with_mapping(
-        entry.compiled.as_ref(),
-        target,
-        &mut atom_stereo_cache,
-        recursive_cache,
-        Some(0),
-        Some(atom_id),
-    );
-    recursive_cache.insert(entry.cache_slot, atom_id, anchored);
+    let anchored = if let Some(budget) = budget {
+        let mut scratch = FreshSearchBuffers::new_with_budget(
+            entry.compiled.as_ref(),
+            target,
+            recursive_cache,
+            Some(budget),
+        );
+        query_matches_with_mapping_state(
+            entry.compiled.as_ref(),
+            target,
+            &mut atom_stereo_cache,
+            recursive_cache,
+            scratch.view_with_budget(Some(budget)),
+            InitialAtomMapping::new(Some(0), Some(atom_id)),
+        )
+    } else {
+        query_matches_with_mapping(
+            entry.compiled.as_ref(),
+            target,
+            &mut atom_stereo_cache,
+            recursive_cache,
+            Some(0),
+            Some(atom_id),
+        )
+    };
+    if !budget.is_some_and(MatchStepBudget::exceeded) {
+        recursive_cache.insert(entry.cache_slot, atom_id, anchored);
+    }
     anchored
 }
 
@@ -4505,7 +4823,8 @@ mod tests {
 
     use super::{
         component_constraints_match, select_next_query_atom, select_next_query_atom_for_target,
-        AtomStereoCache, CompiledQuery, FreshSearchBuffers, MatchScratch, RecursiveMatchCache,
+        AtomStereoCache, CompiledQuery, FreshSearchBuffers, MatchBudgetResult, MatchScratch,
+        RecursiveMatchCache,
     };
     use crate::error::SmartsMatchError;
     use crate::prepared::PreparedTarget;
@@ -4579,6 +4898,24 @@ mod tests {
             compiled.matches(&good),
             compiled.matches_with_scratch(&good, &mut scratch)
         );
+    }
+
+    #[test]
+    fn compiled_query_step_limit_reports_exhaustion_without_poisoning_scratch() {
+        let compiled =
+            CompiledQuery::new(QueryMol::from_str("[$([#6]-[#6])].[#7]").unwrap()).unwrap();
+        let target = PreparedTarget::new(Smiles::from_str("CCC.N").unwrap());
+        let mut scratch = MatchScratch::new();
+
+        assert_eq!(
+            compiled.matches_with_scratch_and_step_limit(&target, &mut scratch, 0),
+            MatchBudgetResult::Exceeded
+        );
+        assert_eq!(
+            compiled.matches_with_scratch_and_step_limit(&target, &mut scratch, 10_000),
+            MatchBudgetResult::Complete(compiled.matches(&target))
+        );
+        assert!(compiled.matches(&target));
     }
 
     #[test]
@@ -4809,6 +5146,41 @@ mod tests {
 
         assert!(!query.matches(target).unwrap());
         assert_eq!(query.match_count(target).unwrap(), 0);
+    }
+
+    #[test]
+    fn disconnected_boolean_precheck_matches_counting_reference() {
+        let cases = [
+            (
+                "*@[B,X{16-}].[!R,b].([!#16]~[!#8].[!107*&r6]-[#6&H]=&@[D3])",
+                "C1CCCCC1O.CC",
+            ),
+            (
+                "*-,:,=C.(*(!=[!-]-&@1)!-[#6]-&@1~[!#6&H]-[!Cl].[!#6&H]-[!Cl]-,/&@[#6&R])",
+                "ClCC1=CCCCC1.CC",
+            ),
+            ("C.O.N", "CCO"),
+            ("(C.O).N", "CCO.N"),
+        ];
+        let mut scratch = MatchScratch::new();
+
+        for (smarts, smiles) in cases {
+            let query = QueryMol::from_str(smarts).unwrap();
+            let target = PreparedTarget::new(Smiles::from_str(smiles).unwrap());
+            let compiled = CompiledQuery::new(query).unwrap();
+            let expected = compiled.match_count(&target) > 0;
+
+            assert_eq!(
+                compiled.matches(&target),
+                expected,
+                "compiled boolean mismatch for {smarts} against {smiles}"
+            );
+            assert_eq!(
+                compiled.matches_with_scratch(&target, &mut scratch),
+                expected,
+                "scratch boolean mismatch for {smarts} against {smiles}"
+            );
+        }
     }
 
     #[test]

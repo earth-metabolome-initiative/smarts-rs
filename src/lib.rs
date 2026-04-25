@@ -46,7 +46,7 @@ pub use edit::{
     EditError, EditableQueryMol, ExprPath, ExprPathSegment,
 };
 pub use error::{SmartsMatchError, SmartsParseError, SmartsParseErrorKind, UnsupportedFeature};
-pub use matching::{CompiledQuery, MatchScratch};
+pub use matching::{CompiledQuery, MatchBudgetResult, MatchScratch};
 pub use parse::parse_smarts;
 pub use prepared::{EdgeProps, NodeProps, PreparedMolecule, PreparedTarget};
 pub use query::{

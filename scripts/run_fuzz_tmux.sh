@@ -22,6 +22,8 @@ ALL_HARNESSES=(
   "parse_bracket_atom"
   "recursive_smarts_lowering"
   "matching_loop"
+  "matching_timeout"
+  "matching_hang"
   "canonicalization_loop"
   "canonicalization_large_loop"
 )
@@ -82,6 +84,9 @@ harness_corpus_dir() {
   case "$harness" in
     canonicalization_loop|canonicalization_large_loop)
       printf '%s' "corpus/canonicalization_loop"
+      ;;
+    matching_hang)
+      printf '%s' "corpus/matching_timeout"
       ;;
     *)
       if [[ -d "$FUZZ_DIR/corpus/$harness" ]]; then
@@ -185,6 +190,12 @@ build_pane_command() {
         ;;
       matching_loop)
         pane_args=("-timeout=5" "-max_len=192")
+        ;;
+      matching_timeout)
+        pane_args=("-timeout=10" "-max_len=768" "-dict=dictionaries/smarts.dict")
+        ;;
+      matching_hang)
+        pane_args=("-timeout=30" "-max_len=768" "-dict=dictionaries/smarts.dict")
         ;;
       canonicalization_loop)
         pane_args=("-timeout=5" "-max_len=256")

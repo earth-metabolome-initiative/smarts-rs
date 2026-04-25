@@ -45,6 +45,18 @@ test = false
 doc = false
 
 [[bin]]
+name = "matching_timeout"
+path = "fuzz_targets/matching_timeout.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "matching_hang"
+path = "fuzz_targets/matching_hang.rs"
+test = false
+doc = false
+
+[[bin]]
 name = "canonicalization_loop"
 path = "fuzz_targets/canonicalization_loop.rs"
 test = false
