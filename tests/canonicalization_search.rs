@@ -492,6 +492,25 @@ fn synthetic_recursive_multigraphs_keep_canonicalization_stable() {
     eprintln!("checked {checked} synthetic recursive multigraph canonicalization variants");
 }
 
+#[test]
+#[ignore = "deterministic stress search for local canonicalization investigation"]
+fn synthetic_expression_trees_converge() {
+    let mut checked = 0usize;
+
+    for group in synthetic_atom_expression_groups() {
+        checked += assert_query_group_converges(&group);
+    }
+    for group in synthetic_bond_expression_groups() {
+        checked += assert_query_group_converges(&group);
+    }
+
+    assert!(
+        checked > 1_500,
+        "synthetic expression-tree search should check many variants; checked {checked}"
+    );
+    eprintln!("checked {checked} synthetic expression-tree canonicalization variants");
+}
+
 fn assert_canonicalization_is_stable(source: &str, query: &QueryMol) {
     let canonical = query.canonicalize();
     assert_eq!(
@@ -584,6 +603,22 @@ fn assert_parseable_group_converges(group: &[String]) -> usize {
         );
     }
     parseable.len()
+}
+
+fn assert_query_group_converges(group: &[QueryMol]) -> usize {
+    if group.len() <= 1 {
+        return 0;
+    }
+
+    let expected = group[0].canonicalize();
+    for query in &group[1..] {
+        assert_eq!(
+            expected,
+            query.canonicalize(),
+            "synthetic query expression group diverged"
+        );
+    }
+    group.len()
 }
 
 fn triples<'a>(items: &'a [&'a str]) -> Vec<[&'a str; 3]> {
@@ -1169,6 +1204,227 @@ fn synthetic_bond_exprs() -> Vec<BondExpr> {
             BondExprTree::Primitive(BondPrimitive::Ring),
         ])),
     ]
+}
+
+fn synthetic_atom_expression_groups() -> Vec<Vec<QueryMol>> {
+    let leaves = [
+        parsed_bracket_tree("C"),
+        parsed_bracket_tree("#6"),
+        parsed_bracket_tree("H1"),
+        parsed_bracket_tree("D2"),
+        parsed_bracket_tree("R"),
+        parsed_bracket_tree("+"),
+        parsed_bracket_tree("!#1"),
+        parsed_bracket_tree("$([#6])"),
+    ];
+    let mut groups = Vec::new();
+    for first in 0..leaves.len() {
+        for second in first + 1..leaves.len() {
+            for third in second + 1..leaves.len() {
+                let terms = [
+                    leaves[first].clone(),
+                    leaves[second].clone(),
+                    leaves[third].clone(),
+                ];
+                groups.extend(atom_tree_operator_groups(&terms));
+                groups.push(
+                    all_permutations(&[0, 1, 2])
+                        .into_iter()
+                        .map(|order| {
+                            single_atom_query(AtomExpr::Bracket(BracketExpr {
+                                tree: BracketExprTree::HighAnd(vec![
+                                    terms[order[0]].clone(),
+                                    terms[order[0]].clone(),
+                                    terms[order[1]].clone(),
+                                    terms[order[2]].clone(),
+                                ]),
+                                atom_map: None,
+                            }))
+                        })
+                        .collect(),
+                );
+            }
+        }
+    }
+
+    for leaf in leaves {
+        groups.push(vec![
+            single_atom_query(AtomExpr::Bracket(BracketExpr {
+                tree: leaf.clone(),
+                atom_map: None,
+            })),
+            single_atom_query(AtomExpr::Bracket(BracketExpr {
+                tree: BracketExprTree::Not(Box::new(BracketExprTree::Not(Box::new(leaf)))),
+                atom_map: None,
+            })),
+        ]);
+    }
+
+    groups
+}
+
+fn atom_tree_operator_groups(terms: &[BracketExprTree; 3]) -> Vec<Vec<QueryMol>> {
+    let mut groups = Vec::new();
+    for operator in [
+        build_atom_high_and as fn(Vec<BracketExprTree>) -> BracketExprTree,
+        build_atom_or,
+        build_atom_low_and,
+    ] {
+        groups.push(
+            all_permutations(&[0, 1, 2])
+                .into_iter()
+                .map(|order| {
+                    single_atom_query(AtomExpr::Bracket(BracketExpr {
+                        tree: operator(vec![
+                            terms[order[0]].clone(),
+                            terms[order[1]].clone(),
+                            terms[order[2]].clone(),
+                        ]),
+                        atom_map: None,
+                    }))
+                })
+                .collect(),
+        );
+        groups.push(vec![
+            single_atom_query(AtomExpr::Bracket(BracketExpr {
+                tree: operator(vec![
+                    terms[0].clone(),
+                    operator(vec![terms[1].clone(), terms[2].clone()]),
+                ]),
+                atom_map: None,
+            })),
+            single_atom_query(AtomExpr::Bracket(BracketExpr {
+                tree: operator(vec![
+                    operator(vec![terms[2].clone(), terms[0].clone()]),
+                    terms[1].clone(),
+                ]),
+                atom_map: None,
+            })),
+        ]);
+    }
+    groups
+}
+
+fn synthetic_bond_expression_groups() -> Vec<Vec<QueryMol>> {
+    let leaves = [
+        BondExprTree::Primitive(BondPrimitive::Bond(Bond::Single)),
+        BondExprTree::Primitive(BondPrimitive::Bond(Bond::Double)),
+        BondExprTree::Primitive(BondPrimitive::Any),
+        BondExprTree::Primitive(BondPrimitive::Ring),
+        BondExprTree::Not(Box::new(BondExprTree::Primitive(BondPrimitive::Ring))),
+    ];
+    let mut groups = Vec::new();
+    for first in 0..leaves.len() {
+        for second in first + 1..leaves.len() {
+            for third in second + 1..leaves.len() {
+                let terms = [
+                    leaves[first].clone(),
+                    leaves[second].clone(),
+                    leaves[third].clone(),
+                ];
+                groups.extend(bond_tree_operator_groups(&terms));
+                groups.push(
+                    all_permutations(&[0, 1, 2])
+                        .into_iter()
+                        .map(|order| {
+                            two_atom_query(BondExpr::Query(BondExprTree::Or(vec![
+                                terms[order[0]].clone(),
+                                terms[order[0]].clone(),
+                                terms[order[1]].clone(),
+                                terms[order[2]].clone(),
+                            ])))
+                        })
+                        .collect(),
+                );
+            }
+        }
+    }
+    groups
+}
+
+fn bond_tree_operator_groups(terms: &[BondExprTree; 3]) -> Vec<Vec<QueryMol>> {
+    let mut groups = Vec::new();
+    for operator in [
+        build_bond_high_and as fn(Vec<BondExprTree>) -> BondExprTree,
+        build_bond_or,
+        build_bond_low_and,
+    ] {
+        groups.push(
+            all_permutations(&[0, 1, 2])
+                .into_iter()
+                .map(|order| {
+                    two_atom_query(BondExpr::Query(operator(vec![
+                        terms[order[0]].clone(),
+                        terms[order[1]].clone(),
+                        terms[order[2]].clone(),
+                    ])))
+                })
+                .collect(),
+        );
+        groups.push(vec![
+            two_atom_query(BondExpr::Query(operator(vec![
+                terms[0].clone(),
+                operator(vec![terms[1].clone(), terms[2].clone()]),
+            ]))),
+            two_atom_query(BondExpr::Query(operator(vec![
+                operator(vec![terms[2].clone(), terms[0].clone()]),
+                terms[1].clone(),
+            ]))),
+        ]);
+    }
+    groups
+}
+
+fn single_atom_query(expr: AtomExpr) -> QueryMol {
+    QueryMol::from_parts(
+        vec![QueryAtom {
+            id: 0,
+            component: 0,
+            expr,
+        }],
+        Vec::new(),
+        1,
+        vec![None],
+    )
+}
+
+fn two_atom_query(expr: BondExpr) -> QueryMol {
+    synthetic_query(&["C", "N"], &[(0, 1, expr)], 1, vec![None])
+}
+
+fn parsed_bracket_tree(label: &str) -> BracketExprTree {
+    let query = QueryMol::from_str(&format!("[{label}]"))
+        .unwrap_or_else(|error| panic!("synthetic bracket label should parse: {label}: {error}"));
+    match &query.atoms()[0].expr {
+        AtomExpr::Bracket(bracket) => bracket.tree.clone(),
+        AtomExpr::Wildcard | AtomExpr::Bare { .. } => {
+            panic!("synthetic bracket label should produce bracket expr: {label}")
+        }
+    }
+}
+
+const fn build_atom_high_and(items: Vec<BracketExprTree>) -> BracketExprTree {
+    BracketExprTree::HighAnd(items)
+}
+
+const fn build_atom_or(items: Vec<BracketExprTree>) -> BracketExprTree {
+    BracketExprTree::Or(items)
+}
+
+const fn build_atom_low_and(items: Vec<BracketExprTree>) -> BracketExprTree {
+    BracketExprTree::LowAnd(items)
+}
+
+const fn build_bond_high_and(items: Vec<BondExprTree>) -> BondExprTree {
+    BondExprTree::HighAnd(items)
+}
+
+const fn build_bond_or(items: Vec<BondExprTree>) -> BondExprTree {
+    BondExprTree::Or(items)
+}
+
+const fn build_bond_low_and(items: Vec<BondExprTree>) -> BondExprTree {
+    BondExprTree::LowAnd(items)
 }
 
 const fn synthetic_single_bond() -> BondExpr {
