@@ -367,6 +367,131 @@ fn topology_equivalent_smarts_converge() {
     eprintln!("checked {checked} topology-equivalent canonicalization variants");
 }
 
+#[test]
+#[ignore = "deterministic stress search for local canonicalization investigation"]
+fn synthetic_multigraphs_keep_canonicalization_stable() {
+    let cases = collect_synthetic_multigraph_cases();
+
+    let mut checked = 0usize;
+    for (case_name, query) in cases {
+        query
+            .validate()
+            .unwrap_or_else(|error| panic!("synthetic query {case_name} should validate: {error}"));
+        let canonical = query.canonicalize();
+        assert_eq!(
+            canonical,
+            canonical.canonicalize(),
+            "synthetic query {case_name} is not idempotent"
+        );
+        assert!(
+            canonical.is_canonical(),
+            "synthetic query {case_name} did not produce a canonical result: {canonical}"
+        );
+
+        if query.atom_count() <= 6 {
+            let atom_ids = (0..query.atom_count()).collect::<Vec<_>>();
+            for order in all_permutations(&atom_ids) {
+                let relabeled = relabel_query(&query, &order);
+                relabeled.validate().unwrap_or_else(|error| {
+                    panic!("synthetic relabeling {case_name} {order:?} should validate: {error}")
+                });
+                assert_eq!(
+                    canonical,
+                    relabeled.canonicalize(),
+                    "synthetic relabeling changed canonical form for {case_name}: {order:?}"
+                );
+                checked += 1;
+            }
+        }
+
+        for (variant_name, variant) in graph_construction_variants(&query) {
+            variant.validate().unwrap_or_else(|error| {
+                panic!(
+                    "synthetic graph variant {case_name}/{variant_name} should validate: {error}"
+                )
+            });
+            assert_eq!(
+                canonical,
+                variant.canonicalize(),
+                "synthetic graph variant {variant_name} changed canonical form for {case_name}"
+            );
+            checked += 1;
+        }
+    }
+
+    assert!(
+        checked > 20_000,
+        "synthetic multigraph search should check many variants; checked {checked}"
+    );
+    eprintln!("checked {checked} synthetic multigraph canonicalization variants");
+}
+
+#[test]
+#[ignore = "deterministic stress search for local canonicalization investigation"]
+fn synthetic_recursive_multigraphs_keep_canonicalization_stable() {
+    let mut checked = 0usize;
+    let mut selected = 0usize;
+    for (case_index, (case_name, nested)) in
+        collect_synthetic_multigraph_cases().into_iter().enumerate()
+    {
+        if case_index % 3 != 0 || nested.atom_count() > 5 || nested.bond_count() > 5 {
+            continue;
+        }
+        selected += 1;
+        if selected > 1_500 {
+            break;
+        }
+
+        let query = recursive_wrapper_query(nested.clone());
+        query.validate().unwrap_or_else(|error| {
+            panic!("synthetic recursive query {case_name} should validate: {error}")
+        });
+        let canonical = query.canonicalize();
+
+        let orders = if nested.atom_count() <= 4 {
+            all_permutations(&(0..nested.atom_count()).collect::<Vec<_>>())
+        } else {
+            relabel_orders(nested.atom_count())
+        };
+        for order in orders {
+            let relabeled = relabel_query(&nested, &order);
+            let variant = recursive_wrapper_query(relabeled);
+            variant.validate().unwrap_or_else(|error| {
+                panic!(
+                    "synthetic recursive relabeling {case_name} {order:?} should validate: {error}"
+                )
+            });
+            assert_eq!(
+                canonical,
+                variant.canonicalize(),
+                "synthetic recursive relabeling changed canonical form for {case_name}: {order:?}"
+            );
+            checked += 1;
+        }
+
+        for (variant_name, nested_variant) in graph_construction_variants(&nested) {
+            let variant = recursive_wrapper_query(nested_variant);
+            variant.validate().unwrap_or_else(|error| {
+                panic!(
+                    "synthetic recursive graph variant {case_name}/{variant_name} should validate: {error}"
+                )
+            });
+            assert_eq!(
+                canonical,
+                variant.canonicalize(),
+                "synthetic recursive graph variant {variant_name} changed canonical form for {case_name}"
+            );
+            checked += 1;
+        }
+    }
+
+    assert!(
+        checked > 10_000,
+        "synthetic recursive multigraph search should check many variants; checked {checked}"
+    );
+    eprintln!("checked {checked} synthetic recursive multigraph canonicalization variants");
+}
+
 fn assert_canonicalization_is_stable(source: &str, query: &QueryMol) {
     let canonical = query.canonicalize();
     assert_eq!(
@@ -827,6 +952,239 @@ fn collect_topology_equivalence_groups(groups: &mut Vec<Vec<String>>) {
             }
         }
     }
+}
+
+fn collect_synthetic_multigraph_cases() -> Vec<(String, QueryMol)> {
+    let atom_labels = ["C", "N", "O", "[#6]", "[C:1]"];
+    let bond_exprs = synthetic_bond_exprs();
+    let mut cases = Vec::new();
+    collect_synthetic_parallel_pair_cases(&mut cases, &atom_labels, &bond_exprs);
+    collect_synthetic_three_atom_cases(&mut cases, &atom_labels[..4], &bond_exprs);
+    collect_synthetic_four_atom_cases(&mut cases, &atom_labels[..3]);
+    collect_synthetic_grouped_component_cases(&mut cases, &atom_labels[..4]);
+    cases
+}
+
+fn collect_synthetic_parallel_pair_cases(
+    cases: &mut Vec<(String, QueryMol)>,
+    atom_labels: &[&str],
+    bond_exprs: &[BondExpr],
+) {
+    for &left in atom_labels {
+        for &right in atom_labels {
+            for first_bond in 0..bond_exprs.len() {
+                for second_bond in first_bond..bond_exprs.len() {
+                    cases.push((
+                        format!("parallel_pair_{left}_{right}_{first_bond}_{second_bond}"),
+                        synthetic_query(
+                            &[left, right],
+                            &[
+                                (0, 1, bond_exprs[first_bond].clone()),
+                                (0, 1, bond_exprs[second_bond].clone()),
+                            ],
+                            1,
+                            vec![None],
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+}
+
+fn collect_synthetic_three_atom_cases(
+    cases: &mut Vec<(String, QueryMol)>,
+    atom_labels: &[&str],
+    bond_exprs: &[BondExpr],
+) {
+    for &first in atom_labels {
+        for &second in atom_labels {
+            for &third in atom_labels {
+                for left_bond in 0..bond_exprs.len() {
+                    for right_bond in 0..bond_exprs.len() {
+                        cases.push((
+                            format!(
+                                "three_atom_chain_{first}_{second}_{third}_{left_bond}_{right_bond}"
+                            ),
+                            synthetic_query(
+                                &[first, second, third],
+                                &[
+                                    (0, 1, bond_exprs[left_bond].clone()),
+                                    (1, 2, bond_exprs[right_bond].clone()),
+                                ],
+                                1,
+                                vec![None],
+                            ),
+                        ));
+                        cases.push((
+                            format!(
+                                "three_atom_parallel_chain_{first}_{second}_{third}_{left_bond}_{right_bond}"
+                            ),
+                            synthetic_query(
+                                &[first, second, third],
+                                &[
+                                    (0, 1, bond_exprs[left_bond].clone()),
+                                    (0, 1, bond_exprs[right_bond].clone()),
+                                    (1, 2, bond_exprs[left_bond].clone()),
+                                ],
+                                1,
+                                vec![None],
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn collect_synthetic_four_atom_cases(cases: &mut Vec<(String, QueryMol)>, atom_labels: &[&str]) {
+    for &first in atom_labels {
+        for &second in atom_labels {
+            for &third in atom_labels {
+                for &fourth in atom_labels {
+                    cases.push((
+                        format!("four_cycle_{first}_{second}_{third}_{fourth}"),
+                        synthetic_query(
+                            &[first, second, third, fourth],
+                            &[
+                                (0, 1, synthetic_single_bond()),
+                                (1, 2, BondExpr::Elided),
+                                (2, 3, synthetic_any_bond()),
+                                (0, 3, BondExpr::Elided),
+                            ],
+                            1,
+                            vec![None],
+                        ),
+                    ));
+                    cases.push((
+                        format!("four_cycle_parallel_diagonal_{first}_{second}_{third}_{fourth}"),
+                        synthetic_query(
+                            &[first, second, third, fourth],
+                            &[
+                                (0, 1, synthetic_single_bond()),
+                                (1, 2, BondExpr::Elided),
+                                (2, 3, synthetic_any_bond()),
+                                (0, 3, BondExpr::Elided),
+                                (0, 2, synthetic_double_bond()),
+                                (0, 2, synthetic_ring_bond()),
+                            ],
+                            1,
+                            vec![None],
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+}
+
+fn collect_synthetic_grouped_component_cases(
+    cases: &mut Vec<(String, QueryMol)>,
+    atom_labels: &[&str],
+) {
+    for &first in atom_labels {
+        for &second in atom_labels {
+            for &third in atom_labels {
+                for &fourth in atom_labels {
+                    cases.push((
+                        format!("grouped_components_{first}_{second}_{third}_{fourth}"),
+                        synthetic_query(
+                            &[first, second, third, fourth],
+                            &[],
+                            4,
+                            vec![Some(0), None, Some(0), Some(1)],
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+}
+
+fn synthetic_query(
+    atom_labels: &[&str],
+    edges: &[(usize, usize, BondExpr)],
+    component_count: usize,
+    component_groups: Vec<Option<usize>>,
+) -> QueryMol {
+    let mut atoms = Vec::with_capacity(atom_labels.len());
+    for (id, &label) in atom_labels.iter().enumerate() {
+        atoms.push(QueryAtom {
+            id,
+            component: if edges.is_empty() { id } else { 0 },
+            expr: parsed_atom_expr(label),
+        });
+    }
+    let bonds = edges
+        .iter()
+        .enumerate()
+        .map(|(id, &(src, dst, ref expr))| QueryBond {
+            id,
+            src,
+            dst,
+            expr: expr.clone(),
+        })
+        .collect();
+    QueryMol::from_parts(atoms, bonds, component_count, component_groups)
+}
+
+fn recursive_wrapper_query(nested: QueryMol) -> QueryMol {
+    QueryMol::from_parts(
+        vec![QueryAtom {
+            id: 0,
+            component: 0,
+            expr: AtomExpr::Bracket(BracketExpr {
+                tree: BracketExprTree::Primitive(AtomPrimitive::RecursiveQuery(Box::new(nested))),
+                atom_map: None,
+            }),
+        }],
+        Vec::new(),
+        1,
+        vec![None],
+    )
+}
+
+fn parsed_atom_expr(label: &str) -> AtomExpr {
+    QueryMol::from_str(label)
+        .unwrap_or_else(|error| panic!("synthetic atom label should parse: {label}: {error}"))
+        .atoms()[0]
+        .expr
+        .clone()
+}
+
+fn synthetic_bond_exprs() -> Vec<BondExpr> {
+    vec![
+        BondExpr::Elided,
+        synthetic_single_bond(),
+        synthetic_double_bond(),
+        synthetic_any_bond(),
+        synthetic_ring_bond(),
+        BondExpr::Query(BondExprTree::Or(vec![
+            BondExprTree::Primitive(BondPrimitive::Bond(Bond::Single)),
+            BondExprTree::Primitive(BondPrimitive::Bond(Bond::Double)),
+        ])),
+        BondExpr::Query(BondExprTree::LowAnd(vec![
+            BondExprTree::Primitive(BondPrimitive::Bond(Bond::Single)),
+            BondExprTree::Primitive(BondPrimitive::Ring),
+        ])),
+    ]
+}
+
+const fn synthetic_single_bond() -> BondExpr {
+    BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Bond(Bond::Single)))
+}
+
+const fn synthetic_double_bond() -> BondExpr {
+    BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Bond(Bond::Double)))
+}
+
+const fn synthetic_any_bond() -> BondExpr {
+    BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Any))
+}
+
+const fn synthetic_ring_bond() -> BondExpr {
+    BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Ring))
 }
 
 const fn generated_atoms() -> &'static [&'static str] {
