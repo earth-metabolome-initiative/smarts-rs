@@ -20,39 +20,56 @@ pub(super) struct CachedFeatureMask {
 }
 
 impl CountBitsetIndex {
-    pub(super) fn new(counts: &[usize]) -> Self {
-        let mut thresholds = counts
-            .iter()
-            .copied()
-            .filter(|&count| count > 0)
+    pub(super) fn from_counts<I>(target_count: usize, counts: I) -> Self
+    where
+        I: IntoIterator<Item = usize>,
+    {
+        let target_counts = counts
+            .into_iter()
+            .enumerate()
+            .filter_map(|(target_id, count)| (count > 0).then_some((count, target_id)))
             .collect::<Vec<_>>();
-        thresholds.sort_unstable();
-        thresholds.dedup();
+        Self::from_nonzero_target_counts(target_count, target_counts)
+    }
 
-        let word_count = bitset_word_count(counts.len());
-        let bitsets = thresholds
-            .iter()
-            .map(|&threshold| {
-                let mut words = vec![0u64; word_count];
-                for (target_id, &count) in counts.iter().enumerate() {
-                    if count >= threshold {
-                        set_bit(&mut words, target_id);
-                    }
-                }
-                words.into_boxed_slice()
-            })
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
-        let populations = bitsets
-            .iter()
-            .map(|words| words.iter().map(|word| word.count_ones() as usize).sum())
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
+    fn from_nonzero_target_counts(
+        target_count: usize,
+        mut target_counts: Vec<(usize, usize)>,
+    ) -> Self {
+        let word_count = bitset_word_count(target_count);
+        target_counts.sort_unstable_by_key(|&(count, _)| core::cmp::Reverse(count));
+
+        let mut thresholds = Vec::new();
+        for &(count, _) in &target_counts {
+            if thresholds
+                .last()
+                .is_none_or(|&threshold| threshold != count)
+            {
+                thresholds.push(count);
+            }
+        }
+        let mut words = vec![0u64; word_count];
+        let mut population = 0usize;
+        let mut cursor = 0usize;
+        let mut bitsets = Vec::with_capacity(thresholds.len());
+        let mut populations = Vec::with_capacity(thresholds.len());
+        for &threshold in &thresholds {
+            while cursor < target_counts.len() && target_counts[cursor].0 >= threshold {
+                set_bit(&mut words, target_counts[cursor].1);
+                population += 1;
+                cursor += 1;
+            }
+            bitsets.push(words.clone().into_boxed_slice());
+            populations.push(population);
+        }
+        bitsets.reverse();
+        populations.reverse();
+        thresholds.reverse();
 
         Self {
             thresholds: thresholds.into_boxed_slice(),
-            bitsets,
-            populations,
+            bitsets: bitsets.into_boxed_slice(),
+            populations: populations.into_boxed_slice(),
         }
     }
 

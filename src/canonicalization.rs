@@ -124,6 +124,9 @@ impl QueryMol {
 
     fn canonicalize_with_labeling(&self) -> (Self, QueryCanonicalLabeling) {
         let (first_query, first_labeling) = self.canonicalize_once_with_labeling();
+        if first_query == *self {
+            return (first_query, first_labeling);
+        }
         let (second_query, second_step_labeling) = first_query.canonicalize_once_with_labeling();
         if second_query == first_query {
             return (first_query, first_labeling);
@@ -234,11 +237,11 @@ impl QueryMol {
 
         let result = CanonicalLabeling::canonical_labeling(
             &graph,
-            |node_id| atom_labels[node_id].clone(),
+            |node_id| atom_labels[node_id].as_str(),
             |node_a, node_b| {
                 bond_multiset_label_for_edge(&bond_multiset_labels, node_a, node_b).map_or_else(
                     || unreachable!("canonizer only queries edges that exist"),
-                    |(_, label)| label.clone(),
+                    |(_, label)| label.as_str(),
                 )
             },
         );
@@ -5446,21 +5449,30 @@ fn ring_neighbors_by_atom(
 }
 
 fn build_bond_multiset_labels(query: &QueryMol) -> Vec<((AtomId, AtomId), String)> {
-    let mut labels_by_edge = BTreeMap::<(AtomId, AtomId), Vec<String>>::new();
-    for bond in query.bonds() {
-        labels_by_edge
-            .entry((bond.src.min(bond.dst), bond.src.max(bond.dst)))
-            .or_default()
-            .push(undirected_bond_expr_key(&bond.expr));
-    }
-
-    labels_by_edge
-        .into_iter()
-        .map(|(edge, mut labels)| {
-            labels.sort_unstable();
-            (edge, labels.join("\u{1f}"))
+    let mut labels = query
+        .bonds()
+        .iter()
+        .map(|bond| {
+            (
+                (bond.src.min(bond.dst), bond.src.max(bond.dst)),
+                undirected_bond_expr_key(&bond.expr),
+            )
         })
-        .collect()
+        .collect::<Vec<_>>();
+    labels.sort_unstable();
+
+    let mut grouped = Vec::<((AtomId, AtomId), String)>::with_capacity(labels.len());
+    for (edge, label) in labels {
+        if let Some((last_edge, last_label)) = grouped.last_mut() {
+            if *last_edge == edge {
+                last_label.push('\u{1f}');
+                last_label.push_str(&label);
+                continue;
+            }
+        }
+        grouped.push((edge, label));
+    }
+    grouped
 }
 
 fn bond_multiset_label_for_edge(

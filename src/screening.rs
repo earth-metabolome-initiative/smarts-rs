@@ -910,59 +910,44 @@ impl TargetCorpusIndex {
     /// Builds one persistent target-side index from already prepared screens.
     #[must_use]
     pub fn from_screens(screens: Vec<TargetScreen>) -> Self {
-        let atom_count_index = CountBitsetIndex::new(
-            &screens
-                .iter()
-                .map(|screen| screen.atom_count)
-                .collect::<Vec<_>>(),
+        let target_count = screens.len();
+        let atom_count_index = CountBitsetIndex::from_counts(
+            target_count,
+            screens.iter().map(|screen| screen.atom_count),
         );
-        let component_count_index = CountBitsetIndex::new(
-            &screens
+        let component_count_index = CountBitsetIndex::from_counts(
+            target_count,
+            screens
                 .iter()
-                .map(|screen| screen.connected_component_count)
-                .collect::<Vec<_>>(),
+                .map(|screen| screen.connected_component_count),
         );
-        let aromatic_atom_count_index = CountBitsetIndex::new(
-            &screens
-                .iter()
-                .map(|screen| screen.aromatic_atom_count)
-                .collect::<Vec<_>>(),
+        let aromatic_atom_count_index = CountBitsetIndex::from_counts(
+            target_count,
+            screens.iter().map(|screen| screen.aromatic_atom_count),
         );
-        let ring_atom_count_index = CountBitsetIndex::new(
-            &screens
-                .iter()
-                .map(|screen| screen.ring_atom_count)
-                .collect::<Vec<_>>(),
+        let ring_atom_count_index = CountBitsetIndex::from_counts(
+            target_count,
+            screens.iter().map(|screen| screen.ring_atom_count),
         );
-        let single_bond_count_index = CountBitsetIndex::new(
-            &screens
-                .iter()
-                .map(|screen| screen.bond_counts.single)
-                .collect::<Vec<_>>(),
+        let single_bond_count_index = CountBitsetIndex::from_counts(
+            target_count,
+            screens.iter().map(|screen| screen.bond_counts.single),
         );
-        let double_bond_count_index = CountBitsetIndex::new(
-            &screens
-                .iter()
-                .map(|screen| screen.bond_counts.double)
-                .collect::<Vec<_>>(),
+        let double_bond_count_index = CountBitsetIndex::from_counts(
+            target_count,
+            screens.iter().map(|screen| screen.bond_counts.double),
         );
-        let triple_bond_count_index = CountBitsetIndex::new(
-            &screens
-                .iter()
-                .map(|screen| screen.bond_counts.triple)
-                .collect::<Vec<_>>(),
+        let triple_bond_count_index = CountBitsetIndex::from_counts(
+            target_count,
+            screens.iter().map(|screen| screen.bond_counts.triple),
         );
-        let aromatic_bond_count_index = CountBitsetIndex::new(
-            &screens
-                .iter()
-                .map(|screen| screen.bond_counts.aromatic)
-                .collect::<Vec<_>>(),
+        let aromatic_bond_count_index = CountBitsetIndex::from_counts(
+            target_count,
+            screens.iter().map(|screen| screen.bond_counts.aromatic),
         );
-        let ring_bond_count_index = CountBitsetIndex::new(
-            &screens
-                .iter()
-                .map(|screen| screen.bond_counts.ring)
-                .collect::<Vec<_>>(),
+        let ring_bond_count_index = CountBitsetIndex::from_counts(
+            target_count,
+            screens.iter().map(|screen| screen.bond_counts.ring),
         );
 
         let indexed_element_count_index =
@@ -2134,9 +2119,11 @@ where
         .map(|feature| {
             let counts = screens
                 .iter()
-                .map(|screen| count_map(screen).get(&feature).copied().unwrap_or_default())
-                .collect::<Vec<_>>();
-            (feature, CountBitsetIndex::new(&counts))
+                .map(|screen| count_map(screen).get(&feature).copied().unwrap_or_default());
+            (
+                feature,
+                CountBitsetIndex::from_counts(screens.len(), counts),
+            )
         })
         .collect()
 }
@@ -3165,12 +3152,13 @@ fn target_graph_features(target: &PreparedTarget) -> TargetGraphFeatures {
     let mut paths = BTreeMap::new();
     let mut path4s = BTreeMap::new();
     let mut stars = BTreeMap::new();
+    let mut incident = Vec::new();
 
     for atom_id in 0..target.atom_count() {
         let Some(center) = target_atom_feature(target, atom_id) else {
             continue;
         };
-        let incident = collect_target_incident_features(target, atom_id, center, &mut edges);
+        collect_target_incident_features(target, atom_id, center, &mut edges, &mut incident);
         count_target_path3_features(center, &incident, &mut paths);
         count_target_path4_features(target, atom_id, center, &incident, &mut path4s);
         count_target_star3_features(center, &incident, &mut stars);
@@ -3184,8 +3172,9 @@ fn collect_target_incident_features(
     center_id: usize,
     center: AtomFeature,
     edges: &mut BTreeMap<EdgeFeature, usize>,
-) -> Vec<IncidentTargetFeature> {
-    let mut incident = Vec::new();
+    incident: &mut Vec<IncidentTargetFeature>,
+) {
+    incident.clear();
     for (other_id, label) in target.neighbors(center_id) {
         let Some(other) = target_atom_feature(target, other_id) else {
             continue;
@@ -3203,7 +3192,6 @@ fn collect_target_incident_features(
             }
         }
     }
-    incident
 }
 
 fn count_target_path3_features(
