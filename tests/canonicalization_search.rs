@@ -9,8 +9,8 @@ use std::{
 
 use serde_json::Value;
 use smarts_rs::{
-    AtomExpr, AtomPrimitive, BondExpr, BondExprTree, BondPrimitive, BracketExprTree, QueryAtom,
-    QueryBond, QueryMol,
+    AtomExpr, AtomPrimitive, BondExpr, BondExprTree, BondPrimitive, BracketExpr, BracketExprTree,
+    QueryAtom, QueryBond, QueryMol,
 };
 use smiles_parser::bond::Bond;
 
@@ -143,6 +143,121 @@ fn generated_relabelings_keep_canonicalization_stable() {
     eprintln!("checked {checked} generated relabeling canonicalization candidates");
 }
 
+#[test]
+#[ignore = "deterministic stress search for local canonicalization investigation"]
+fn graph_construction_variants_keep_canonicalization_stable() {
+    let mut cases = BTreeSet::new();
+    collect_corpus_smarts(&mut cases);
+    collect_generated_invariant_cases(&mut cases);
+
+    let mut checked = 0usize;
+    for smarts in cases {
+        let Ok(query) = QueryMol::from_str(&smarts) else {
+            continue;
+        };
+        if query.atom_count() == 0 || query.atom_count() > 16 || query_contains_chirality(&query) {
+            continue;
+        }
+
+        let canonical = query.canonicalize();
+        for (variant_name, variant) in graph_construction_variants(&query) {
+            assert_eq!(
+                canonical,
+                variant.canonicalize(),
+                "graph construction variant {variant_name} changed canonical form for {smarts:?}"
+            );
+            checked += 1;
+        }
+    }
+
+    assert!(
+        checked > 10_000,
+        "graph construction search should check many variants; checked {checked}"
+    );
+    eprintln!("checked {checked} graph construction canonicalization variants");
+}
+
+#[test]
+#[ignore = "deterministic stress search for local canonicalization investigation"]
+fn recursive_query_graph_variants_keep_canonicalization_stable() {
+    let mut cases = BTreeSet::new();
+    collect_corpus_smarts(&mut cases);
+    collect_generated_invariant_cases(&mut cases);
+
+    let mut checked = 0usize;
+    for smarts in cases {
+        let Ok(query) = QueryMol::from_str(&smarts) else {
+            continue;
+        };
+        if query.atom_count() == 0 || query.atom_count() > 16 || query_contains_chirality(&query) {
+            continue;
+        }
+
+        let canonical = query.canonicalize();
+        for (variant_name, variant) in recursive_query_graph_variants(&query) {
+            assert_eq!(
+                canonical,
+                variant.canonicalize(),
+                "recursive graph variant {variant_name} changed canonical form for {smarts:?}"
+            );
+            checked += 1;
+        }
+    }
+
+    assert!(
+        checked > 100,
+        "recursive graph search should check many variants; checked {checked}"
+    );
+    eprintln!("checked {checked} recursive graph canonicalization variants");
+}
+
+#[test]
+#[ignore = "deterministic stress search for local canonicalization investigation"]
+fn boolean_expression_permutations_converge() {
+    let mut checked = 0usize;
+
+    let atom_terms = [
+        "#6", "#7", "C", "N", "H", "H0", "D2", "X3", "R", "r5", "+", "-", "A", "a", "!#1", "!H0",
+        "$([#6])", "$([O-])",
+    ];
+    for operator in ["&", ";", ","] {
+        for terms in triples(&atom_terms) {
+            let group = all_permutations(&[0, 1, 2])
+                .into_iter()
+                .map(|order| {
+                    format!(
+                        "[{}{}{}{}{}]",
+                        terms[order[0]], operator, terms[order[1]], operator, terms[order[2]]
+                    )
+                })
+                .collect::<Vec<_>>();
+            checked += assert_parseable_group_converges(&group);
+        }
+    }
+
+    let bond_terms = ["-", "=", "#", ":", "@", "~", "!@", "!="];
+    for operator in [",", ";"] {
+        for terms in triples(&bond_terms) {
+            let group = all_permutations(&[0, 1, 2])
+                .into_iter()
+                .map(|order| {
+                    format!(
+                        "C{}{}{}{}{}N",
+                        terms[order[0]], operator, terms[order[1]], operator, terms[order[2]]
+                    )
+                })
+                .collect::<Vec<_>>();
+            checked += assert_parseable_group_converges(&group);
+        }
+    }
+
+    assert!(
+        checked > 1_000,
+        "boolean expression permutation search should check many variants; checked {checked}"
+    );
+    eprintln!("checked {checked} boolean expression canonicalization variants");
+}
+
 fn assert_canonicalization_is_stable(source: &str, query: &QueryMol) {
     let canonical = query.canonicalize();
     assert_eq!(
@@ -211,6 +326,42 @@ fn canonical_string(smarts: &str) -> String {
         .unwrap_or_else(|error| panic!("generated SMARTS should parse: {smarts:?}: {error}"));
     assert_canonicalization_is_stable(smarts, &query);
     query.to_canonical_smarts()
+}
+
+fn assert_parseable_group_converges(group: &[String]) -> usize {
+    let parseable = group
+        .iter()
+        .filter_map(|smarts| {
+            QueryMol::from_str(smarts)
+                .ok()
+                .map(|query| (smarts, query.to_canonical_smarts()))
+        })
+        .collect::<Vec<_>>();
+
+    if parseable.len() <= 1 {
+        return 0;
+    }
+
+    let expected = &parseable[0].1;
+    for (smarts, canonical) in parseable.iter().skip(1) {
+        assert_eq!(
+            expected, canonical,
+            "boolean expression permutation group diverged for {group:?}; candidate {smarts:?}"
+        );
+    }
+    parseable.len()
+}
+
+fn triples<'a>(items: &'a [&'a str]) -> Vec<[&'a str; 3]> {
+    let mut triples = Vec::new();
+    for first in 0..items.len() {
+        for second in first + 1..items.len() {
+            for third in second + 1..items.len() {
+                triples.push([items[first], items[second], items[third]]);
+            }
+        }
+    }
+    triples
 }
 
 fn collect_corpus_smarts(cases: &mut BTreeSet<String>) {
@@ -603,6 +754,236 @@ fn relabel_query(query: &QueryMol, order: &[usize]) -> QueryMol {
     }
 
     QueryMol::from_parts(atoms, bonds, query.component_count(), component_groups)
+}
+
+fn graph_construction_variants(query: &QueryMol) -> Vec<(String, QueryMol)> {
+    let mut variants = Vec::new();
+
+    if query.bond_count() > 1 {
+        variants.push(("reverse_bond_ids".to_owned(), reorder_bonds_reverse(query)));
+        variants.push(("rotate_bond_ids".to_owned(), reorder_bonds_rotate(query)));
+    }
+
+    if query.bond_count() > 0 {
+        variants.push((
+            "reverse_all_bond_endpoints".to_owned(),
+            reverse_bond_endpoints(query, |_| true),
+        ));
+        variants.push((
+            "reverse_even_bond_endpoints".to_owned(),
+            reverse_bond_endpoints(query, |bond_id| bond_id % 2 == 0),
+        ));
+    }
+
+    let group_count = query
+        .component_groups()
+        .iter()
+        .flatten()
+        .copied()
+        .max()
+        .map_or(0, |group_id| group_id + 1);
+    if (2..=4).contains(&group_count) {
+        let group_ids = (0..group_count).collect::<Vec<_>>();
+        for permutation in all_permutations(&group_ids).into_iter().skip(1) {
+            variants.push((
+                format!("renumber_component_groups_{permutation:?}"),
+                renumber_component_groups(query, &permutation),
+            ));
+        }
+    }
+
+    variants
+}
+
+fn reorder_bonds_reverse(query: &QueryMol) -> QueryMol {
+    let mut bonds = query.bonds().iter().rev().cloned().collect::<Vec<_>>();
+    for (bond_id, bond) in bonds.iter_mut().enumerate() {
+        bond.id = bond_id;
+    }
+    QueryMol::from_parts(
+        query.atoms().to_vec(),
+        bonds,
+        query.component_count(),
+        query.component_groups().to_vec(),
+    )
+}
+
+fn reorder_bonds_rotate(query: &QueryMol) -> QueryMol {
+    let mut bonds = query.bonds().to_vec();
+    bonds.rotate_left(1);
+    for (bond_id, bond) in bonds.iter_mut().enumerate() {
+        bond.id = bond_id;
+    }
+    QueryMol::from_parts(
+        query.atoms().to_vec(),
+        bonds,
+        query.component_count(),
+        query.component_groups().to_vec(),
+    )
+}
+
+fn reverse_bond_endpoints(query: &QueryMol, should_reverse: impl Fn(usize) -> bool) -> QueryMol {
+    let bonds = query
+        .bonds()
+        .iter()
+        .map(|bond| {
+            if should_reverse(bond.id) {
+                QueryBond {
+                    id: bond.id,
+                    src: bond.dst,
+                    dst: bond.src,
+                    expr: flipped_directional_bond_expr(&bond.expr),
+                }
+            } else {
+                bond.clone()
+            }
+        })
+        .collect();
+    QueryMol::from_parts(
+        query.atoms().to_vec(),
+        bonds,
+        query.component_count(),
+        query.component_groups().to_vec(),
+    )
+}
+
+fn renumber_component_groups(query: &QueryMol, permutation: &[usize]) -> QueryMol {
+    let component_groups = query
+        .component_groups()
+        .iter()
+        .map(|group| group.map(|group_id| permutation[group_id]))
+        .collect();
+    QueryMol::from_parts(
+        query.atoms().to_vec(),
+        query.bonds().to_vec(),
+        query.component_count(),
+        component_groups,
+    )
+}
+
+fn all_permutations(items: &[usize]) -> Vec<Vec<usize>> {
+    if items.len() <= 1 {
+        return vec![items.to_vec()];
+    }
+
+    let mut permutations = Vec::new();
+    for (index, &item) in items.iter().enumerate() {
+        let mut remaining = items.to_vec();
+        remaining.remove(index);
+        for mut tail in all_permutations(&remaining) {
+            let mut permutation = Vec::with_capacity(items.len());
+            permutation.push(item);
+            permutation.append(&mut tail);
+            permutations.push(permutation);
+        }
+    }
+    permutations
+}
+
+fn recursive_query_graph_variants(query: &QueryMol) -> Vec<(String, QueryMol)> {
+    let mut variants = Vec::new();
+    for order_index in 0..3 {
+        let mut changed = false;
+        let variant = transform_recursive_queries(query, order_index, &mut changed);
+        if changed {
+            variants.push((format!("recursive_relabel_order_{order_index}"), variant));
+        }
+    }
+    variants
+}
+
+fn transform_recursive_queries(
+    query: &QueryMol,
+    order_index: usize,
+    changed: &mut bool,
+) -> QueryMol {
+    let atoms = query
+        .atoms()
+        .iter()
+        .map(|atom| QueryAtom {
+            id: atom.id,
+            component: atom.component,
+            expr: transform_recursive_atom_expr(&atom.expr, order_index, changed),
+        })
+        .collect();
+    QueryMol::from_parts(
+        atoms,
+        query.bonds().to_vec(),
+        query.component_count(),
+        query.component_groups().to_vec(),
+    )
+}
+
+fn transform_recursive_atom_expr(
+    expr: &AtomExpr,
+    order_index: usize,
+    changed: &mut bool,
+) -> AtomExpr {
+    match expr {
+        AtomExpr::Wildcard => AtomExpr::Wildcard,
+        AtomExpr::Bare { element, aromatic } => AtomExpr::Bare {
+            element: *element,
+            aromatic: *aromatic,
+        },
+        AtomExpr::Bracket(bracket) => AtomExpr::Bracket(BracketExpr {
+            tree: transform_recursive_bracket_tree(&bracket.tree, order_index, changed),
+            atom_map: bracket.atom_map,
+        }),
+    }
+}
+
+fn transform_recursive_bracket_tree(
+    tree: &BracketExprTree,
+    order_index: usize,
+    changed: &mut bool,
+) -> BracketExprTree {
+    match tree {
+        BracketExprTree::Primitive(primitive) => BracketExprTree::Primitive(
+            transform_recursive_atom_primitive(primitive, order_index, changed),
+        ),
+        BracketExprTree::Not(inner) => BracketExprTree::Not(Box::new(
+            transform_recursive_bracket_tree(inner, order_index, changed),
+        )),
+        BracketExprTree::HighAnd(items) => BracketExprTree::HighAnd(
+            items
+                .iter()
+                .map(|item| transform_recursive_bracket_tree(item, order_index, changed))
+                .collect(),
+        ),
+        BracketExprTree::Or(items) => BracketExprTree::Or(
+            items
+                .iter()
+                .map(|item| transform_recursive_bracket_tree(item, order_index, changed))
+                .collect(),
+        ),
+        BracketExprTree::LowAnd(items) => BracketExprTree::LowAnd(
+            items
+                .iter()
+                .map(|item| transform_recursive_bracket_tree(item, order_index, changed))
+                .collect(),
+        ),
+    }
+}
+
+fn transform_recursive_atom_primitive(
+    primitive: &AtomPrimitive,
+    order_index: usize,
+    changed: &mut bool,
+) -> AtomPrimitive {
+    match primitive {
+        AtomPrimitive::RecursiveQuery(query) => {
+            let transformed = transform_recursive_queries(query, order_index, changed);
+            let relabeled = if transformed.atom_count() > 1 {
+                let orders = relabel_orders(transformed.atom_count());
+                *changed = true;
+                relabel_query(&transformed, &orders[order_index % orders.len()])
+            } else {
+                transformed
+            };
+            AtomPrimitive::RecursiveQuery(Box::new(relabeled))
+        }
+        other => other.clone(),
+    }
 }
 
 fn flipped_directional_bond_expr(expr: &BondExpr) -> BondExpr {
