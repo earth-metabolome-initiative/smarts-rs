@@ -511,6 +511,90 @@ fn synthetic_expression_trees_converge() {
     eprintln!("checked {checked} synthetic expression-tree canonicalization variants");
 }
 
+#[test]
+#[ignore = "deterministic stress search for local canonicalization investigation"]
+fn synthetic_directional_bonds_keep_canonicalization_stable() {
+    let mut checked = 0usize;
+
+    for group in synthetic_directional_bond_equivalence_groups() {
+        checked += assert_query_group_converges(&group);
+    }
+
+    for (case_name, query) in collect_synthetic_directional_bond_cases() {
+        query.validate().unwrap_or_else(|error| {
+            panic!("synthetic directional query {case_name} should validate: {error}")
+        });
+        let canonical = query.canonicalize();
+        assert_eq!(
+            canonical,
+            canonical.canonicalize(),
+            "synthetic directional query {case_name} is not idempotent"
+        );
+        assert!(
+            canonical.is_canonical(),
+            "synthetic directional query {case_name} did not produce a canonical result: {canonical}"
+        );
+
+        let orders = if query.atom_count() <= 4 {
+            all_permutations(&(0..query.atom_count()).collect::<Vec<_>>())
+        } else {
+            relabel_orders(query.atom_count())
+        };
+        for order in orders {
+            let relabeled = relabel_query(&query, &order);
+            relabeled.validate().unwrap_or_else(|error| {
+                panic!(
+                    "synthetic directional relabeling {case_name} {order:?} should validate: {error}"
+                )
+            });
+            assert_eq!(
+                canonical,
+                relabeled.canonicalize(),
+                "synthetic directional relabeling changed canonical form for {case_name}: {order:?}"
+            );
+            checked += 1;
+        }
+
+        for (variant_name, variant) in graph_construction_variants(&query) {
+            variant.validate().unwrap_or_else(|error| {
+                panic!(
+                    "synthetic directional graph variant {case_name}/{variant_name} should validate: {error}"
+                )
+            });
+            assert_eq!(
+                canonical,
+                variant.canonicalize(),
+                "synthetic directional graph variant {variant_name} changed canonical form for {case_name}"
+            );
+            checked += 1;
+        }
+    }
+
+    assert!(
+        checked > 20_000,
+        "synthetic directional bond search should check many variants; checked {checked}"
+    );
+    eprintln!("checked {checked} synthetic directional bond canonicalization variants");
+}
+
+#[test]
+#[ignore = "deterministic stress search for local canonicalization investigation"]
+fn numeric_atom_query_equivalence_groups_converge() {
+    let mut groups = Vec::new();
+    collect_numeric_atom_query_equivalence_groups(&mut groups);
+
+    let mut checked = 0usize;
+    for group in groups {
+        checked += assert_parseable_group_converges(&group);
+    }
+
+    assert!(
+        checked > 300,
+        "numeric atom-query equivalence search should check many variants; checked {checked}"
+    );
+    eprintln!("checked {checked} numeric atom-query canonicalization variants");
+}
+
 fn assert_canonicalization_is_stable(source: &str, query: &QueryMol) {
     let canonical = query.canonicalize();
     assert_eq!(
@@ -890,6 +974,103 @@ fn collect_generated_chiral_cases(cases: &mut BTreeSet<String>) {
     }
 }
 
+fn collect_numeric_atom_query_equivalence_groups(groups: &mut Vec<Vec<String>>) {
+    for prefix in ["D", "X", "v", "h", "z", "Z"] {
+        for value in 0..=4 {
+            groups.push(vec![
+                format!("[{prefix}{value}]"),
+                format!("[{prefix}{{{value}}}]"),
+                format!("[{prefix}{{{value}-{value}}}]"),
+            ]);
+        }
+        groups.push(vec![
+            format!("[{prefix}]"),
+            format!("[{prefix}1]"),
+            format!("[{prefix}{{1}}]"),
+            format!("[{prefix}{{1-1}}]"),
+        ]);
+        groups.push(vec![format!("[{prefix}{{0-}}]"), "[*]".to_owned()]);
+        groups.push(vec![
+            format!("[{prefix}{{0-2}}]"),
+            format!("[{prefix}{{-2}}]"),
+        ]);
+        groups.push(vec![
+            format!("[{prefix}1,{prefix}2]"),
+            format!("[{prefix}{{1-2}}]"),
+        ]);
+        groups.push(vec![
+            format!("[{prefix}1;{prefix}{{1-3}}]"),
+            format!("[{prefix}]"),
+        ]);
+        groups.push(vec![
+            format!("[!{prefix}0;!{prefix}{{2-}}]"),
+            format!("[{prefix}]"),
+        ]);
+    }
+
+    for prefix in ["R", "r", "x"] {
+        for value in 0..=4 {
+            groups.push(vec![
+                format!("[{prefix}{value}]"),
+                format!("[{prefix}{{{value}}}]"),
+                format!("[{prefix}{{{value}-{value}}}]"),
+            ]);
+        }
+        groups.push(vec![format!("[{prefix}]"), format!("[{prefix}{{1-}}]")]);
+        groups.push(vec![format!("[{prefix}{{0-}}]"), "[*]".to_owned()]);
+        groups.push(vec![
+            format!("[{prefix}{{0-2}}]"),
+            format!("[{prefix}{{-2}}]"),
+        ]);
+        groups.push(vec![
+            format!("[{prefix}1,{prefix}2]"),
+            format!("[{prefix}{{1-2}}]"),
+        ]);
+        groups.push(vec![
+            format!("[{prefix};{prefix}{{1-3}}]"),
+            format!("[{prefix}{{1-3}}]"),
+        ]);
+    }
+
+    groups.push(vec![
+        "[C;H]".to_owned(),
+        "[C;H1]".to_owned(),
+        "[C;H{1}]".to_owned(),
+        "[C;H{1-1}]".to_owned(),
+    ]);
+    for value in 0..=4 {
+        groups.push(vec![
+            format!("[C;H{value}]"),
+            format!("[C;H{{{value}}}]"),
+            format!("[C;H{{{value}-{value}}}]"),
+        ]);
+    }
+    groups.push(vec!["[C;H{0-}]".to_owned(), "[C]".to_owned()]);
+    groups.push(vec!["[C;H{0-2}]".to_owned(), "[C;H{-2}]".to_owned()]);
+    groups.push(vec!["[C;H1,H2]".to_owned(), "[C;H{1-2}]".to_owned()]);
+    groups.push(vec!["[C;!H0;!H{2-}]".to_owned(), "[C;H]".to_owned()]);
+
+    groups.push(vec![
+        "[^1]".to_owned(),
+        "[^{1}]".to_owned(),
+        "[^{1-1}]".to_owned(),
+    ]);
+    for value in 0..=4 {
+        groups.push(vec![
+            format!("[^{value}]"),
+            format!("[^{{{value}}}]"),
+            format!("[^{{{value}-{value}}}]"),
+        ]);
+    }
+    groups.push(vec!["[^{0-2}]".to_owned(), "[^{-2}]".to_owned()]);
+    groups.push(vec!["[^1,^2]".to_owned(), "[^{1-2}]".to_owned()]);
+
+    groups.push(vec!["[+]".to_owned(), "[+1]".to_owned()]);
+    groups.push(vec!["[-]".to_owned(), "[-1]".to_owned()]);
+    groups.push(vec!["[++]".to_owned(), "[+2]".to_owned()]);
+    groups.push(vec!["[--]".to_owned(), "[-2]".to_owned()]);
+}
+
 fn collect_exhaustive_relabeling_cases(cases: &mut BTreeSet<String>) {
     let atoms = ["C", "N", "O", "c"];
     let bonds = ["-", "=", "~", ":", "-,=", "-;@"];
@@ -1204,6 +1385,174 @@ fn synthetic_bond_exprs() -> Vec<BondExpr> {
             BondExprTree::Primitive(BondPrimitive::Ring),
         ])),
     ]
+}
+
+fn synthetic_directional_bond_equivalence_groups() -> Vec<Vec<QueryMol>> {
+    let terminals = ["F", "Cl", "Br", "I", "N", "O", "[#6]"];
+    let centers = ["C", "N", "[#6]"];
+    let mut groups = Vec::new();
+    for &left_terminal in &terminals {
+        for &right_terminal in &terminals {
+            for &left_center in &centers {
+                for &right_center in &centers {
+                    groups.push(vec![
+                        synthetic_directional_double_bond_query(
+                            left_terminal,
+                            left_center,
+                            right_center,
+                            right_terminal,
+                            Bond::Up,
+                            Bond::Up,
+                        ),
+                        synthetic_directional_double_bond_query(
+                            left_terminal,
+                            left_center,
+                            right_center,
+                            right_terminal,
+                            Bond::Down,
+                            Bond::Down,
+                        ),
+                    ]);
+                    groups.push(vec![
+                        synthetic_directional_double_bond_query(
+                            left_terminal,
+                            left_center,
+                            right_center,
+                            right_terminal,
+                            Bond::Up,
+                            Bond::Down,
+                        ),
+                        synthetic_directional_double_bond_query(
+                            left_terminal,
+                            left_center,
+                            right_center,
+                            right_terminal,
+                            Bond::Down,
+                            Bond::Up,
+                        ),
+                    ]);
+                }
+            }
+        }
+    }
+    groups
+}
+
+fn collect_synthetic_directional_bond_cases() -> Vec<(String, QueryMol)> {
+    let terminals = ["F", "Cl", "O", "N", "[#6]"];
+    let centers = ["C", "N", "[#6]"];
+    let directions = [Bond::Up, Bond::Down];
+    let mut cases = Vec::new();
+    for &left_terminal in &terminals {
+        for &right_terminal in &terminals {
+            for &left_center in &centers {
+                for &right_center in &centers {
+                    for &left_direction in &directions {
+                        for &right_direction in &directions {
+                            cases.push((
+                                format!(
+                                    "directional_pair_{left_terminal}_{left_center}_{right_center}_{right_terminal}_{}_{}",
+                                    direction_label(left_direction),
+                                    direction_label(right_direction)
+                                ),
+                                synthetic_directional_double_bond_query(
+                                    left_terminal,
+                                    left_center,
+                                    right_center,
+                                    right_terminal,
+                                    left_direction,
+                                    right_direction,
+                                ),
+                            ));
+                            cases.push((
+                                format!(
+                                    "directional_pair_with_branch_{left_terminal}_{left_center}_{right_center}_{right_terminal}_{}_{}",
+                                    direction_label(left_direction),
+                                    direction_label(right_direction)
+                                ),
+                                synthetic_query(
+                                    &[
+                                        left_terminal,
+                                        left_center,
+                                        right_center,
+                                        right_terminal,
+                                        "O",
+                                    ],
+                                    &[
+                                        (0, 1, synthetic_directional_bond(left_direction)),
+                                        (1, 2, synthetic_double_bond()),
+                                        (2, 3, synthetic_directional_bond(right_direction)),
+                                        (1, 4, synthetic_directional_bond(right_direction)),
+                                    ],
+                                    1,
+                                    vec![None],
+                                ),
+                            ));
+                            cases.push((
+                                format!(
+                                    "conjugated_directional_pair_{left_terminal}_{left_center}_{right_center}_{right_terminal}_{}_{}",
+                                    direction_label(left_direction),
+                                    direction_label(right_direction)
+                                ),
+                                synthetic_query(
+                                    &[
+                                        left_terminal,
+                                        left_center,
+                                        right_center,
+                                        "C",
+                                        "C",
+                                        right_terminal,
+                                    ],
+                                    &[
+                                        (0, 1, synthetic_directional_bond(left_direction)),
+                                        (1, 2, synthetic_double_bond()),
+                                        (2, 3, synthetic_directional_bond(right_direction)),
+                                        (3, 4, synthetic_double_bond()),
+                                        (4, 5, synthetic_directional_bond(left_direction)),
+                                    ],
+                                    1,
+                                    vec![None],
+                                ),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    cases
+}
+
+fn synthetic_directional_double_bond_query(
+    left_terminal: &str,
+    left_center: &str,
+    right_center: &str,
+    right_terminal: &str,
+    left_direction: Bond,
+    right_direction: Bond,
+) -> QueryMol {
+    synthetic_query(
+        &[left_terminal, left_center, right_center, right_terminal],
+        &[
+            (0, 1, synthetic_directional_bond(left_direction)),
+            (1, 2, synthetic_double_bond()),
+            (2, 3, synthetic_directional_bond(right_direction)),
+        ],
+        1,
+        vec![None],
+    )
+}
+
+const fn synthetic_directional_bond(direction: Bond) -> BondExpr {
+    BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Bond(direction)))
+}
+
+const fn direction_label(direction: Bond) -> &'static str {
+    match direction {
+        Bond::Up => "up",
+        Bond::Down => "down",
+        _ => "other",
+    }
 }
 
 fn synthetic_atom_expression_groups() -> Vec<Vec<QueryMol>> {
