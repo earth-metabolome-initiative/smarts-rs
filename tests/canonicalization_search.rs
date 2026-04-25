@@ -595,6 +595,24 @@ fn numeric_atom_query_equivalence_groups_converge() {
     eprintln!("checked {checked} numeric atom-query canonicalization variants");
 }
 
+#[test]
+#[ignore = "deterministic stress search for local canonicalization investigation"]
+fn single_atom_recursive_equivalence_groups_converge() {
+    let mut groups = Vec::new();
+    collect_single_atom_recursive_equivalence_groups(&mut groups);
+
+    let mut checked = 0usize;
+    for group in groups {
+        checked += assert_parseable_group_converges(&group);
+    }
+
+    assert!(
+        checked > 150,
+        "single-atom recursive equivalence search should check many variants; checked {checked}"
+    );
+    eprintln!("checked {checked} single-atom recursive canonicalization variants");
+}
+
 fn assert_canonicalization_is_stable(source: &str, query: &QueryMol) {
     let canonical = query.canonicalize();
     assert_eq!(
@@ -1069,6 +1087,43 @@ fn collect_numeric_atom_query_equivalence_groups(groups: &mut Vec<Vec<String>>) 
     groups.push(vec!["[-]".to_owned(), "[-1]".to_owned()]);
     groups.push(vec!["[++]".to_owned(), "[+2]".to_owned()]);
     groups.push(vec!["[--]".to_owned(), "[-2]".to_owned()]);
+}
+
+fn collect_single_atom_recursive_equivalence_groups(groups: &mut Vec<Vec<String>>) {
+    let bracket_terms = [
+        "*", "C", "N", "O", "c", "n", "#1", "#6", "#7", "#8", "H", "H1", "D2", "X3", "R", "R0",
+        "r5", "+", "-", "A", "a", "!#1", "!H0", "C,N", "N,O", "C;H1", "#6;A", "#6;a",
+    ];
+    for term in bracket_terms {
+        groups.push(vec![format!("[{term}]"), format!("[$([{term}])]")]);
+        if !term.starts_with('H') {
+            groups.push(vec![format!("[{term};$([{term}])]"), format!("[{term}]")]);
+        }
+    }
+
+    for term in [
+        "C", "N", "O", "c", "n", "#6", "#7", "#8", "D2", "X3", "R", "r5", "+", "-", "A", "a",
+    ] {
+        groups.push(vec![format!("[{term},$([{term}])]"), format!("[{term}]")]);
+        groups.push(vec![format!("[!{term}]"), format!("[!$([{term}])]")]);
+    }
+
+    for (bare, target, bracket_content) in [
+        ("*", "*", "*"),
+        ("C", "[C]", "C"),
+        ("N", "[N]", "N"),
+        ("O", "[O]", "O"),
+        ("S", "[S]", "S"),
+        ("c", "[c]", "c"),
+        ("n", "[n]", "n"),
+        ("o", "[o]", "o"),
+    ] {
+        groups.push(vec![target.to_owned(), format!("[$({bare})]")]);
+        groups.push(vec![
+            format!("[{bracket_content};$({bare})]"),
+            target.to_owned(),
+        ]);
+    }
 }
 
 fn collect_exhaustive_relabeling_cases(cases: &mut BTreeSet<String>) {

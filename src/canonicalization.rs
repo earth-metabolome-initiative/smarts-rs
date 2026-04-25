@@ -724,6 +724,7 @@ fn canonical_bracket_expr(expr: &BracketExpr) -> BracketExpr {
         .unwrap_or_else(|_| unreachable!("parsed SMARTS expressions are never empty"));
     let mut tree = canonical_bracket_tree(bracket.tree);
     tree = simplify_bracket_tree(tree);
+    tree = simplify_top_level_negated_numeric_primitive(tree);
     let mut bracket = BracketExpr {
         tree,
         atom_map: bracket.atom_map,
@@ -950,6 +951,87 @@ fn simplify_bracket_not(inner: BracketExprTree) -> BracketExprTree {
     } else {
         BracketExprTree::Not(Box::new(inner))
     }
+}
+
+fn simplify_top_level_negated_numeric_primitive(tree: BracketExprTree) -> BracketExprTree {
+    let BracketExprTree::Not(inner) = tree else {
+        return tree;
+    };
+    let BracketExprTree::Primitive(primitive) = inner.as_ref() else {
+        return BracketExprTree::Not(inner);
+    };
+    simplify_negated_numeric_primitive(primitive).unwrap_or(BracketExprTree::Not(inner))
+}
+
+fn simplify_negated_numeric_primitive(primitive: &AtomPrimitive) -> Option<BracketExprTree> {
+    match primitive {
+        AtomPrimitive::Degree(query) => complement_count_query(*query, AtomPrimitive::Degree),
+        AtomPrimitive::Connectivity(query) => {
+            complement_count_query(*query, AtomPrimitive::Connectivity)
+        }
+        AtomPrimitive::Valence(query) => complement_count_query(*query, AtomPrimitive::Valence),
+        AtomPrimitive::Hydrogen(kind, query) => {
+            complement_count_query(*query, |query| AtomPrimitive::Hydrogen(*kind, query))
+        }
+        AtomPrimitive::RingMembership(query) => {
+            complement_ring_query(*query, AtomPrimitive::RingMembership)
+        }
+        AtomPrimitive::RingSize(query) => complement_ring_query(*query, AtomPrimitive::RingSize),
+        AtomPrimitive::RingConnectivity(query) => {
+            complement_ring_query(*query, AtomPrimitive::RingConnectivity)
+        }
+        AtomPrimitive::Hybridization(query) => {
+            complement_zero_based_numeric_range(numeric_query_range(*query), |range| {
+                BracketExprTree::Primitive(AtomPrimitive::Hybridization(numeric_query_from_range(
+                    range,
+                )))
+            })
+        }
+        AtomPrimitive::HeteroNeighbor(query) => {
+            complement_count_query(*query, AtomPrimitive::HeteroNeighbor)
+        }
+        AtomPrimitive::AliphaticHeteroNeighbor(query) => {
+            complement_count_query(*query, AtomPrimitive::AliphaticHeteroNeighbor)
+        }
+        _ => None,
+    }
+}
+
+fn complement_count_query(
+    query: Option<NumericQuery>,
+    build: impl Fn(Option<NumericQuery>) -> AtomPrimitive,
+) -> Option<BracketExprTree> {
+    complement_zero_based_numeric_range(numeric_count_range(query), |range| {
+        BracketExprTree::Primitive(build(count_query_from_range(range).into_option()))
+    })
+}
+
+fn complement_ring_query(
+    query: Option<NumericQuery>,
+    build: impl Fn(Option<NumericQuery>) -> AtomPrimitive,
+) -> Option<BracketExprTree> {
+    complement_zero_based_numeric_range(numeric_ring_range(query), |range| {
+        BracketExprTree::Primitive(build(ring_query_from_range(range).into_option()))
+    })
+}
+
+fn complement_zero_based_numeric_range(
+    range: NumericRange,
+    build: impl Fn(NumericRange) -> BracketExprTree,
+) -> Option<BracketExprTree> {
+    let range = canonical_numeric_range(range);
+    if range.min.unwrap_or(0) != 0 {
+        return None;
+    }
+
+    if range.max != Some(0) {
+        return None;
+    }
+
+    Some(build(NumericRange {
+        min: Some(1),
+        max: None,
+    }))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3095,7 +3177,7 @@ fn complement_excluded_tree(tree: &BracketExprTree) -> Option<BracketExprTree> {
                 .collect::<Option<Vec<_>>>()?;
             (excluded.len() >= 2).then(|| simplify_bracket_or(excluded))
         }
-        _ => None,
+        other => numeric_zero_complement_excluded_tree(other),
     }
 }
 
@@ -3467,7 +3549,66 @@ fn bracket_trees_are_complements(left: &BracketExprTree, right: &BracketExprTree
     match (left, right) {
         (BracketExprTree::Not(left), right) => left.as_ref() == right,
         (left, BracketExprTree::Not(right)) => right.as_ref() == left,
-        _ => false,
+        _ => {
+            numeric_zero_complement_excluded_tree(left).is_some_and(|excluded| &excluded == right)
+                || numeric_zero_complement_excluded_tree(right)
+                    .is_some_and(|excluded| &excluded == left)
+        }
+    }
+}
+
+fn numeric_zero_complement_excluded_tree(tree: &BracketExprTree) -> Option<BracketExprTree> {
+    let BracketExprTree::Primitive(primitive) = tree else {
+        return None;
+    };
+    numeric_zero_complement_excluded_primitive(primitive).map(BracketExprTree::Primitive)
+}
+
+fn numeric_zero_complement_excluded_primitive(primitive: &AtomPrimitive) -> Option<AtomPrimitive> {
+    let complement_range = NumericRange {
+        min: Some(1),
+        max: None,
+    };
+    match primitive {
+        AtomPrimitive::Degree(query) if numeric_count_range(*query) == complement_range => {
+            Some(AtomPrimitive::Degree(Some(NumericQuery::Exact(0))))
+        }
+        AtomPrimitive::Connectivity(query) if numeric_count_range(*query) == complement_range => {
+            Some(AtomPrimitive::Connectivity(Some(NumericQuery::Exact(0))))
+        }
+        AtomPrimitive::Valence(query) if numeric_count_range(*query) == complement_range => {
+            Some(AtomPrimitive::Valence(Some(NumericQuery::Exact(0))))
+        }
+        AtomPrimitive::Hydrogen(kind, query) if numeric_count_range(*query) == complement_range => {
+            Some(AtomPrimitive::Hydrogen(*kind, Some(NumericQuery::Exact(0))))
+        }
+        AtomPrimitive::RingMembership(query) if numeric_ring_range(*query) == complement_range => {
+            Some(AtomPrimitive::RingMembership(Some(NumericQuery::Exact(0))))
+        }
+        AtomPrimitive::RingSize(query) if numeric_ring_range(*query) == complement_range => {
+            Some(AtomPrimitive::RingSize(Some(NumericQuery::Exact(0))))
+        }
+        AtomPrimitive::RingConnectivity(query)
+            if numeric_ring_range(*query) == complement_range =>
+        {
+            Some(AtomPrimitive::RingConnectivity(Some(NumericQuery::Exact(
+                0,
+            ))))
+        }
+        AtomPrimitive::Hybridization(query) if numeric_query_range(*query) == complement_range => {
+            Some(AtomPrimitive::Hybridization(NumericQuery::Exact(0)))
+        }
+        AtomPrimitive::HeteroNeighbor(query) if numeric_count_range(*query) == complement_range => {
+            Some(AtomPrimitive::HeteroNeighbor(Some(NumericQuery::Exact(0))))
+        }
+        AtomPrimitive::AliphaticHeteroNeighbor(query)
+            if numeric_count_range(*query) == complement_range =>
+        {
+            Some(AtomPrimitive::AliphaticHeteroNeighbor(Some(
+                NumericQuery::Exact(0),
+            )))
+        }
+        _ => None,
     }
 }
 
@@ -6004,6 +6145,10 @@ mod tests {
             ("[h1]", "[h]"),
             ("[z1]", "[z]"),
             ("[Z1]", "[Z]"),
+            ("[!D0]", "[D{1-}]"),
+            ("[!H0]", "[H{1-}]"),
+            ("[!R0]", "[R]"),
+            ("[!^0]", "[^{1-}]"),
             ("[R{1-1}]", "[R1]"),
             ("[r{5-5}]", "[r5]"),
             ("[x{1-1}]", "[x1]"),
