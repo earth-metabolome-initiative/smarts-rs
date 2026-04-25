@@ -579,17 +579,16 @@ fn rebuild_query_from_entries(entries: &[CanonicalizedEntry]) -> QueryMol {
 
 fn build_top_level_component_entries(query: &QueryMol) -> Vec<TopLevelComponentEntry> {
     let mut entries = Vec::new();
-    let mut component_id = 0usize;
-    while component_id < query.component_count() {
+    let mut seen_group_ids = Vec::new();
+    for component_id in 0..query.component_count() {
         if let Some(group_id) = query.component_group(component_id) {
-            let mut component_ids = vec![component_id];
-            component_id += 1;
-            while component_id < query.component_count()
-                && query.component_group(component_id) == Some(group_id)
-            {
-                component_ids.push(component_id);
-                component_id += 1;
+            if seen_group_ids.contains(&group_id) {
+                continue;
             }
+            seen_group_ids.push(group_id);
+            let component_ids = (0..query.component_count())
+                .filter(|&candidate_id| query.component_group(candidate_id) == Some(group_id))
+                .collect();
             entries.push(TopLevelComponentEntry {
                 grouped: true,
                 component_ids,
@@ -599,7 +598,6 @@ fn build_top_level_component_entries(query: &QueryMol) -> Vec<TopLevelComponentE
                 grouped: false,
                 component_ids: vec![component_id],
             });
-            component_id += 1;
         }
     }
     entries
@@ -5382,10 +5380,11 @@ mod tests {
     };
     use core::str::FromStr;
 
+    use elements_rs::Element;
     use smiles_parser::bond::Bond;
 
     use super::QueryCanonicalLabeling;
-    use crate::{BondExpr, BondExprTree, BondPrimitive, QueryAtom, QueryBond, QueryMol};
+    use crate::{AtomExpr, BondExpr, BondExprTree, BondPrimitive, QueryAtom, QueryBond, QueryMol};
 
     fn canonical_string(source: &str) -> String {
         QueryMol::from_str(source)
@@ -5602,6 +5601,46 @@ mod tests {
         assert_all_top_level_entry_permutations_converge("C.N.O");
         assert_all_top_level_entry_permutations_converge("(C.N).O");
         assert_all_top_level_entry_permutations_converge("(C.N).(O.S)");
+    }
+
+    #[test]
+    fn canonicalize_converges_noncontiguous_component_group_ids() {
+        let noncontiguous = QueryMol::from_parts(
+            vec![
+                QueryAtom {
+                    id: 0,
+                    component: 0,
+                    expr: AtomExpr::Bare {
+                        element: Element::C,
+                        aromatic: false,
+                    },
+                },
+                QueryAtom {
+                    id: 1,
+                    component: 1,
+                    expr: AtomExpr::Bare {
+                        element: Element::O,
+                        aromatic: false,
+                    },
+                },
+                QueryAtom {
+                    id: 2,
+                    component: 2,
+                    expr: AtomExpr::Bare {
+                        element: Element::C,
+                        aromatic: false,
+                    },
+                },
+            ],
+            Vec::new(),
+            3,
+            vec![Some(0), None, Some(0)],
+        );
+
+        assert_eq!(
+            canonical_string("(C.C).(O)"),
+            noncontiguous.canonicalize().to_string()
+        );
     }
 
     #[test]

@@ -8,7 +8,11 @@ use std::{
 };
 
 use serde_json::Value;
-use smarts_rs::QueryMol;
+use smarts_rs::{
+    AtomExpr, AtomPrimitive, BondExpr, BondExprTree, BondPrimitive, BracketExprTree, QueryAtom,
+    QueryBond, QueryMol,
+};
+use smiles_parser::bond::Bond;
 
 #[test]
 fn corpus_smarts_satisfy_canonicalization_invariants() {
@@ -47,6 +51,62 @@ fn generated_equivalent_smarts_converge() {
             );
         }
     }
+}
+
+#[test]
+#[ignore = "deterministic stress search for local canonicalization investigation"]
+fn generated_smarts_satisfy_canonicalization_invariants() {
+    let mut cases = BTreeSet::new();
+    collect_generated_invariant_cases(&mut cases);
+
+    let mut checked = 0usize;
+    for smarts in cases {
+        let Ok(query) = QueryMol::from_str(&smarts) else {
+            continue;
+        };
+        assert_canonicalization_is_stable(&smarts, &query);
+        checked += 1;
+    }
+
+    assert!(
+        checked > 5_000,
+        "stress search should check many generated SMARTS; checked {checked}"
+    );
+    eprintln!("checked {checked} generated canonicalization candidates");
+}
+
+#[test]
+#[ignore = "deterministic stress search for local canonicalization investigation"]
+fn corpus_relabelings_keep_canonicalization_stable() {
+    let mut cases = BTreeSet::new();
+    collect_corpus_smarts(&mut cases);
+
+    let mut checked = 0usize;
+    for smarts in cases {
+        let Ok(query) = QueryMol::from_str(&smarts) else {
+            continue;
+        };
+        if query.atom_count() <= 1 || query.atom_count() > 20 || query_contains_chirality(&query) {
+            continue;
+        }
+
+        let canonical = query.canonicalize();
+        for order in relabel_orders(query.atom_count()) {
+            let relabeled = relabel_query(&query, &order);
+            assert_eq!(
+                canonical,
+                relabeled.canonicalize(),
+                "atom relabeling changed canonical form for {smarts:?}: {order:?}"
+            );
+            checked += 1;
+        }
+    }
+
+    assert!(
+        checked > 1_000,
+        "relabel search should check many corpus relabelings; checked {checked}"
+    );
+    eprintln!("checked {checked} corpus relabeling canonicalization candidates");
 }
 
 fn assert_canonicalization_is_stable(source: &str, query: &QueryMol) {
@@ -256,6 +316,314 @@ fn collect_generated_equivalence_groups(groups: &mut Vec<Vec<String>>) {
                 format!("[$({right}-{left})]"),
             ]);
         }
+    }
+}
+
+fn collect_generated_invariant_cases(cases: &mut BTreeSet<String>) {
+    let atoms = generated_atoms();
+    let pair_atoms = generated_pair_atoms();
+    let chain_atoms = generated_chain_atoms();
+    let bonds = ["", "-", "=", "#", "~", ":", "@", "-,=", "-;@", "!,=", "!@"];
+
+    for &atom in atoms {
+        cases.insert(atom.to_owned());
+    }
+
+    for &left in pair_atoms {
+        for &right in pair_atoms {
+            for bond in bonds {
+                if bond.is_empty() && ambiguous_elided_pair(left, right) {
+                    continue;
+                }
+                cases.insert(format!("{left}{bond}{right}"));
+            }
+        }
+    }
+
+    for &first in chain_atoms {
+        for &second in chain_atoms {
+            for &third in chain_atoms {
+                cases.insert(format!("{first}-{second}-{third}"));
+                cases.insert(format!("{first}({second}){third}"));
+                cases.insert(format!("({first}.{second}).{third}"));
+                cases.insert(format!("{first}.{second}.{third}"));
+            }
+        }
+    }
+
+    for &first in chain_atoms {
+        for &second in chain_atoms {
+            for &third in chain_atoms {
+                cases.insert(format!("{first}1{second}{third}1"));
+                cases.insert(format!("{first}-1{second}-{third}-1"));
+                cases.insert(format!("{first}1({second}){third}1"));
+            }
+        }
+    }
+
+    for &left in chain_atoms {
+        for &right in chain_atoms {
+            cases.insert(format!("[$({left}-{right})]"));
+            cases.insert(format!("[!$({left}-{right})]"));
+            cases.insert(format!("[$({left}.{right})]"));
+            cases.insert(format!("[$([{left}]-{right})]"));
+        }
+    }
+
+    for base in [
+        "C", "N", "O", "S", "#6", "#7", "#8", "#16", "H", "h", "D2", "X3", "v4", "R", "r5", "x2",
+        "+", "-", "+0", "!#1", "!H0", "A", "a",
+    ] {
+        for qualifier in [
+            "H", "H0", "H1", "D1", "D2", "X1", "X2", "R", "R0", "r5", "x1", "+", "-", "!#6", "!H0",
+            "A", "a",
+        ] {
+            cases.insert(format!("[{base}&{qualifier}]"));
+            cases.insert(format!("[{base};{qualifier}]"));
+            cases.insert(format!("[{base},{qualifier}]"));
+            cases.insert(format!("[!{base},{qualifier}]"));
+        }
+    }
+}
+
+const fn generated_atoms() -> &'static [&'static str] {
+    &[
+        "*",
+        "C",
+        "N",
+        "O",
+        "S",
+        "P",
+        "F",
+        "Cl",
+        "Br",
+        "I",
+        "B",
+        "c",
+        "n",
+        "o",
+        "s",
+        "p",
+        "[#1]",
+        "[#6]",
+        "[#7]",
+        "[#8]",
+        "[#15]",
+        "[#16]",
+        "[H]",
+        "[H+]",
+        "[H-]",
+        "[2H]",
+        "[2H+]",
+        "[3H-]",
+        "[H0]",
+        "[H1]",
+        "[h]",
+        "[h0]",
+        "[He]",
+        "[Hf]",
+        "[Hg]",
+        "[Ho]",
+        "[Ra]",
+        "[Rg]",
+        "[C;H1]",
+        "[C&H1]",
+        "[C,N;H1]",
+        "[N,O]",
+        "[!#1]",
+        "[!H]",
+        "[!H0]",
+        "[D{2-4}]",
+        "[X{1-2}]",
+        "[v{-0}]",
+        "[R{1-}]",
+        "[r{5-6}]",
+        "[x{1-2}]",
+        "[z{1-}]",
+        "[Z{-2}]",
+        "[+]",
+        "[-]",
+        "[+2]",
+        "[-2]",
+        "[+0]",
+        "[!+0]",
+        "[C+]",
+        "[N-]",
+        "[O-]",
+        "[Na+]",
+        "[Cl-]",
+        "[C:1]",
+        "[#6:2]",
+        "[$(CO)]",
+        "[$([OH])]",
+    ]
+}
+
+const fn generated_pair_atoms() -> &'static [&'static str] {
+    &[
+        "*", "C", "N", "O", "S", "c", "n", "[#1]", "[#6]", "[#7]", "[H]", "[H+]", "[2H]", "[He]",
+        "[C;H1]", "[N,O]", "[!#1]", "[D{2-4}]", "[+]", "[C:1]",
+    ]
+}
+
+const fn generated_chain_atoms() -> &'static [&'static str] {
+    &[
+        "*", "C", "N", "O", "S", "c", "n", "[#1]", "[#6]", "[H]", "[H+]", "[C;H1]",
+    ]
+}
+
+fn ambiguous_elided_pair(left: &str, right: &str) -> bool {
+    left.bytes()
+        .last()
+        .is_some_and(|byte| byte.is_ascii_alphabetic())
+        && right
+            .bytes()
+            .next()
+            .is_some_and(|byte| byte.is_ascii_alphabetic())
+}
+
+fn relabel_orders(atom_count: usize) -> Vec<Vec<usize>> {
+    let mut orders = Vec::new();
+    orders.push((0..atom_count).rev().collect());
+
+    let mut rotated = (0..atom_count).collect::<Vec<_>>();
+    rotated.rotate_left(1);
+    orders.push(rotated);
+
+    let mut interleaved = Vec::with_capacity(atom_count);
+    for atom_id in (0..atom_count).step_by(2) {
+        interleaved.push(atom_id);
+    }
+    for atom_id in (1..atom_count).step_by(2) {
+        interleaved.push(atom_id);
+    }
+    orders.push(interleaved);
+
+    orders
+}
+
+fn relabel_query(query: &QueryMol, order: &[usize]) -> QueryMol {
+    let mut new_index_of_old_atom = vec![usize::MAX; query.atom_count()];
+    for (new_index, old_atom) in order.iter().copied().enumerate() {
+        new_index_of_old_atom[old_atom] = new_index;
+    }
+
+    let mut new_component_of_old = vec![usize::MAX; query.component_count()];
+    let mut next_component = 0usize;
+    for &old_atom in order {
+        let old_component = query.atoms()[old_atom].component;
+        if new_component_of_old[old_component] == usize::MAX {
+            new_component_of_old[old_component] = next_component;
+            next_component += 1;
+        }
+    }
+
+    let atoms = order
+        .iter()
+        .copied()
+        .map(|old_atom| {
+            let atom = &query.atoms()[old_atom];
+            QueryAtom {
+                id: new_index_of_old_atom[old_atom],
+                component: new_component_of_old[atom.component],
+                expr: atom.expr.clone(),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let mut bonds = query
+        .bonds()
+        .iter()
+        .map(|bond| {
+            let src = new_index_of_old_atom[bond.src];
+            let dst = new_index_of_old_atom[bond.dst];
+            let expr = if src <= dst {
+                bond.expr.clone()
+            } else {
+                flipped_directional_bond_expr(&bond.expr)
+            };
+            let (src, dst) = if src <= dst { (src, dst) } else { (dst, src) };
+            (src, dst, expr)
+        })
+        .collect::<Vec<_>>();
+    bonds.sort_unstable_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then(left.1.cmp(&right.1))
+            .then(left.2.cmp(&right.2))
+    });
+    let bonds = bonds
+        .into_iter()
+        .enumerate()
+        .map(|(bond_id, (src, dst, expr))| QueryBond {
+            id: bond_id,
+            src,
+            dst,
+            expr,
+        })
+        .collect::<Vec<_>>();
+
+    let mut component_groups = vec![None; query.component_count()];
+    for (old_component, &new_component) in new_component_of_old.iter().enumerate() {
+        component_groups[new_component] = query.component_group(old_component);
+    }
+
+    QueryMol::from_parts(atoms, bonds, query.component_count(), component_groups)
+}
+
+fn flipped_directional_bond_expr(expr: &BondExpr) -> BondExpr {
+    match expr {
+        BondExpr::Elided => BondExpr::Elided,
+        BondExpr::Query(tree) => BondExpr::Query(flipped_directional_bond_tree(tree)),
+    }
+}
+
+fn flipped_directional_bond_tree(tree: &BondExprTree) -> BondExprTree {
+    match tree {
+        BondExprTree::Primitive(primitive) => {
+            BondExprTree::Primitive(flip_bond_primitive(*primitive))
+        }
+        BondExprTree::Not(inner) => {
+            BondExprTree::Not(Box::new(flipped_directional_bond_tree(inner)))
+        }
+        BondExprTree::HighAnd(items) => {
+            BondExprTree::HighAnd(items.iter().map(flipped_directional_bond_tree).collect())
+        }
+        BondExprTree::Or(items) => {
+            BondExprTree::Or(items.iter().map(flipped_directional_bond_tree).collect())
+        }
+        BondExprTree::LowAnd(items) => {
+            BondExprTree::LowAnd(items.iter().map(flipped_directional_bond_tree).collect())
+        }
+    }
+}
+
+const fn flip_bond_primitive(primitive: BondPrimitive) -> BondPrimitive {
+    match primitive {
+        BondPrimitive::Bond(Bond::Up) => BondPrimitive::Bond(Bond::Down),
+        BondPrimitive::Bond(Bond::Down) => BondPrimitive::Bond(Bond::Up),
+        other => other,
+    }
+}
+
+fn query_contains_chirality(query: &QueryMol) -> bool {
+    query.atoms().iter().any(|atom| match &atom.expr {
+        AtomExpr::Wildcard | AtomExpr::Bare { .. } => false,
+        AtomExpr::Bracket(bracket) => tree_contains_chirality(&bracket.tree),
+    })
+}
+
+fn tree_contains_chirality(tree: &BracketExprTree) -> bool {
+    match tree {
+        BracketExprTree::Primitive(AtomPrimitive::Chirality(_)) => true,
+        BracketExprTree::Primitive(AtomPrimitive::RecursiveQuery(query)) => {
+            query_contains_chirality(query)
+        }
+        BracketExprTree::Primitive(_) => false,
+        BracketExprTree::Not(inner) => tree_contains_chirality(inner),
+        BracketExprTree::HighAnd(items)
+        | BracketExprTree::Or(items)
+        | BracketExprTree::LowAnd(items) => items.iter().any(tree_contains_chirality),
     }
 }
 
