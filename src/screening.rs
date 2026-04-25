@@ -385,6 +385,12 @@ struct EdgeFeatureMaskIndex {
     right_atoms: IndexedFeatureIdMask<AtomFeature>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CandidateMaskState {
+    has_active_source: bool,
+    population: usize,
+}
+
 type IndexedPath3SparseIndexParts = (
     IndexedSparseFeatureCountIndex<Path3Feature>,
     Path3FeatureMaskIndex,
@@ -1061,7 +1067,17 @@ impl TargetCorpusIndex {
         out: &mut Vec<usize>,
     ) {
         out.clear();
-        self.for_each_candidate_id_with_scratch(query, scratch, |target_id| out.push(target_id));
+        let Some(state) = self.populate_candidate_mask_with_scratch(query, scratch) else {
+            return;
+        };
+        out.reserve(state.population);
+        if !state.has_active_source {
+            out.extend(0..self.screens.len());
+            return;
+        }
+        for_each_set_bit(&scratch.candidate_mask, self.screens.len(), |target_id| {
+            out.push(target_id);
+        });
     }
 
     /// Counts candidate targets that pass the indexed screening stage.
@@ -1080,11 +1096,8 @@ impl TargetCorpusIndex {
         query: &QueryScreen,
         scratch: &mut TargetCorpusScratch<'idx>,
     ) -> usize {
-        let mut count = 0usize;
-        self.for_each_candidate_id_with_scratch(query, scratch, |_| {
-            count = count.saturating_add(1);
-        });
-        count
+        self.populate_candidate_mask_with_scratch(query, scratch)
+            .map_or(0, |state| state.population)
     }
 
     /// Returns candidate target ids that pass the indexed screening stage.
@@ -1177,8 +1190,23 @@ impl TargetCorpusIndex {
     ) where
         F: FnMut(usize),
     {
-        if self.screens.is_empty() {
+        let Some(state) = self.populate_candidate_mask_with_scratch(query, scratch) else {
             return;
+        };
+        if !state.has_active_source {
+            (0..self.screens.len()).for_each(f);
+            return;
+        }
+        for_each_set_bit(&scratch.candidate_mask, self.screens.len(), f);
+    }
+
+    fn populate_candidate_mask_with_scratch<'idx>(
+        &'idx self,
+        query: &QueryScreen,
+        scratch: &mut TargetCorpusScratch<'idx>,
+    ) -> Option<CandidateMaskState> {
+        if self.screens.is_empty() {
+            return None;
         }
 
         scratch.ensure_cache_owner(core::ptr::from_ref(self) as usize);
@@ -1193,7 +1221,7 @@ impl TargetCorpusIndex {
                 + query.required_star3_feature_counts.len(),
         );
         if !self.collect_required_count_filters(query, &mut scratch.filters) {
-            return;
+            return None;
         }
 
         scratch.ensure_word_count(bitset_word_count(self.screens.len()));
@@ -1203,14 +1231,12 @@ impl TargetCorpusIndex {
             .sort_unstable_by_key(|filter| filter.population);
         let mut candidate_population = self.screens.len();
         for &filter in &scratch.filters {
-            let Some(population) = intersect_source_with_population(
+            let population = intersect_source_with_population(
                 &mut scratch.candidate_mask,
                 &mut has_active_source,
                 filter.source,
                 filter.population,
-            ) else {
-                return;
-            };
+            )?;
             candidate_population = population;
         }
         if !self.apply_feature_count_filters(
@@ -1219,14 +1245,13 @@ impl TargetCorpusIndex {
             &mut has_active_source,
             &mut candidate_population,
         ) {
-            return;
+            return None;
         }
 
-        if !has_active_source {
-            (0..self.screens.len()).for_each(f);
-            return;
-        }
-        for_each_set_bit(&scratch.candidate_mask, self.screens.len(), f);
+        Some(CandidateMaskState {
+            has_active_source,
+            population: candidate_population,
+        })
     }
 
     fn prime_repeated_feature_filter_cache<'idx>(
@@ -2153,14 +2178,26 @@ fn accumulate_sparse_counts(
     sparse_counts: &[(usize, u16)],
     active_candidate_mask: Option<&[u64]>,
 ) {
-    for &(target_id, count) in sparse_counts {
-        if active_candidate_mask.is_some_and(|mask| !bitset_contains(mask, target_id)) {
-            continue;
+    match active_candidate_mask {
+        Some(mask) => {
+            for &(target_id, count) in sparse_counts {
+                if !bitset_contains(mask, target_id) {
+                    continue;
+                }
+                if count_by_target[target_id] == 0 {
+                    touched_targets.push(target_id);
+                }
+                count_by_target[target_id] = count_by_target[target_id].saturating_add(count);
+            }
         }
-        if count_by_target[target_id] == 0 {
-            touched_targets.push(target_id);
+        None => {
+            for &(target_id, count) in sparse_counts {
+                if count_by_target[target_id] == 0 {
+                    touched_targets.push(target_id);
+                }
+                count_by_target[target_id] = count_by_target[target_id].saturating_add(count);
+            }
         }
-        count_by_target[target_id] = count_by_target[target_id].saturating_add(count);
     }
 }
 
@@ -2598,9 +2635,7 @@ fn accumulate_feature_id_mask_counts<T>(
 fn bitset_contains(words: &[u64], bit: usize) -> bool {
     let word = bit / u64::BITS as usize;
     let offset = bit % u64::BITS as usize;
-    words
-        .get(word)
-        .is_some_and(|word_bits| (word_bits & (1u64 << offset)) != 0)
+    (words[word] & (1u64 << offset)) != 0
 }
 
 const fn should_filter_sparse_counts(
@@ -2748,6 +2783,9 @@ fn collect_matching_atom_features(
     out: &mut Vec<AtomFeature>,
 ) {
     out.clear();
+    if atom_feature_is_unconstrained(query) {
+        return;
+    }
     out.extend(
         domain
             .iter()
@@ -2762,6 +2800,9 @@ fn collect_matching_bond_features(
     out: &mut Vec<EdgeBondFeature>,
 ) {
     out.clear();
+    if bond_feature_is_unconstrained(query) {
+        return;
+    }
     out.extend(
         domain
             .iter()

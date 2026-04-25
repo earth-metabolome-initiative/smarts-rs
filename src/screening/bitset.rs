@@ -132,15 +132,29 @@ pub(super) fn for_each_set_bit<F>(candidate_mask: &[u64], target_count: usize, m
 where
     F: FnMut(usize),
 {
-    for (word_index, &word) in candidate_mask.iter().enumerate() {
+    let word_bits = u64::BITS as usize;
+    let full_word_count = (target_count / word_bits).min(candidate_mask.len());
+    for (word_index, &word) in candidate_mask.iter().take(full_word_count).enumerate() {
         let mut remaining = word;
         while remaining != 0 {
             let bit = remaining.trailing_zeros() as usize;
-            let target_id = word_index * u64::BITS as usize + bit;
-            if target_id < target_count {
-                f(target_id);
-            }
+            f(word_index * word_bits + bit);
             remaining &= remaining - 1;
         }
+    }
+
+    let remaining_bits = target_count % word_bits;
+    if remaining_bits == 0 {
+        return;
+    }
+    let Some(&last_word) = candidate_mask.get(full_word_count) else {
+        return;
+    };
+
+    let mut remaining = last_word & ((1u64 << remaining_bits) - 1);
+    while remaining != 0 {
+        let bit = remaining.trailing_zeros() as usize;
+        f(full_word_count * word_bits + bit);
+        remaining &= remaining - 1;
     }
 }
