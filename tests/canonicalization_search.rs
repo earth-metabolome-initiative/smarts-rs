@@ -109,6 +109,40 @@ fn corpus_relabelings_keep_canonicalization_stable() {
     eprintln!("checked {checked} corpus relabeling canonicalization candidates");
 }
 
+#[test]
+#[ignore = "deterministic stress search for local canonicalization investigation"]
+fn generated_relabelings_keep_canonicalization_stable() {
+    let mut cases = BTreeSet::new();
+    collect_generated_invariant_cases(&mut cases);
+
+    let mut checked = 0usize;
+    for smarts in cases {
+        let Ok(query) = QueryMol::from_str(&smarts) else {
+            continue;
+        };
+        if query.atom_count() <= 1 || query.atom_count() > 12 || query_contains_chirality(&query) {
+            continue;
+        }
+
+        let canonical = query.canonicalize();
+        for order in relabel_orders(query.atom_count()) {
+            let relabeled = relabel_query(&query, &order);
+            assert_eq!(
+                canonical,
+                relabeled.canonicalize(),
+                "atom relabeling changed canonical form for {smarts:?}: {order:?}"
+            );
+            checked += 1;
+        }
+    }
+
+    assert!(
+        checked > 10_000,
+        "generated relabel search should check many relabelings; checked {checked}"
+    );
+    eprintln!("checked {checked} generated relabeling canonicalization candidates");
+}
+
 fn assert_canonicalization_is_stable(source: &str, query: &QueryMol) {
     let canonical = query.canonicalize();
     assert_eq!(
