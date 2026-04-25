@@ -682,6 +682,14 @@ mod tests {
             }
             other => panic!("expected bracket atom, got {other:?}"),
         }
+
+        let rendered = charged.to_string();
+        let reparsed = parse_smarts(&rendered).unwrap();
+        assert_eq!(rendered, "[#1&+]");
+        assert_eq!(
+            reparsed.to_canonical_smarts(),
+            charged.to_canonical_smarts()
+        );
     }
 
     #[test]

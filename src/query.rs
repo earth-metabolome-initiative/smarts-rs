@@ -472,6 +472,10 @@ impl fmt::Display for AtomPrimitive {
             Self::Wildcard => f.write_str("*"),
             Self::AliphaticAny => f.write_str("A"),
             Self::AromaticAny => f.write_str("a"),
+            Self::Symbol {
+                element: Element::H,
+                aromatic: false,
+            } => f.write_str("#1"),
             Self::Symbol { element, aromatic } => write_smarts_element(f, *element, *aromatic),
             Self::Isotope { isotope, aromatic } => write_smarts_isotope(f, *isotope, *aromatic),
             Self::IsotopeWildcard(mass_number) => write!(f, "{mass_number}*"),
