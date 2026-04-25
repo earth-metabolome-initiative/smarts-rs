@@ -258,6 +258,115 @@ fn boolean_expression_permutations_converge() {
     eprintln!("checked {checked} boolean expression canonicalization variants");
 }
 
+#[test]
+#[ignore = "deterministic stress search for local canonicalization investigation"]
+fn generated_chiral_smarts_satisfy_canonicalization_invariants() {
+    let mut cases = BTreeSet::new();
+    collect_generated_chiral_cases(&mut cases);
+
+    let mut checked = 0usize;
+    for smarts in cases {
+        let Ok(query) = QueryMol::from_str(&smarts) else {
+            continue;
+        };
+        assert_canonicalization_is_stable(&smarts, &query);
+        checked += 1;
+    }
+
+    assert!(
+        checked > 500,
+        "chiral generated search should check many SMARTS; checked {checked}"
+    );
+    eprintln!("checked {checked} generated chiral canonicalization candidates");
+}
+
+#[test]
+#[ignore = "deterministic stress search for local canonicalization investigation"]
+fn chiral_graph_construction_variants_keep_canonicalization_stable() {
+    let mut cases = BTreeSet::new();
+    collect_corpus_smarts(&mut cases);
+    collect_generated_chiral_cases(&mut cases);
+
+    let mut checked = 0usize;
+    for smarts in cases {
+        let Ok(query) = QueryMol::from_str(&smarts) else {
+            continue;
+        };
+        if !query_contains_chirality(&query) || query.atom_count() > 16 {
+            continue;
+        }
+
+        let canonical = query.canonicalize();
+        for (variant_name, variant) in graph_construction_variants(&query) {
+            assert_eq!(
+                canonical,
+                variant.canonicalize(),
+                "chiral graph construction variant {variant_name} changed canonical form for {smarts:?}"
+            );
+            checked += 1;
+        }
+    }
+
+    assert!(
+        checked > 500,
+        "chiral graph construction search should check many variants; checked {checked}"
+    );
+    eprintln!("checked {checked} chiral graph construction canonicalization variants");
+}
+
+#[test]
+#[ignore = "deterministic stress search for local canonicalization investigation"]
+fn exhaustive_small_topology_relabelings_keep_canonicalization_stable() {
+    let mut cases = BTreeSet::new();
+    collect_exhaustive_relabeling_cases(&mut cases);
+
+    let mut checked = 0usize;
+    for smarts in cases {
+        let Ok(query) = QueryMol::from_str(&smarts) else {
+            continue;
+        };
+        if query.atom_count() <= 1 || query.atom_count() > 6 || query_contains_chirality(&query) {
+            continue;
+        }
+
+        let canonical = query.canonicalize();
+        let atom_ids = (0..query.atom_count()).collect::<Vec<_>>();
+        for order in all_permutations(&atom_ids) {
+            let relabeled = relabel_query(&query, &order);
+            assert_eq!(
+                canonical,
+                relabeled.canonicalize(),
+                "exhaustive atom relabeling changed canonical form for {smarts:?}: {order:?}"
+            );
+            checked += 1;
+        }
+    }
+
+    assert!(
+        checked > 50_000,
+        "exhaustive relabel search should check many variants; checked {checked}"
+    );
+    eprintln!("checked {checked} exhaustive small-topology relabeling variants");
+}
+
+#[test]
+#[ignore = "deterministic stress search for local canonicalization investigation"]
+fn topology_equivalent_smarts_converge() {
+    let mut groups = Vec::new();
+    collect_topology_equivalence_groups(&mut groups);
+
+    let mut checked = 0usize;
+    for group in groups {
+        checked += assert_parseable_group_converges(&group);
+    }
+
+    assert!(
+        checked > 1_000,
+        "topology equivalence search should check many variants; checked {checked}"
+    );
+    eprintln!("checked {checked} topology-equivalent canonicalization variants");
+}
+
 fn assert_canonicalization_is_stable(source: &str, query: &QueryMol) {
     let canonical = query.canonicalize();
     assert_eq!(
@@ -567,6 +676,155 @@ fn collect_generated_invariant_cases(cases: &mut BTreeSet<String>) {
             cases.insert(format!("[{base};{qualifier}]"));
             cases.insert(format!("[{base},{qualifier}]"));
             cases.insert(format!("[!{base},{qualifier}]"));
+        }
+    }
+}
+
+fn collect_generated_chiral_cases(cases: &mut BTreeSet<String>) {
+    let neighbors = ["F", "Cl", "Br", "I", "N", "O", "S", "[#6]", "[#7]", "[#8]"];
+    let tetrahedral_tags = ["@", "@@", "@TH1", "@TH2"];
+    let other_tags = [
+        "@AL1", "@AL2", "@SP1", "@SP2", "@SP3", "@TB1", "@TB2", "@TB20", "@OH1", "@OH2", "@OH30",
+    ];
+
+    for tag in tetrahedral_tags {
+        for first in neighbors {
+            for second in neighbors {
+                for third in neighbors {
+                    if first == second || first == third || second == third {
+                        continue;
+                    }
+                    cases.insert(format!("[C{tag}]({first})({second}){third}"));
+                    cases.insert(format!("{first}[C{tag}]({second}){third}"));
+                    cases.insert(format!("[C{tag}H]({first}){second}"));
+                    cases.insert(format!("{first}[C{tag}H]{second}"));
+                }
+            }
+        }
+    }
+
+    for tag in other_tags {
+        for first in neighbors {
+            for second in neighbors {
+                for third in neighbors {
+                    if first == second || first == third || second == third {
+                        continue;
+                    }
+                    cases.insert(format!("[C{tag}]({first})({second}){third}"));
+                    cases.insert(format!("{first}[C{tag}]({second}){third}"));
+                }
+            }
+        }
+    }
+
+    for tag in ["@TH1", "@TH2", "@SP1", "@TB1", "@OH1"] {
+        for left in neighbors {
+            for right in neighbors {
+                if left == right {
+                    continue;
+                }
+                cases.insert(format!("[$([C{tag}]({left}){right})]"));
+                cases.insert(format!("[C;{tag};$([C]({left}){right})]"));
+            }
+        }
+    }
+}
+
+fn collect_exhaustive_relabeling_cases(cases: &mut BTreeSet<String>) {
+    let atoms = ["C", "N", "O", "c"];
+    let bonds = ["-", "=", "~", ":", "-,=", "-;@"];
+
+    for first in atoms {
+        for second in atoms {
+            for third in atoms {
+                for fourth in atoms {
+                    cases.insert(format!("{first}-{second}({third}){fourth}"));
+                    cases.insert(format!("{first}1{second}{third}{fourth}1"));
+                    cases.insert(format!("{first}.{second}.({third}.{fourth})"));
+                }
+            }
+        }
+    }
+
+    for first in atoms {
+        for second in atoms {
+            for third in atoms {
+                for fourth in atoms {
+                    for fifth in atoms {
+                        cases.insert(format!("{first}-{second}({third})({fourth}){fifth}"));
+                        cases.insert(format!("{first}1{second}{third}{fourth}{fifth}1"));
+                    }
+                }
+            }
+        }
+    }
+
+    for left in atoms {
+        for center in atoms {
+            for right in atoms {
+                for bond_a in bonds {
+                    for bond_b in bonds {
+                        cases.insert(format!("{left}{bond_a}{center}{bond_b}{right}"));
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn collect_topology_equivalence_groups(groups: &mut Vec<Vec<String>>) {
+    let atoms = [
+        "[C]", "[N]", "[O]", "[S]", "[c]", "[n]", "[#6]", "[#7]", "[#8]", "[C:1]", "[N:2]",
+    ];
+
+    for a in atoms {
+        for b in atoms {
+            for c in atoms {
+                groups.push(vec![
+                    format!("{a}~{b}~{c}"),
+                    format!("{c}~{b}~{a}"),
+                    format!("{b}(~{a})~{c}"),
+                    format!("{b}(~{c})~{a}"),
+                ]);
+            }
+        }
+    }
+
+    for a in atoms {
+        for b in atoms {
+            for c in atoms {
+                for d in atoms {
+                    groups.push(vec![
+                        format!("{a}~{b}(~{c})~{d}"),
+                        format!("{d}~{b}(~{c})~{a}"),
+                        format!("{b}(~{a})(~{c})~{d}"),
+                        format!("{b}(~{d})(~{c})~{a}"),
+                    ]);
+                    groups.push(vec![
+                        format!("{a}1{b}{c}{d}1"),
+                        format!("{b}1{c}{d}{a}1"),
+                        format!("{c}1{d}{a}{b}1"),
+                        format!("{d}1{a}{b}{c}1"),
+                    ]);
+                    groups.push(vec![
+                        format!("({a}.{b}).({c}.{d})"),
+                        format!("({d}.{c}).({b}.{a})"),
+                        format!("({b}.{a}).({d}.{c})"),
+                    ]);
+                }
+            }
+        }
+    }
+
+    for a in atoms {
+        for b in atoms {
+            for c in atoms {
+                groups.push(vec![
+                    format!("[$({a}~{b}~{c})]"),
+                    format!("[$({c}~{b}~{a})]"),
+                    format!("[$({b}(~{a})~{c})]"),
+                ]);
+            }
         }
     }
 }
