@@ -1034,9 +1034,7 @@ fn simplify_bracket_and(items: Vec<BracketExprTree>, kind: BracketAndKind) -> Br
     match items.as_slice() {
         [] => BracketExprTree::Primitive(AtomPrimitive::Wildcard),
         [single] => single.clone(),
-        _ if kind == BracketAndKind::Low && !can_render_bracket_and_as_high_and(&items) => {
-            BracketExprTree::LowAnd(items)
-        }
+        _ if !can_render_bracket_and_as_high_and(&items) => BracketExprTree::LowAnd(items),
         _ => BracketExprTree::HighAnd(items),
     }
 }
@@ -2520,6 +2518,7 @@ fn simplify_bracket_or(items: Vec<BracketExprTree>) -> BracketExprTree {
     while relax_negated_broader_bracket_disjunction_terms(&mut items) {}
     while relax_covered_negated_bracket_disjunction_terms(&mut items) {}
     while relax_conjunctive_complement_bracket_disjunction_terms(&mut items) {}
+    while collapse_covered_complement_partition_bracket_disjunction_terms(&mut items) {}
     while remove_redundant_bracket_disjunction_consensus_terms(&mut items) {}
     while collapse_bracket_disjunction_consensus_terms(&mut items) {}
     if let Some(factored) = factor_common_bracket_disjunction_terms(&items) {
@@ -2885,6 +2884,122 @@ fn relax_covered_negated_bracket_disjunction_terms(items: &mut Vec<BracketExprTr
     }
 
     false
+}
+
+fn collapse_covered_complement_partition_bracket_disjunction_terms(
+    items: &mut Vec<BracketExprTree>,
+) -> bool {
+    for specific_index in 0..items.len() {
+        let mut coverages: Vec<(Vec<BracketExprTree>, Vec<BracketExprTree>, Vec<usize>)> =
+            Vec::new();
+
+        for (alternative_index, alternative) in items.iter().enumerate() {
+            if alternative_index == specific_index {
+                continue;
+            }
+
+            for (mut common, excluded) in constrained_complement_alternatives(alternative) {
+                sort_and_dedup_bracket_items(&mut common);
+                if let Some((_, excluded_terms, alternative_indices)) = coverages
+                    .iter_mut()
+                    .find(|(known_common, _, _)| known_common.as_slice() == common.as_slice())
+                {
+                    if !excluded_terms.contains(&excluded) {
+                        excluded_terms.push(excluded);
+                    }
+                    if !alternative_indices.contains(&alternative_index) {
+                        alternative_indices.push(alternative_index);
+                    }
+                } else {
+                    coverages.push((common, vec![excluded], vec![alternative_index]));
+                }
+            }
+        }
+
+        for (common, mut excluded_terms, alternative_indices) in coverages {
+            if common
+                .iter()
+                .any(|term| !bracket_tree_implies(&items[specific_index], term))
+            {
+                continue;
+            }
+
+            sort_and_dedup_bracket_items(&mut excluded_terms);
+            let mut covered_partition = common.clone();
+            covered_partition.extend(excluded_terms);
+            let partition_kind = if can_render_bracket_and_as_high_and(&covered_partition) {
+                BracketAndKind::High
+            } else {
+                BracketAndKind::Low
+            };
+            let covered_partition = simplify_bracket_and(covered_partition, partition_kind);
+            if !bracket_trees_are_equivalent(&covered_partition, &items[specific_index]) {
+                continue;
+            }
+
+            let replacement_kind = if can_render_bracket_and_as_high_and(&common) {
+                BracketAndKind::High
+            } else {
+                BracketAndKind::Low
+            };
+            let replacement = simplify_bracket_and(common, replacement_kind);
+            let mut removed = alternative_indices;
+            removed.push(specific_index);
+            remove_indices_descending(items, &removed);
+            items.push(replacement);
+            return true;
+        }
+    }
+
+    false
+}
+
+fn constrained_complement_alternatives(
+    tree: &BracketExprTree,
+) -> Vec<(Vec<BracketExprTree>, BracketExprTree)> {
+    let items = bracket_direct_conjunction_items(tree);
+    let mut alternatives = Vec::new();
+
+    for (term_index, term) in items.iter().enumerate() {
+        match term {
+            BracketExprTree::Not(excluded) => {
+                alternatives.push((
+                    bracket_items_without_index(&items, term_index),
+                    excluded.as_ref().clone(),
+                ));
+            }
+            BracketExprTree::Or(disjunction) => {
+                let mut excluded_terms = Vec::with_capacity(disjunction.len());
+                for alternative in disjunction {
+                    let BracketExprTree::Not(excluded) = alternative else {
+                        excluded_terms.clear();
+                        break;
+                    };
+                    excluded_terms.push(excluded.as_ref().clone());
+                }
+                if excluded_terms.is_empty() {
+                    continue;
+                }
+
+                let common = bracket_items_without_index(&items, term_index);
+                alternatives.extend(
+                    excluded_terms
+                        .into_iter()
+                        .map(|excluded| (common.clone(), excluded)),
+                );
+            }
+            _ => {}
+        }
+    }
+
+    alternatives
+}
+
+fn bracket_direct_conjunction_items(tree: &BracketExprTree) -> Vec<BracketExprTree> {
+    match tree {
+        BracketExprTree::HighAnd(items) | BracketExprTree::LowAnd(items) => items.clone(),
+        other => vec![other.clone()],
+    }
 }
 
 fn complement_subtracted_bracket_tree(residual: BracketExprTree) -> Option<BracketExprTree> {
@@ -3686,9 +3801,7 @@ fn simplify_bond_and(items: Vec<BondExprTree>, kind: BondAndKind) -> BondExprTre
     match items.as_slice() {
         [] => BondExprTree::Primitive(BondPrimitive::Any),
         [single] => single.clone(),
-        _ if kind == BondAndKind::Low && !can_render_bond_and_as_high_and(&items) => {
-            BondExprTree::LowAnd(items)
-        }
+        _ if !can_render_bond_and_as_high_and(&items) => BondExprTree::LowAnd(items),
         _ => BondExprTree::HighAnd(items),
     }
 }
@@ -5467,6 +5580,11 @@ mod tests {
             ("[#6,!c&R]", "[#6,R]"),
             ("[#6&X4,!C&X4]", "[X4]"),
             ("[#6&X4,!c&X4]", "[X4]"),
+            ("[C&R,A&!#6,A&!R]", "[A]"),
+            ("[c&R,a&!#6,a&!R]", "[a]"),
+            ("[#6&A&R,A&!#6,A&!R]", "[A]"),
+            ("[#6&a&R,a&!#6,a&!R]", "[a]"),
+            ("[C&R&H0,A&H0&!#6,A&H0&!R]", "[A&H0]"),
         ] {
             assert_eq!(canonical_string(source), expected, "{source}");
         }
@@ -5840,6 +5958,16 @@ mod tests {
         assert_eq!(canonical_string("[$([#6:1])]"), "[$([#6:1])]");
         assert_eq!(canonical_string("[!$([#6&-])]"), "[!#6,!-]");
         assert_eq!(canonical_string("[!$([#6,-])]"), "[!#6&!-]");
+        assert_eq!(canonical_string("[!$([#6;R])&A]"), "[!#6,!R;A]");
+        assert_eq!(canonical_string("[!$([#6;R])&a]"), "[!#6,!R;a]");
+        assert_eq!(canonical_string("[!$([C;R])&A]"), "[!C,!R;A]");
+        assert_eq!(canonical_string("[$([#6;R])&A,!$([#6;R])&A]"), "[A]");
+        assert_eq!(
+            canonical_string("[$([#6;R])&A&H0,!$([#6;R])&A&H0]"),
+            "[A&H0]"
+        );
+        assert_eq!(canonical_string("[$([#6;R])&a,!$([#6;R])&a]"), "[a]");
+        assert_eq!(canonical_string("[$([C;R])&A,!$([C;R])&A]"), "[A]");
         assert_eq!(canonical_string("[$([#6]),$([#6;R])]"), "[#6]");
         assert_eq!(canonical_string("[$([#6]),$([C])]"), "[#6]");
         assert_eq!(canonical_string("[$([C]),$([C;R])]"), "[C]");
