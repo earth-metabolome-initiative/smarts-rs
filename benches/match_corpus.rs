@@ -39,6 +39,53 @@ struct RuntimeDataset {
     repeat_count: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum MatchBenchmark {
+    Boolean,
+    Count,
+    Materialized,
+}
+
+impl MatchBenchmark {
+    const fn group_name(self) -> &'static str {
+        match self {
+            Self::Boolean => "matcher_boolean_workloads",
+            Self::Count => "matcher_count_workloads",
+            Self::Materialized => "matcher_materialized_workloads",
+        }
+    }
+
+    fn run_case(self, case: &RuntimeCase) {
+        match self {
+            Self::Boolean => {
+                let matched = black_box(&case.query).matches(black_box(&case.target));
+                assert_eq!(matched, case.expected_match, "benchmark fixture drifted");
+                black_box(matched);
+            }
+            Self::Count => {
+                let count = black_box(&case.query).match_count(black_box(&case.target));
+                assert_eq!(count > 0, case.expected_match, "benchmark fixture drifted");
+                if let Some(expected_count) = case.expected_count {
+                    assert_eq!(count, expected_count, "benchmark fixture drifted");
+                }
+                black_box(count);
+            }
+            Self::Materialized => {
+                let matches = black_box(&case.query).substructure_matches(black_box(&case.target));
+                assert_eq!(
+                    !matches.is_empty(),
+                    case.expected_match,
+                    "benchmark fixture drifted"
+                );
+                if let Some(expected_count) = case.expected_count {
+                    assert_eq!(matches.len(), expected_count, "benchmark fixture drifted");
+                }
+                black_box(matches);
+            }
+        }
+    }
+}
+
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -89,9 +136,13 @@ fn build_dataset(cases: &[BenchmarkCase]) -> RuntimeDataset {
 
 fn bench_match_corpus(c: &mut Criterion) {
     let workloads = load_workloads();
-    bench_boolean_workloads(c, &workloads);
-    bench_count_workloads(c, &workloads);
-    bench_materialized_workloads(c, &workloads);
+    for benchmark in [
+        MatchBenchmark::Boolean,
+        MatchBenchmark::Count,
+        MatchBenchmark::Materialized,
+    ] {
+        bench_workloads(c, &workloads, benchmark);
+    }
 }
 
 fn configure_group(group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>) {
@@ -100,8 +151,8 @@ fn configure_group(group: &mut criterion::BenchmarkGroup<'_, criterion::measurem
     group.measurement_time(Duration::from_secs(8));
 }
 
-fn bench_boolean_workloads(c: &mut Criterion, workloads: &[Workload]) {
-    let mut group = c.benchmark_group("matcher_boolean_workloads");
+fn bench_workloads(c: &mut Criterion, workloads: &[Workload], benchmark: MatchBenchmark) {
+    let mut group = c.benchmark_group(benchmark.group_name());
     configure_group(&mut group);
 
     for workload in workloads {
@@ -115,84 +166,7 @@ fn bench_boolean_workloads(c: &mut Criterion, workloads: &[Workload]) {
                 b.iter(|| {
                     for _ in 0..dataset.repeat_count {
                         for case in &dataset.cases {
-                            let matched = black_box(&case.query).matches(black_box(&case.target));
-                            assert_eq!(matched, case.expected_match, "benchmark fixture drifted");
-                            black_box(matched);
-                        }
-                    }
-                });
-            },
-        );
-        group.throughput(Throughput::Elements(0));
-        black_box(&workload.description);
-    }
-
-    group.finish();
-}
-
-fn bench_count_workloads(c: &mut Criterion, workloads: &[Workload]) {
-    let mut group = c.benchmark_group("matcher_count_workloads");
-    configure_group(&mut group);
-
-    for workload in workloads {
-        let cases = load_cases(&workload.case_files);
-        let dataset = build_dataset(&cases);
-        let k = (dataset.cases.len() * dataset.repeat_count) as u64;
-        group.throughput(Throughput::Elements(k));
-        group.bench_function(
-            BenchmarkId::new("rust_smarts_rs_matcher", &workload.id),
-            |b| {
-                b.iter(|| {
-                    for _ in 0..dataset.repeat_count {
-                        for case in &dataset.cases {
-                            let count = black_box(&case.query).match_count(black_box(&case.target));
-                            assert_eq!(count > 0, case.expected_match, "benchmark fixture drifted");
-                            if let Some(expected_count) = case.expected_count {
-                                assert_eq!(count, expected_count, "benchmark fixture drifted");
-                            }
-                            black_box(count);
-                        }
-                    }
-                });
-            },
-        );
-        group.throughput(Throughput::Elements(0));
-        black_box(&workload.description);
-    }
-
-    group.finish();
-}
-
-fn bench_materialized_workloads(c: &mut Criterion, workloads: &[Workload]) {
-    let mut group = c.benchmark_group("matcher_materialized_workloads");
-    configure_group(&mut group);
-
-    for workload in workloads {
-        let cases = load_cases(&workload.case_files);
-        let dataset = build_dataset(&cases);
-        let k = (dataset.cases.len() * dataset.repeat_count) as u64;
-        group.throughput(Throughput::Elements(k));
-        group.bench_function(
-            BenchmarkId::new("rust_smarts_rs_matcher", &workload.id),
-            |b| {
-                b.iter(|| {
-                    for _ in 0..dataset.repeat_count {
-                        for case in &dataset.cases {
-                            let matches = black_box(&case.query)
-                                .substructure_matches(black_box(&case.target));
-                            assert_eq!(
-                                !matches.is_empty(),
-                                case.expected_match,
-                                "benchmark fixture drifted"
-                            );
-                            if let Some(expected_count) = case.expected_count {
-                                assert_eq!(
-                                    matches.len(),
-                                    expected_count,
-                                    "benchmark fixture drifted"
-                                );
-                            }
-                            black_box(matches);
+                            benchmark.run_case(case);
                         }
                     }
                 });

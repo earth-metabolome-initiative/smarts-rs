@@ -67,6 +67,12 @@ struct SearchScratchView<'a, L: MatchLimiter> {
     limit: &'a L,
 }
 
+struct SearchScratchParts<'a, L: MatchLimiter> {
+    view: SearchScratchView<'a, L>,
+    atom_stereo_cache: &'a mut AtomStereoCache,
+    recursive_cache: &'a mut RecursiveMatchCache,
+}
+
 #[derive(Debug, Clone)]
 struct FreshSearchBuffers {
     query_atom_anchor_widths: alloc::vec::Vec<usize>,
@@ -837,6 +843,45 @@ impl MatchScratch {
     ) {
         self.prepare_caches(query, target);
         self.prepare_search_buffers(query, target, limit);
+    }
+
+    fn search_parts(&mut self) -> SearchScratchParts<'_, NoMatchLimit> {
+        self.search_parts_with_limit(&NO_MATCH_LIMIT)
+    }
+
+    fn search_parts_with_limit<'a, L: MatchLimiter>(
+        &'a mut self,
+        limit: &'a L,
+    ) -> SearchScratchParts<'a, L> {
+        let Self {
+            query_atom_anchor_widths,
+            query_to_target,
+            used_target_atoms,
+            used_target_generation,
+            bondless_query_order,
+            bondless_candidate_offsets,
+            bondless_candidates,
+            bondless_target_assignments,
+            bondless_seen_targets,
+            atom_stereo_cache,
+            recursive_cache,
+        } = self;
+        SearchScratchParts {
+            view: SearchScratchView {
+                query_atom_anchor_widths,
+                query_to_target,
+                used_target_atoms,
+                used_target_generation: *used_target_generation,
+                bondless_query_order,
+                bondless_candidate_offsets,
+                bondless_candidates,
+                bondless_target_assignments,
+                bondless_seen_targets,
+                limit,
+            },
+            atom_stereo_cache,
+            recursive_cache,
+        }
     }
 
     fn prepare_search_buffers<L: MatchLimiter>(
@@ -2040,23 +2085,17 @@ fn query_matches_with_scratch(
         );
     }
     scratch.prepare(query, target);
+    let SearchScratchParts {
+        view,
+        atom_stereo_cache,
+        recursive_cache,
+    } = scratch.search_parts();
     query_matches_with_mapping_state(
         query,
         target,
-        &mut scratch.atom_stereo_cache,
-        &mut scratch.recursive_cache,
-        SearchScratchView {
-            query_atom_anchor_widths: &scratch.query_atom_anchor_widths,
-            query_to_target: &mut scratch.query_to_target,
-            used_target_atoms: &mut scratch.used_target_atoms,
-            used_target_generation: scratch.used_target_generation,
-            bondless_query_order: &mut scratch.bondless_query_order,
-            bondless_candidate_offsets: &mut scratch.bondless_candidate_offsets,
-            bondless_candidates: &mut scratch.bondless_candidates,
-            bondless_target_assignments: &mut scratch.bondless_target_assignments,
-            bondless_seen_targets: &mut scratch.bondless_seen_targets,
-            limit: &NO_MATCH_LIMIT,
-        },
+        atom_stereo_cache,
+        recursive_cache,
+        view,
         initial_mapping,
     )
 }
@@ -2105,23 +2144,17 @@ fn query_matches_with_scratch_limit<L: MatchLimiter>(
     limit: &L,
 ) -> bool {
     scratch.prepare_with_limit(query, target, limit);
+    let SearchScratchParts {
+        view,
+        atom_stereo_cache,
+        recursive_cache,
+    } = scratch.search_parts_with_limit(limit);
     query_matches_with_mapping_state(
         query,
         target,
-        &mut scratch.atom_stereo_cache,
-        &mut scratch.recursive_cache,
-        SearchScratchView {
-            query_atom_anchor_widths: &scratch.query_atom_anchor_widths,
-            query_to_target: &mut scratch.query_to_target,
-            used_target_atoms: &mut scratch.used_target_atoms,
-            used_target_generation: scratch.used_target_generation,
-            bondless_query_order: &mut scratch.bondless_query_order,
-            bondless_candidate_offsets: &mut scratch.bondless_candidate_offsets,
-            bondless_candidates: &mut scratch.bondless_candidates,
-            bondless_target_assignments: &mut scratch.bondless_target_assignments,
-            bondless_seen_targets: &mut scratch.bondless_seen_targets,
-            limit,
-        },
+        atom_stereo_cache,
+        recursive_cache,
+        view,
         InitialAtomMapping::default(),
     )
 }
@@ -2196,23 +2229,12 @@ fn query_match_outcome_with_scratch_limit<L: MatchLimiter>(
     limit: &L,
 ) -> MatchOutcome {
     scratch.prepare_with_limit(query, target, limit);
-    let mut context = SearchScratchView {
-        query_atom_anchor_widths: &scratch.query_atom_anchor_widths,
-        query_to_target: &mut scratch.query_to_target,
-        used_target_atoms: &mut scratch.used_target_atoms,
-        used_target_generation: scratch.used_target_generation,
-        bondless_query_order: &mut scratch.bondless_query_order,
-        bondless_candidate_offsets: &mut scratch.bondless_candidate_offsets,
-        bondless_candidates: &mut scratch.bondless_candidates,
-        bondless_target_assignments: &mut scratch.bondless_target_assignments,
-        bondless_seen_targets: &mut scratch.bondless_seen_targets,
-        limit,
-    }
-    .into_context(
-        query,
-        &mut scratch.atom_stereo_cache,
-        &mut scratch.recursive_cache,
-    );
+    let SearchScratchParts {
+        view,
+        atom_stereo_cache,
+        recursive_cache,
+    } = scratch.search_parts_with_limit(limit);
+    let mut context = view.into_context(query, atom_stereo_cache, recursive_cache);
     let mut coverage = MatchCoverageAccumulator::new(target);
     if let Some(mapped_count) =
         bind_initial_mapping(query, target, &mut context, InitialAtomMapping::default())
@@ -2248,23 +2270,12 @@ fn with_scratch_bound_search_context<R>(
     run: impl FnOnce(&mut SearchContext<'_, NoMatchLimit>, usize) -> R,
 ) -> Option<R> {
     scratch.prepare(query, target);
-    let mut context = SearchScratchView {
-        query_atom_anchor_widths: &scratch.query_atom_anchor_widths,
-        query_to_target: &mut scratch.query_to_target,
-        used_target_atoms: &mut scratch.used_target_atoms,
-        used_target_generation: scratch.used_target_generation,
-        bondless_query_order: &mut scratch.bondless_query_order,
-        bondless_candidate_offsets: &mut scratch.bondless_candidate_offsets,
-        bondless_candidates: &mut scratch.bondless_candidates,
-        bondless_target_assignments: &mut scratch.bondless_target_assignments,
-        bondless_seen_targets: &mut scratch.bondless_seen_targets,
-        limit: &NO_MATCH_LIMIT,
-    }
-    .into_context(
-        query,
-        &mut scratch.atom_stereo_cache,
-        &mut scratch.recursive_cache,
-    );
+    let SearchScratchParts {
+        view,
+        atom_stereo_cache,
+        recursive_cache,
+    } = scratch.search_parts();
+    let mut context = view.into_context(query, atom_stereo_cache, recursive_cache);
     let mapped_count =
         bind_initial_mapping(query, target, &mut context, InitialAtomMapping::default())?;
     Some(run(&mut context, mapped_count))

@@ -71,6 +71,11 @@ struct CanonicalWholeQueryStateKey {
     bond_edges: Vec<(usize, usize, String)>,
 }
 
+struct CanonicalQueryStateParts {
+    atom_labels: Vec<String>,
+    bond_edges: Vec<(usize, usize, String)>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct CanonicalTopLevelEntryStateKey {
     grouped: bool,
@@ -686,30 +691,23 @@ fn canonical_component_groups(query: &QueryMol) -> Vec<Option<ComponentId>> {
 }
 
 fn canonical_query_state_key(query: &QueryMol) -> CanonicalQueryStateKey {
-    let atom_labels = query
-        .atoms()
-        .iter()
-        .map(|atom| atom.expr.to_string())
-        .collect();
-    let mut bond_edges = query
-        .bonds()
-        .iter()
-        .map(|bond| {
-            (
-                bond.src.min(bond.dst),
-                bond.src.max(bond.dst),
-                undirected_bond_expr_key(&bond.expr),
-            )
-        })
-        .collect::<Vec<_>>();
-    bond_edges.sort_unstable();
+    let parts = canonical_query_state_parts(query);
     CanonicalQueryStateKey {
-        atom_labels,
-        bond_edges,
+        atom_labels: parts.atom_labels,
+        bond_edges: parts.bond_edges,
     }
 }
 
 fn canonical_whole_query_state_key(query: &QueryMol) -> CanonicalWholeQueryStateKey {
+    let parts = canonical_query_state_parts(query);
+    CanonicalWholeQueryStateKey {
+        component_groups: query.component_groups().to_vec(),
+        atom_labels: parts.atom_labels,
+        bond_edges: parts.bond_edges,
+    }
+}
+
+fn canonical_query_state_parts(query: &QueryMol) -> CanonicalQueryStateParts {
     let atom_labels = query
         .atoms()
         .iter()
@@ -727,8 +725,7 @@ fn canonical_whole_query_state_key(query: &QueryMol) -> CanonicalWholeQueryState
         })
         .collect::<Vec<_>>();
     bond_edges.sort_unstable();
-    CanonicalWholeQueryStateKey {
-        component_groups: query.component_groups().to_vec(),
+    CanonicalQueryStateParts {
         atom_labels,
         bond_edges,
     }
@@ -3084,31 +3081,48 @@ fn relax_negated_broader_bracket_disjunction_terms(items: &mut Vec<BracketExprTr
     false
 }
 
-fn relax_covered_negated_bracket_disjunction_terms(items: &mut Vec<BracketExprTree>) -> bool {
+struct CoveredNegatedDisjunctionOps<T, K> {
+    consensus_items: fn(&T) -> (Vec<T>, K),
+    sort_and_dedup: fn(&mut Vec<T>),
+    trees_are_complements: fn(&T, &T) -> bool,
+    items_without_index: fn(&[T], usize) -> Vec<T>,
+    can_render_and_as_high: fn(&[T]) -> bool,
+    simplify_and: fn(Vec<T>, K) -> T,
+    high_kind: K,
+    low_kind: K,
+}
+
+fn relax_covered_negated_disjunction_terms<T, K>(
+    items: &mut Vec<T>,
+    ops: &CoveredNegatedDisjunctionOps<T, K>,
+) -> bool
+where
+    T: PartialEq,
+    K: Copy,
+{
     for base_index in 0..items.len() {
-        let (mut base_terms, _) = bracket_consensus_items(&items[base_index]);
-        sort_and_dedup_bracket_items(&mut base_terms);
+        let (mut base_terms, _) = (ops.consensus_items)(&items[base_index]);
+        (ops.sort_and_dedup)(&mut base_terms);
         if base_terms.len() < 2 {
             continue;
         }
 
-        let mut coverages: Vec<(Vec<BracketExprTree>, Vec<usize>, Vec<usize>)> = Vec::new();
+        let mut coverages: Vec<(Vec<T>, Vec<usize>, Vec<usize>)> = Vec::new();
         for (alternative_index, alternative) in items.iter().enumerate() {
             if alternative_index == base_index {
                 continue;
             }
 
-            let (alternative_terms, _) = bracket_consensus_items(alternative);
+            let (alternative_terms, _) = (ops.consensus_items)(alternative);
             for (base_term_index, base_term) in base_terms.iter().enumerate() {
                 let Some(complement_index) = alternative_terms
                     .iter()
-                    .position(|term| bracket_trees_are_complements(term, base_term))
+                    .position(|term| (ops.trees_are_complements)(term, base_term))
                 else {
                     continue;
                 };
-                let mut residual =
-                    bracket_items_without_index(&alternative_terms, complement_index);
-                sort_and_dedup_bracket_items(&mut residual);
+                let mut residual = (ops.items_without_index)(&alternative_terms, complement_index);
+                (ops.sort_and_dedup)(&mut residual);
 
                 if let Some((_, covered_terms, alternative_indices)) = coverages
                     .iter_mut()
@@ -3136,16 +3150,32 @@ fn relax_covered_negated_bracket_disjunction_terms(items: &mut Vec<BracketExprTr
         };
 
         remove_indices_descending(items, &alternative_indices);
-        let kind = if can_render_bracket_and_as_high_and(&residual) {
-            BracketAndKind::High
+        let kind = if (ops.can_render_and_as_high)(&residual) {
+            ops.high_kind
         } else {
-            BracketAndKind::Low
+            ops.low_kind
         };
-        items.push(simplify_bracket_and(residual, kind));
+        items.push((ops.simplify_and)(residual, kind));
         return true;
     }
 
     false
+}
+
+fn relax_covered_negated_bracket_disjunction_terms(items: &mut Vec<BracketExprTree>) -> bool {
+    relax_covered_negated_disjunction_terms(
+        items,
+        &CoveredNegatedDisjunctionOps {
+            consensus_items: bracket_consensus_items,
+            sort_and_dedup: sort_and_dedup_bracket_items,
+            trees_are_complements: bracket_trees_are_complements,
+            items_without_index: bracket_items_without_index,
+            can_render_and_as_high: can_render_bracket_and_as_high_and,
+            simplify_and: simplify_bracket_and,
+            high_kind: BracketAndKind::High,
+            low_kind: BracketAndKind::Low,
+        },
+    )
 }
 
 fn collapse_covered_complement_partition_bracket_disjunction_terms(
@@ -4794,66 +4824,19 @@ fn remove_negated_bond_term_from_conjunction(
 }
 
 fn relax_covered_negated_bond_disjunction_terms(items: &mut Vec<BondExprTree>) -> bool {
-    for base_index in 0..items.len() {
-        let (mut base_terms, _) = bond_consensus_items(&items[base_index]);
-        sort_and_dedup_bond_items(&mut base_terms);
-        if base_terms.len() < 2 {
-            continue;
-        }
-
-        let mut coverages: Vec<(Vec<BondExprTree>, Vec<usize>, Vec<usize>)> = Vec::new();
-        for (alternative_index, alternative) in items.iter().enumerate() {
-            if alternative_index == base_index {
-                continue;
-            }
-
-            let (alternative_terms, _) = bond_consensus_items(alternative);
-            for (base_term_index, base_term) in base_terms.iter().enumerate() {
-                let Some(complement_index) = alternative_terms
-                    .iter()
-                    .position(|term| bond_trees_are_complements(term, base_term))
-                else {
-                    continue;
-                };
-                let mut residual = bond_items_without_index(&alternative_terms, complement_index);
-                sort_and_dedup_bond_items(&mut residual);
-
-                if let Some((_, covered_terms, alternative_indices)) = coverages
-                    .iter_mut()
-                    .find(|(known_residual, _, _)| known_residual.as_slice() == residual.as_slice())
-                {
-                    if !covered_terms.contains(&base_term_index) {
-                        covered_terms.push(base_term_index);
-                    }
-                    if !alternative_indices.contains(&alternative_index) {
-                        alternative_indices.push(alternative_index);
-                    }
-                } else {
-                    coverages.push((residual, vec![base_term_index], vec![alternative_index]));
-                }
-            }
-        }
-
-        let Some((residual, _, alternative_indices)) =
-            coverages.into_iter().find(|(_, covered_terms, _)| {
-                (0..base_terms.len())
-                    .all(|base_term_index| covered_terms.contains(&base_term_index))
-            })
-        else {
-            continue;
-        };
-
-        remove_indices_descending(items, &alternative_indices);
-        let kind = if can_render_bond_and_as_high_and(&residual) {
-            BondAndKind::High
-        } else {
-            BondAndKind::Low
-        };
-        items.push(simplify_bond_and(residual, kind));
-        return true;
-    }
-
-    false
+    relax_covered_negated_disjunction_terms(
+        items,
+        &CoveredNegatedDisjunctionOps {
+            consensus_items: bond_consensus_items,
+            sort_and_dedup: sort_and_dedup_bond_items,
+            trees_are_complements: bond_trees_are_complements,
+            items_without_index: bond_items_without_index,
+            can_render_and_as_high: can_render_bond_and_as_high_and,
+            simplify_and: simplify_bond_and,
+            high_kind: BondAndKind::High,
+            low_kind: BondAndKind::Low,
+        },
+    )
 }
 
 fn remove_bond_term_from_conjunction(

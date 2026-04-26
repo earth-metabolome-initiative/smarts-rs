@@ -2328,6 +2328,79 @@ impl<'a> FeatureMaskBuilder<'a> {
     }
 }
 
+enum FeatureMaskConstraint<'a> {
+    Atom {
+        query: AtomFeature,
+        entries: &'a [(AtomFeature, FeatureIdMask)],
+        matching_values: &'a [AtomFeature],
+    },
+    Bond {
+        query: EdgeBondFeature,
+        entries: &'a [(EdgeBondFeature, FeatureIdMask)],
+        matching_values: &'a [EdgeBondFeature],
+    },
+}
+
+impl<'a> FeatureMaskConstraint<'a> {
+    const fn atom(
+        query: AtomFeature,
+        entries: &'a [(AtomFeature, FeatureIdMask)],
+        matching_values: &'a [AtomFeature],
+    ) -> Self {
+        Self::Atom {
+            query,
+            entries,
+            matching_values,
+        }
+    }
+
+    const fn bond(
+        query: EdgeBondFeature,
+        entries: &'a [(EdgeBondFeature, FeatureIdMask)],
+        matching_values: &'a [EdgeBondFeature],
+    ) -> Self {
+        Self::Bond {
+            query,
+            entries,
+            matching_values,
+        }
+    }
+
+    fn intersects(self, builder: &mut FeatureMaskBuilder<'_>) -> bool {
+        match self {
+            Self::Atom {
+                query,
+                entries,
+                matching_values,
+            } => {
+                atom_feature_is_unconstrained(query) || builder.intersect(entries, matching_values)
+            }
+            Self::Bond {
+                query,
+                entries,
+                matching_values,
+            } => {
+                bond_feature_is_unconstrained(query) || builder.intersect(entries, matching_values)
+            }
+        }
+    }
+}
+
+fn build_feature_mask<'a>(
+    feature_count: usize,
+    candidate_mask: &mut Vec<u64>,
+    component_mask: &mut Vec<u64>,
+    constraints: impl IntoIterator<Item = FeatureMaskConstraint<'a>>,
+) -> bool {
+    let mut builder = FeatureMaskBuilder::new(feature_count, candidate_mask, component_mask);
+    for constraint in constraints {
+        if !constraint.intersects(&mut builder) {
+            return false;
+        }
+    }
+    builder.has_candidates()
+}
+
 struct EdgeOrientationFeatureMask<'a> {
     query_left: AtomFeature,
     left_atoms: &'a [AtomFeature],
@@ -2337,24 +2410,6 @@ struct EdgeOrientationFeatureMask<'a> {
     right_atoms: &'a [AtomFeature],
 }
 
-fn constrained_atom_component_intersects(
-    query: AtomFeature,
-    entries: &[(AtomFeature, FeatureIdMask)],
-    matching_values: &[AtomFeature],
-    builder: &mut FeatureMaskBuilder<'_>,
-) -> bool {
-    atom_feature_is_unconstrained(query) || builder.intersect(entries, matching_values)
-}
-
-fn constrained_bond_component_intersects(
-    query: EdgeBondFeature,
-    entries: &[(EdgeBondFeature, FeatureIdMask)],
-    matching_values: &[EdgeBondFeature],
-    builder: &mut FeatureMaskBuilder<'_>,
-) -> bool {
-    bond_feature_is_unconstrained(query) || builder.intersect(entries, matching_values)
-}
-
 fn build_edge_orientation_feature_mask(
     index: &EdgeFeatureMaskIndex,
     orientation: &EdgeOrientationFeatureMask<'_>,
@@ -2362,32 +2417,24 @@ fn build_edge_orientation_feature_mask(
     candidate_mask: &mut Vec<u64>,
     component_mask: &mut Vec<u64>,
 ) -> bool {
-    let mut builder = FeatureMaskBuilder::new(feature_count, candidate_mask, component_mask);
-    if !constrained_atom_component_intersects(
-        orientation.query_left,
-        &index.left_atoms,
-        orientation.left_atoms,
-        &mut builder,
-    ) {
-        return false;
-    }
-    if !constrained_bond_component_intersects(
-        orientation.query_bond,
-        &index.bonds,
-        orientation.bonds,
-        &mut builder,
-    ) {
-        return false;
-    }
-    if !constrained_atom_component_intersects(
-        orientation.query_right,
-        &index.right_atoms,
-        orientation.right_atoms,
-        &mut builder,
-    ) {
-        return false;
-    }
-    builder.has_candidates()
+    build_feature_mask(
+        feature_count,
+        candidate_mask,
+        component_mask,
+        [
+            FeatureMaskConstraint::atom(
+                orientation.query_left,
+                &index.left_atoms,
+                orientation.left_atoms,
+            ),
+            FeatureMaskConstraint::bond(orientation.query_bond, &index.bonds, orientation.bonds),
+            FeatureMaskConstraint::atom(
+                orientation.query_right,
+                &index.right_atoms,
+                orientation.right_atoms,
+            ),
+        ],
+    )
 }
 
 struct Path3OrientationFeatureMask<'a> {
@@ -2410,48 +2457,38 @@ fn build_path3_orientation_feature_mask(
     candidate_mask: &mut Vec<u64>,
     component_mask: &mut Vec<u64>,
 ) -> bool {
-    let mut builder = FeatureMaskBuilder::new(feature_count, candidate_mask, component_mask);
-    if !constrained_atom_component_intersects(
-        orientation.query_left,
-        &index.left_atoms,
-        orientation.left_atoms,
-        &mut builder,
-    ) {
-        return false;
-    }
-    if !constrained_bond_component_intersects(
-        orientation.query_left_bond,
-        &index.left_bonds,
-        orientation.left_bonds,
-        &mut builder,
-    ) {
-        return false;
-    }
-    if !constrained_atom_component_intersects(
-        orientation.query_center,
-        &index.center_atoms,
-        orientation.center_atoms,
-        &mut builder,
-    ) {
-        return false;
-    }
-    if !constrained_bond_component_intersects(
-        orientation.query_right_bond,
-        &index.right_bonds,
-        orientation.right_bonds,
-        &mut builder,
-    ) {
-        return false;
-    }
-    if !constrained_atom_component_intersects(
-        orientation.query_right,
-        &index.right_atoms,
-        orientation.right_atoms,
-        &mut builder,
-    ) {
-        return false;
-    }
-    builder.has_candidates()
+    build_feature_mask(
+        feature_count,
+        candidate_mask,
+        component_mask,
+        [
+            FeatureMaskConstraint::atom(
+                orientation.query_left,
+                &index.left_atoms,
+                orientation.left_atoms,
+            ),
+            FeatureMaskConstraint::bond(
+                orientation.query_left_bond,
+                &index.left_bonds,
+                orientation.left_bonds,
+            ),
+            FeatureMaskConstraint::atom(
+                orientation.query_center,
+                &index.center_atoms,
+                orientation.center_atoms,
+            ),
+            FeatureMaskConstraint::bond(
+                orientation.query_right_bond,
+                &index.right_bonds,
+                orientation.right_bonds,
+            ),
+            FeatureMaskConstraint::atom(
+                orientation.query_right,
+                &index.right_atoms,
+                orientation.right_atoms,
+            ),
+        ],
+    )
 }
 
 struct Path4OrientationFeatureMask<'a> {
@@ -2478,64 +2515,48 @@ fn build_path4_orientation_feature_mask(
     candidate_mask: &mut Vec<u64>,
     component_mask: &mut Vec<u64>,
 ) -> bool {
-    let mut builder = FeatureMaskBuilder::new(feature_count, candidate_mask, component_mask);
-    if !constrained_atom_component_intersects(
-        orientation.query_left,
-        &index.left_atoms,
-        orientation.left_atoms,
-        &mut builder,
-    ) {
-        return false;
-    }
-    if !constrained_bond_component_intersects(
-        orientation.query_left_bond,
-        &index.left_bonds,
-        orientation.left_bonds,
-        &mut builder,
-    ) {
-        return false;
-    }
-    if !constrained_atom_component_intersects(
-        orientation.query_left_middle,
-        &index.left_middle_atoms,
-        orientation.left_middle_atoms,
-        &mut builder,
-    ) {
-        return false;
-    }
-    if !constrained_bond_component_intersects(
-        orientation.query_center_bond,
-        &index.center_bonds,
-        orientation.center_bonds,
-        &mut builder,
-    ) {
-        return false;
-    }
-    if !constrained_atom_component_intersects(
-        orientation.query_right_middle,
-        &index.right_middle_atoms,
-        orientation.right_middle_atoms,
-        &mut builder,
-    ) {
-        return false;
-    }
-    if !constrained_bond_component_intersects(
-        orientation.query_right_bond,
-        &index.right_bonds,
-        orientation.right_bonds,
-        &mut builder,
-    ) {
-        return false;
-    }
-    if !constrained_atom_component_intersects(
-        orientation.query_right,
-        &index.right_atoms,
-        orientation.right_atoms,
-        &mut builder,
-    ) {
-        return false;
-    }
-    builder.has_candidates()
+    build_feature_mask(
+        feature_count,
+        candidate_mask,
+        component_mask,
+        [
+            FeatureMaskConstraint::atom(
+                orientation.query_left,
+                &index.left_atoms,
+                orientation.left_atoms,
+            ),
+            FeatureMaskConstraint::bond(
+                orientation.query_left_bond,
+                &index.left_bonds,
+                orientation.left_bonds,
+            ),
+            FeatureMaskConstraint::atom(
+                orientation.query_left_middle,
+                &index.left_middle_atoms,
+                orientation.left_middle_atoms,
+            ),
+            FeatureMaskConstraint::bond(
+                orientation.query_center_bond,
+                &index.center_bonds,
+                orientation.center_bonds,
+            ),
+            FeatureMaskConstraint::atom(
+                orientation.query_right_middle,
+                &index.right_middle_atoms,
+                orientation.right_middle_atoms,
+            ),
+            FeatureMaskConstraint::bond(
+                orientation.query_right_bond,
+                &index.right_bonds,
+                orientation.right_bonds,
+            ),
+            FeatureMaskConstraint::atom(
+                orientation.query_right,
+                &index.right_atoms,
+                orientation.right_atoms,
+            ),
+        ],
+    )
 }
 
 struct Star3OrientationArmFeatureMask<'a> {
@@ -2559,34 +2580,25 @@ fn build_star3_orientation_feature_mask(
     candidate_mask: &mut Vec<u64>,
     component_mask: &mut Vec<u64>,
 ) -> bool {
-    let mut builder = FeatureMaskBuilder::new(feature_count, candidate_mask, component_mask);
-    if !constrained_atom_component_intersects(
-        orientation.query_center,
-        orientation.center_atom_index,
-        orientation.center_atoms,
-        &mut builder,
-    ) {
-        return false;
-    }
-    for arm in &orientation.arms {
-        if !constrained_bond_component_intersects(
-            arm.query.bond,
-            arm.bond_index,
-            arm.bonds,
-            &mut builder,
-        ) {
-            return false;
-        }
-        if !constrained_atom_component_intersects(
-            arm.query.atom,
-            arm.atom_index,
-            arm.atoms,
-            &mut builder,
-        ) {
-            return false;
-        }
-    }
-    builder.has_candidates()
+    let [first, second, third] = &orientation.arms;
+    build_feature_mask(
+        feature_count,
+        candidate_mask,
+        component_mask,
+        [
+            FeatureMaskConstraint::atom(
+                orientation.query_center,
+                orientation.center_atom_index,
+                orientation.center_atoms,
+            ),
+            FeatureMaskConstraint::bond(first.query.bond, first.bond_index, first.bonds),
+            FeatureMaskConstraint::atom(first.query.atom, first.atom_index, first.atoms),
+            FeatureMaskConstraint::bond(second.query.bond, second.bond_index, second.bonds),
+            FeatureMaskConstraint::atom(second.query.atom, second.atom_index, second.atoms),
+            FeatureMaskConstraint::bond(third.query.bond, third.bond_index, third.bonds),
+            FeatureMaskConstraint::atom(third.query.atom, third.atom_index, third.atoms),
+        ],
+    )
 }
 
 fn accumulate_feature_id_mask_counts<T>(

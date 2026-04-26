@@ -227,32 +227,10 @@ impl<'a> BracketParser<'a> {
                         self.pos += width;
                         AtomPrimitive::Symbol { element, aromatic }
                     } else {
-                        self.pos += 1;
-                        if allow_hydrogen_symbol && self.h_is_atomic_hydrogen_context() {
-                            AtomPrimitive::Symbol {
-                                element: elements_rs::Element::H,
-                                aromatic: false,
-                            }
-                        } else {
-                            AtomPrimitive::Hydrogen(
-                                HydrogenKind::Total,
-                                self.parse_optional_numeric_query()?,
-                            )
-                        }
+                        self.parse_single_h_primitive(allow_hydrogen_symbol)?
                     }
                 } else {
-                    self.pos += 1;
-                    if allow_hydrogen_symbol && self.h_is_atomic_hydrogen_context() {
-                        AtomPrimitive::Symbol {
-                            element: elements_rs::Element::H,
-                            aromatic: false,
-                        }
-                    } else {
-                        AtomPrimitive::Hydrogen(
-                            HydrogenKind::Total,
-                            self.parse_optional_numeric_query()?,
-                        )
-                    }
+                    self.parse_single_h_primitive(allow_hydrogen_symbol)?
                 }
             }
             'h' => {
@@ -511,6 +489,23 @@ impl<'a> BracketParser<'a> {
     fn parse_required_numeric_query(&mut self) -> Result<NumericQuery, BracketParseError> {
         self.parse_optional_numeric_query()?
             .ok_or_else(|| self.error(BracketParseErrorKind::UnexpectedEnd))
+    }
+
+    fn parse_single_h_primitive(
+        &mut self,
+        allow_hydrogen_symbol: bool,
+    ) -> Result<AtomPrimitive, BracketParseError> {
+        self.pos += 1;
+        if allow_hydrogen_symbol && self.h_is_atomic_hydrogen_context() {
+            return Ok(AtomPrimitive::Symbol {
+                element: elements_rs::Element::H,
+                aromatic: false,
+            });
+        }
+        Ok(AtomPrimitive::Hydrogen(
+            HydrogenKind::Total,
+            self.parse_optional_numeric_query()?,
+        ))
     }
 
     fn parse_required_u16(&mut self) -> Result<u16, BracketParseError> {

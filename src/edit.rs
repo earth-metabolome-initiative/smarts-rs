@@ -257,41 +257,49 @@ impl BracketExpr {
     }
 }
 
+macro_rules! impl_expr_tree_path_accessors {
+    ($tree:ty) => {
+        impl $tree {
+            /// Resolves one path inside the expression tree.
+            #[must_use]
+            pub fn get(&self, path: &ExprPath) -> Option<&Self> {
+                let mut current = self;
+                for segment in &path.0 {
+                    current = match (current, segment) {
+                        (Self::Not(inner), ExprPathSegment::Not) => inner,
+                        (
+                            Self::HighAnd(items) | Self::Or(items) | Self::LowAnd(items),
+                            ExprPathSegment::Child(index),
+                        ) => items.get(*index)?,
+                        _ => return None,
+                    };
+                }
+                Some(current)
+            }
+
+            /// Resolves one mutable path inside the expression tree.
+            #[must_use]
+            pub fn get_mut(&mut self, path: &ExprPath) -> Option<&mut Self> {
+                let mut current = self;
+                for segment in &path.0 {
+                    current = match (current, segment) {
+                        (Self::Not(inner), ExprPathSegment::Not) => inner,
+                        (
+                            Self::HighAnd(items) | Self::Or(items) | Self::LowAnd(items),
+                            ExprPathSegment::Child(index),
+                        ) => items.get_mut(*index)?,
+                        _ => return None,
+                    };
+                }
+                Some(current)
+            }
+        }
+    };
+}
+
+impl_expr_tree_path_accessors!(BracketExprTree);
+
 impl BracketExprTree {
-    /// Resolves one path inside the bracket-expression tree.
-    #[must_use]
-    pub fn get(&self, path: &ExprPath) -> Option<&Self> {
-        let mut current = self;
-        for segment in &path.0 {
-            current = match (current, segment) {
-                (Self::Not(inner), ExprPathSegment::Not) => inner,
-                (
-                    Self::HighAnd(items) | Self::Or(items) | Self::LowAnd(items),
-                    ExprPathSegment::Child(index),
-                ) => items.get(*index)?,
-                _ => return None,
-            };
-        }
-        Some(current)
-    }
-
-    /// Resolves one mutable path inside the bracket-expression tree.
-    #[must_use]
-    pub fn get_mut(&mut self, path: &ExprPath) -> Option<&mut Self> {
-        let mut current = self;
-        for segment in &path.0 {
-            current = match (current, segment) {
-                (Self::Not(inner), ExprPathSegment::Not) => inner,
-                (
-                    Self::HighAnd(items) | Self::Or(items) | Self::LowAnd(items),
-                    ExprPathSegment::Child(index),
-                ) => items.get_mut(*index)?,
-                _ => return None,
-            };
-        }
-        Some(current)
-    }
-
     /// Enumerates all node paths in the bracket-expression tree, including the root.
     #[must_use]
     pub fn enumerate_paths(&self) -> Vec<ExprPath> {
@@ -301,41 +309,9 @@ impl BracketExprTree {
     }
 }
 
+impl_expr_tree_path_accessors!(BondExprTree);
+
 impl BondExprTree {
-    /// Resolves one path inside the bond-expression tree.
-    #[must_use]
-    pub fn get(&self, path: &ExprPath) -> Option<&Self> {
-        let mut current = self;
-        for segment in &path.0 {
-            current = match (current, segment) {
-                (Self::Not(inner), ExprPathSegment::Not) => inner,
-                (
-                    Self::HighAnd(items) | Self::Or(items) | Self::LowAnd(items),
-                    ExprPathSegment::Child(index),
-                ) => items.get(*index)?,
-                _ => return None,
-            };
-        }
-        Some(current)
-    }
-
-    /// Resolves one mutable path inside the bond-expression tree.
-    #[must_use]
-    pub fn get_mut(&mut self, path: &ExprPath) -> Option<&mut Self> {
-        let mut current = self;
-        for segment in &path.0 {
-            current = match (current, segment) {
-                (Self::Not(inner), ExprPathSegment::Not) => inner,
-                (
-                    Self::HighAnd(items) | Self::Or(items) | Self::LowAnd(items),
-                    ExprPathSegment::Child(index),
-                ) => items.get_mut(*index)?,
-                _ => return None,
-            };
-        }
-        Some(current)
-    }
-
     /// Enumerates all node paths in the bond-expression tree, including the root.
     #[must_use]
     pub fn enumerate_paths(&self) -> Vec<ExprPath> {
