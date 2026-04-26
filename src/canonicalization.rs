@@ -924,7 +924,12 @@ fn canonical_atom_primitive(
             canonical_ring_primitive(query, AtomPrimitive::RingConnectivity)
         }
         AtomPrimitive::Hybridization(query) => {
-            AtomPrimitive::Hybridization(canonical_numeric_query(query))
+            let query = canonical_numeric_query(query);
+            if numeric_query_is_unbounded_from_zero(query) {
+                AtomPrimitive::Wildcard
+            } else {
+                AtomPrimitive::Hybridization(query)
+            }
         }
         AtomPrimitive::HeteroNeighbor(query) => {
             canonical_count_primitive(query, AtomPrimitive::HeteroNeighbor)
@@ -975,6 +980,16 @@ const fn optional_numeric_query_is_unbounded_from_zero(query: Option<NumericQuer
             min: None,
             max: None
         }))
+    )
+}
+
+const fn numeric_query_is_unbounded_from_zero(query: NumericQuery) -> bool {
+    matches!(
+        query,
+        NumericQuery::Range(NumericRange {
+            min: None,
+            max: None
+        })
     )
 }
 
@@ -7586,6 +7601,12 @@ mod tests {
         let source = "A@@o@~~~~~~,~~~~-~/,@@/;@/@~~~~~~,~~~~-~~,~~~~-@~Ac~@@~~-///:::::/I\n";
         assert_canonical_roundtrips(source);
         assert_all_atom_permutations_converge(source);
+    }
+
+    #[test]
+    fn canonicalize_handles_unbounded_hybridization_range_fuzz_artifact() {
+        assert_canonical_roundtrips("[^{0-}]");
+        assert_eq!(canonical_string("[^{0-}]"), "*");
     }
 
     #[test]

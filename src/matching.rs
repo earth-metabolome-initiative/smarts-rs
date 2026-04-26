@@ -2471,7 +2471,7 @@ fn query_matches_with_mapping_state<L: MatchLimiter>(
         }
     }
 
-    if mapped_count == 0 && component_search_supported(query) {
+    if mapped_count == 0 && query.has_component_constraints && component_search_supported(query) {
         return disconnected_component_search_matches(query, target, &mut context);
     }
 
@@ -3972,6 +3972,9 @@ fn search_mapping(
     context: &mut SearchContext<'_, impl MatchLimiter>,
     mapped_count: usize,
 ) -> bool {
+    if !context.continue_search() {
+        return false;
+    }
     if mapped_count == query.atom_count() {
         return compiled_query_stereo_constraints_match(
             context.compiled_query,
@@ -5108,6 +5111,7 @@ fn select_next_query_atom_for_target(
         core::cmp::Reverse(usize::MAX),
         0usize,
         0usize,
+        0usize,
         core::cmp::Reverse(usize::MAX),
     );
 
@@ -5124,9 +5128,15 @@ fn select_next_query_atom_for_target(
         } else {
             usize::MAX
         };
+        let component_size = context
+            .compiled_query
+            .query
+            .component_atoms(context.compiled_query.query.atoms()[query_atom].component)
+            .len();
         let key = (
             mapped_neighbors,
             core::cmp::Reverse(search_width_estimate),
+            component_size,
             context.query_atom_scores[query_atom],
             neighbors.len(),
             core::cmp::Reverse(query_atom),
@@ -6494,6 +6504,28 @@ mod tests {
             }),
             MatchLimitResult::Complete(false)
         );
+    }
+
+    #[test]
+    fn ungrouped_disconnected_wildcard_query_does_not_enumerate_all_component_embeddings() {
+        let query = QueryMol::from_str("*-***.*.*-***.*.***.***-*.****-*******").unwrap();
+        let target = PreparedTarget::new(
+            Smiles::from_str(
+                "C1CCN(C1)CCOC2=CC=C(C=C2)CC3=C(SC4=CC=CC=C43)C5=CC=C(C=C5)CCNCC6=CN=CC=C6",
+            )
+            .unwrap(),
+        );
+        let compiled = CompiledQuery::new(query).unwrap();
+        let mut scratch = MatchScratch::new();
+        let mut polls = 0usize;
+
+        assert!(matches!(
+            compiled.matches_with_scratch_and_interrupt(&target, &mut scratch, || {
+                polls += 1;
+                polls > 1_000
+            }),
+            MatchLimitResult::Complete(_)
+        ));
     }
 
     #[test]
