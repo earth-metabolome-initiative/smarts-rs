@@ -299,16 +299,22 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_bond_unary(&mut self) -> Result<BondExprTree, SmartsParseError> {
+        let mut negated = false;
+        while !self.is_eof() && self.peek() == '!' {
+            self.pos += 1;
+            negated = !negated;
+        }
+
         if self.is_eof() {
             return Err(self.error(SmartsParseErrorKind::UnexpectedEndOfInput));
         }
 
-        if self.peek() == '!' {
-            self.pos += 1;
-            return Ok(BondExprTree::Not(Box::new(self.parse_bond_unary()?)));
+        let tree = BondExprTree::Primitive(self.parse_bond_primitive()?);
+        if negated {
+            Ok(BondExprTree::Not(Box::new(tree)))
+        } else {
+            Ok(tree)
         }
-
-        Ok(BondExprTree::Primitive(self.parse_bond_primitive()?))
     }
 
     fn parse_bond_primitive(&mut self) -> Result<BondPrimitive, SmartsParseError> {
@@ -646,7 +652,7 @@ const fn starts_implicit_bond_and(ch: char) -> bool {
 mod tests {
     use super::*;
     use crate::bracket::parse_bracket_text;
-    use alloc::string::ToString;
+    use alloc::{format, string::ToString};
 
     #[test]
     fn helper_functions_cover_internal_bond_and_atom_map_logic() {
@@ -695,6 +701,15 @@ mod tests {
         }
         assert!(!is_supported_explicit_bond_char('C'));
         assert!(!starts_implicit_bond_and('C'));
+    }
+
+    #[test]
+    fn parses_deep_bond_negation_chains_without_recursing() {
+        let even = format!("C{}-C", "!".repeat(50_000));
+        let odd = format!("C{}-C", "!".repeat(50_001));
+
+        assert_eq!(parse_smarts(&even).unwrap().to_string(), "C-C");
+        assert_eq!(parse_smarts(&odd).unwrap().to_string(), "C!-C");
     }
 
     #[test]

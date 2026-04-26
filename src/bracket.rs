@@ -138,16 +138,24 @@ impl<'a> BracketParser<'a> {
         &mut self,
         allow_hydrogen_symbol: bool,
     ) -> Result<BracketExprTree, BracketParseError> {
+        let mut negated = false;
+        let mut saw_negation = false;
+        while !self.is_eof() && self.peek() == '!' {
+            self.pos += 1;
+            negated = !negated;
+            saw_negation = true;
+        }
+
         if self.is_eof() {
             return Err(self.error(BracketParseErrorKind::UnexpectedEnd));
         }
 
-        if self.peek() == '!' {
-            self.pos += 1;
-            return Ok(BracketExprTree::Not(Box::new(self.parse_unary(false)?)));
+        let tree = self.parse_primitive(allow_hydrogen_symbol && !saw_negation)?;
+        if negated {
+            Ok(BracketExprTree::Not(Box::new(tree)))
+        } else {
+            Ok(tree)
         }
-
-        self.parse_primitive(allow_hydrogen_symbol)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -948,6 +956,15 @@ mod tests {
             charge.tree,
             BracketExprTree::Primitive(AtomPrimitive::Charge(2))
         );
+    }
+
+    #[test]
+    fn parses_deep_negation_chains_without_recursing() {
+        let even = format!("{}#6", "!".repeat(50_000));
+        let odd = format!("{}#6", "!".repeat(50_001));
+
+        assert_eq!(parse_bracket_text(&even).unwrap().to_string(), "#6");
+        assert_eq!(parse_bracket_text(&odd).unwrap().to_string(), "!#6");
     }
 
     #[test]
