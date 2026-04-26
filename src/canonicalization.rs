@@ -1318,8 +1318,11 @@ fn factor_common_bracket_conjunction_disjunction_terms(items: &mut Vec<BracketEx
                 continue;
             }
 
-            let replacement =
-                factor_bracket_disjunction_pair(&left_alternatives, &right_alternatives, common);
+            let Some(replacement) =
+                factor_bracket_disjunction_pair(&left_alternatives, &right_alternatives, common)
+            else {
+                continue;
+            };
             items.remove(right_index);
             items.remove(left_index);
             items.push(replacement);
@@ -1334,11 +1337,11 @@ fn factor_bracket_disjunction_pair(
     left_alternatives: &[BracketExprTree],
     right_alternatives: &[BracketExprTree],
     mut common: Vec<BracketExprTree>,
-) -> BracketExprTree {
+) -> Option<BracketExprTree> {
     let left_remainder = disjunction_remainder(left_alternatives, &common);
     let right_remainder = disjunction_remainder(right_alternatives, &common);
     if left_remainder.is_empty() || right_remainder.is_empty() {
-        return simplify_bracket_or(common);
+        return Some(simplify_bracket_or(common));
     }
 
     let remainder = simplify_bracket_and(
@@ -1348,10 +1351,13 @@ fn factor_bracket_disjunction_pair(
         ],
         BracketAndKind::Low,
     );
+    if matches!(remainder, BracketExprTree::LowAnd(_)) {
+        return None;
+    }
     if !is_false_bracket_tree(&remainder) {
         common.push(remainder);
     }
-    simplify_bracket_or(common)
+    Some(simplify_bracket_or(common))
 }
 
 fn remove_redundant_bracket_conjunction_consensus_terms(items: &mut Vec<BracketExprTree>) -> bool {
@@ -1449,6 +1455,9 @@ fn distribute_bracket_conjunction_term_into_disjunction(items: &mut Vec<BracketE
                 continue;
             }
             let term = items[term_index].clone();
+            if matches!(term, BracketExprTree::Or(_)) {
+                continue;
+            }
             let implied_by_alternative = alternatives
                 .iter()
                 .map(|alternative| bracket_tree_implies(alternative, &term))
@@ -2643,6 +2652,7 @@ fn simplify_bracket_or(items: Vec<BracketExprTree>) -> BracketExprTree {
         .into_iter()
         .map(simplify_bracket_tree)
         .collect::<Vec<_>>();
+    flatten_bracket_or_items(&mut items);
     if items.len() > 1 {
         items.retain(|item| !is_false_bracket_tree(item));
     }
@@ -2674,6 +2684,9 @@ fn simplify_bracket_or(items: Vec<BracketExprTree>) -> BracketExprTree {
         return simplify_bracket_tree(factored);
     }
     remove_absorbed_bracket_disjunction_terms(&mut items);
+    if let Some(distributed) = distribute_low_precedence_bracket_disjunction(&items) {
+        return distributed;
+    }
     items.sort_by_cached_key(BracketExprTree::to_string);
     items.dedup();
     match items.as_slice() {
@@ -2681,6 +2694,51 @@ fn simplify_bracket_or(items: Vec<BracketExprTree>) -> BracketExprTree {
         [single] => single.clone(),
         _ => BracketExprTree::Or(items),
     }
+}
+
+fn flatten_bracket_or_items(items: &mut Vec<BracketExprTree>) -> bool {
+    let mut flattened = Vec::with_capacity(items.len());
+    let mut changed = false;
+    for item in items.drain(..) {
+        if let BracketExprTree::Or(children) = item {
+            changed = true;
+            flattened.extend(children);
+        } else {
+            flattened.push(item);
+        }
+    }
+    *items = flattened;
+    changed
+}
+
+fn distribute_low_precedence_bracket_disjunction(
+    items: &[BracketExprTree],
+) -> Option<BracketExprTree> {
+    let (distributed_index, terms) =
+        items
+            .iter()
+            .enumerate()
+            .find_map(|(index, item)| match item {
+                BracketExprTree::LowAnd(terms) => Some((index, terms)),
+                _ => None,
+            })?;
+
+    let rest = items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| (index != distributed_index).then_some(item.clone()))
+        .collect::<Vec<_>>();
+    let factors = terms
+        .iter()
+        .map(|term| {
+            let mut alternatives = rest.clone();
+            alternatives.push(term.clone());
+            flatten_bracket_or_items(&mut alternatives);
+            simplify_bracket_or(alternatives)
+        })
+        .collect::<Vec<_>>();
+
+    Some(simplify_bracket_and(factors, BracketAndKind::Low))
 }
 
 fn synthesize_atomic_number_disjunctions(items: &mut Vec<BracketExprTree>) {
@@ -3991,7 +4049,8 @@ fn canonical_bond_expr(expr: &BondExpr) -> BondExpr {
                 normalize_bond_tree(&mut canonical)
                     .unwrap_or_else(|_| unreachable!("parsed SMARTS expressions are never empty"));
             }
-            let flipped = flip_directional_bond_tree(canonical.clone());
+            let flipped =
+                simplified_normalized_bond_tree(flip_directional_bond_tree(canonical.clone()));
             let canonical_string = canonical.to_string();
             let flipped_string = flipped.to_string();
             let chosen = if flipped_string < canonical_string {
@@ -4002,6 +4061,13 @@ fn canonical_bond_expr(expr: &BondExpr) -> BondExpr {
             BondExpr::Query(chosen)
         }
     }
+}
+
+fn simplified_normalized_bond_tree(tree: BondExprTree) -> BondExprTree {
+    let mut simplified = simplify_bond_tree(tree);
+    normalize_bond_tree(&mut simplified)
+        .unwrap_or_else(|_| unreachable!("parsed SMARTS expressions are never empty"));
+    simplified
 }
 
 fn bond_tree_contains_direction(tree: &BondExprTree, direction: Bond) -> bool {
@@ -4168,6 +4234,7 @@ fn simplify_bond_or(items: Vec<BondExprTree>) -> BondExprTree {
         .into_iter()
         .map(simplify_bond_tree)
         .collect::<Vec<_>>();
+    flatten_bond_or_items(&mut items);
     if items.len() > 1 {
         items.retain(|item| !is_false_bond_tree(item));
     }
@@ -4187,6 +4254,9 @@ fn simplify_bond_or(items: Vec<BondExprTree>) -> BondExprTree {
     while remove_redundant_bond_disjunction_consensus_terms(&mut items) {}
     while relax_absorbed_bond_disjunction_conjunction_alternatives(&mut items) {}
     remove_absorbed_bond_disjunction_terms(&mut items);
+    if let Some(distributed) = distribute_low_precedence_bond_disjunction(&items) {
+        return distributed;
+    }
     items.sort_by_cached_key(BondExprTree::to_string);
     items.dedup();
     match items.as_slice() {
@@ -4194,6 +4264,49 @@ fn simplify_bond_or(items: Vec<BondExprTree>) -> BondExprTree {
         [single] => single.clone(),
         _ => BondExprTree::Or(items),
     }
+}
+
+fn flatten_bond_or_items(items: &mut Vec<BondExprTree>) -> bool {
+    let mut flattened = Vec::with_capacity(items.len());
+    let mut changed = false;
+    for item in items.drain(..) {
+        if let BondExprTree::Or(children) = item {
+            changed = true;
+            flattened.extend(children);
+        } else {
+            flattened.push(item);
+        }
+    }
+    *items = flattened;
+    changed
+}
+
+fn distribute_low_precedence_bond_disjunction(items: &[BondExprTree]) -> Option<BondExprTree> {
+    let (distributed_index, terms) =
+        items
+            .iter()
+            .enumerate()
+            .find_map(|(index, item)| match item {
+                BondExprTree::LowAnd(terms) => Some((index, terms)),
+                _ => None,
+            })?;
+
+    let rest = items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| (index != distributed_index).then_some(item.clone()))
+        .collect::<Vec<_>>();
+    let factors = terms
+        .iter()
+        .map(|term| {
+            let mut alternatives = rest.clone();
+            alternatives.push(term.clone());
+            flatten_bond_or_items(&mut alternatives);
+            simplify_bond_or(alternatives)
+        })
+        .collect::<Vec<_>>();
+
+    Some(simplify_bond_and(factors, BondAndKind::Low))
 }
 
 fn false_bond_tree() -> BondExprTree {
@@ -4259,8 +4372,11 @@ fn factor_common_bond_conjunction_disjunction_terms(items: &mut Vec<BondExprTree
                 continue;
             }
 
-            let replacement =
-                factor_bond_disjunction_pair(&left_alternatives, &right_alternatives, common);
+            let Some(replacement) =
+                factor_bond_disjunction_pair(&left_alternatives, &right_alternatives, common)
+            else {
+                continue;
+            };
             items.remove(right_index);
             items.remove(left_index);
             items.push(replacement);
@@ -4275,11 +4391,11 @@ fn factor_bond_disjunction_pair(
     left_alternatives: &[BondExprTree],
     right_alternatives: &[BondExprTree],
     mut common: Vec<BondExprTree>,
-) -> BondExprTree {
+) -> Option<BondExprTree> {
     let left_remainder = disjunction_remainder(left_alternatives, &common);
     let right_remainder = disjunction_remainder(right_alternatives, &common);
     if left_remainder.is_empty() || right_remainder.is_empty() {
-        return simplify_bond_or(common);
+        return Some(simplify_bond_or(common));
     }
 
     let remainder = simplify_bond_and(
@@ -4289,10 +4405,13 @@ fn factor_bond_disjunction_pair(
         ],
         BondAndKind::Low,
     );
+    if matches!(remainder, BondExprTree::LowAnd(_)) {
+        return None;
+    }
     if !is_false_bond_tree(&remainder) {
         common.push(remainder);
     }
-    simplify_bond_or(common)
+    Some(simplify_bond_or(common))
 }
 
 fn remove_redundant_bond_conjunction_consensus_terms(items: &mut Vec<BondExprTree>) -> bool {
@@ -4334,6 +4453,9 @@ fn distribute_bond_conjunction_term_into_disjunction(items: &mut Vec<BondExprTre
                 continue;
             }
             let term = items[term_index].clone();
+            if matches!(term, BondExprTree::Or(_)) {
+                continue;
+            }
             let implied_by_alternative = alternatives
                 .iter()
                 .map(|alternative| bond_tree_implies(alternative, &term))
@@ -5608,6 +5730,16 @@ mod tests {
             .unwrap()
             .canonicalize()
             .to_string()
+    }
+
+    fn assert_canonical_roundtrips(source: &str) {
+        let query = QueryMol::from_str(source).unwrap();
+        let canonical = query.canonicalize();
+        let rendered = canonical.to_string();
+        let reparsed = QueryMol::from_str(&rendered).unwrap();
+        assert_eq!(rendered, query.to_canonical_smarts());
+        assert_eq!(canonical, reparsed.canonicalize());
+        assert_eq!(rendered, reparsed.to_canonical_smarts());
     }
 
     fn all_permutations(items: &[usize]) -> Vec<Vec<usize>> {
@@ -6886,6 +7018,16 @@ mod tests {
         assert_eq!(canonical.component_count(), query.component_count());
         assert_eq!(rendered, canonical.to_canonical_smarts());
         assert_eq!(canonical, reparsed_canonical);
+    }
+
+    #[test]
+    fn canonicalize_handles_low_and_disjunction_display_fuzz_artifact() {
+        assert_canonical_roundtrips("F[!r12rSr,b]");
+    }
+
+    #[test]
+    fn canonicalize_handles_directional_disjunction_roundtrip_fuzz_artifact() {
+        assert_canonical_roundtrips("A@@/;@;/@~~~~~~,~~~~~~A:::~~,~~~~~-~,~~@/&\\,@/;/&\\,@I\n");
     }
 
     #[test]
