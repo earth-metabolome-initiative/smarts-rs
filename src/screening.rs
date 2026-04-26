@@ -1442,33 +1442,27 @@ impl TargetCorpusIndex {
             );
         }
 
-        scratch.edge_touched_targets.clear();
-        if scratch.edge_count_by_target.len() != self.screens.len() {
-            scratch.edge_count_by_target.clear();
-            scratch.edge_count_by_target.resize(self.screens.len(), 0);
-        }
+        prepare_sparse_candidate_counts(
+            self.screens.len(),
+            &mut scratch.edge_count_by_target,
+            &mut scratch.edge_touched_targets,
+        );
 
         self.collect_edge_domain_matches(query_feature, scratch);
         self.accumulate_indexed_edge_matches(query_feature, scratch, active_candidate_mask);
 
-        let population = finalize_sparse_candidate_mask(
+        finalize_cached_sparse_candidate_mask(
             self.screens.len(),
+            query_feature,
             required_count,
-            &mut scratch.edge_count_by_target,
-            &scratch.edge_touched_targets,
-            &mut scratch.edge_candidate_mask,
-        );
-        if active_candidate_mask.is_none() {
-            scratch.edge_mask_cache.insert(
-                (query_feature, required_count),
-                CachedFeatureMask {
-                    population,
-                    words: scratch.edge_candidate_mask.clone().into_boxed_slice(),
-                },
-            );
-        }
-
-        population
+            active_candidate_mask,
+            SparseCandidateMaskBuffers {
+                cache: &mut scratch.edge_mask_cache,
+                count_by_target: scratch.edge_count_by_target.as_mut_slice(),
+                touched_targets: &scratch.edge_touched_targets,
+                candidate_mask: &mut scratch.edge_candidate_mask,
+            },
+        )
     }
 
     fn collect_edge_domain_matches(
@@ -1529,24 +1523,12 @@ impl TargetCorpusIndex {
             &mut scratch.edge_feature_component_mask,
         );
 
-        if reverse_has_candidates {
-            if forward_has_candidates {
-                for (dst, src) in scratch
-                    .edge_feature_candidate_mask
-                    .iter_mut()
-                    .zip(&scratch.edge_feature_reverse_mask)
-                {
-                    *dst |= *src;
-                }
-            } else {
-                scratch.edge_feature_candidate_mask.clear();
-                scratch
-                    .edge_feature_candidate_mask
-                    .extend_from_slice(&scratch.edge_feature_reverse_mask);
-            }
-        } else if !forward_has_candidates {
-            scratch.edge_feature_candidate_mask.clear();
-        }
+        merge_reversible_feature_mask(
+            forward_has_candidates,
+            reverse_has_candidates,
+            &mut scratch.edge_feature_candidate_mask,
+            &scratch.edge_feature_reverse_mask,
+        );
 
         accumulate_feature_id_mask_counts(
             &self.indexed_edge_feature_count_index,
@@ -1578,33 +1560,27 @@ impl TargetCorpusIndex {
             );
         }
 
-        scratch.path3_touched_targets.clear();
-        if scratch.path3_count_by_target.len() != self.screens.len() {
-            scratch.path3_count_by_target.clear();
-            scratch.path3_count_by_target.resize(self.screens.len(), 0);
-        }
+        prepare_sparse_candidate_counts(
+            self.screens.len(),
+            &mut scratch.path3_count_by_target,
+            &mut scratch.path3_touched_targets,
+        );
 
         self.collect_path3_domain_matches(query_feature, scratch);
         self.accumulate_indexed_path3_matches(query_feature, scratch, active_candidate_mask);
 
-        let population = finalize_sparse_candidate_mask(
+        finalize_cached_sparse_candidate_mask(
             self.screens.len(),
+            query_feature,
             required_count,
-            &mut scratch.path3_count_by_target,
-            &scratch.path3_touched_targets,
-            &mut scratch.path3_candidate_mask,
-        );
-        if active_candidate_mask.is_none() {
-            scratch.path3_mask_cache.insert(
-                (query_feature, required_count),
-                CachedFeatureMask {
-                    population,
-                    words: scratch.path3_candidate_mask.clone().into_boxed_slice(),
-                },
-            );
-        }
-
-        population
+            active_candidate_mask,
+            SparseCandidateMaskBuffers {
+                cache: &mut scratch.path3_mask_cache,
+                count_by_target: scratch.path3_count_by_target.as_mut_slice(),
+                touched_targets: &scratch.path3_touched_targets,
+                candidate_mask: &mut scratch.path3_candidate_mask,
+            },
+        )
     }
 
     fn collect_path3_domain_matches(
@@ -1683,24 +1659,12 @@ impl TargetCorpusIndex {
             &mut scratch.path3_feature_component_mask,
         );
 
-        if reverse_has_candidates {
-            if forward_has_candidates {
-                for (dst, src) in scratch
-                    .path3_feature_candidate_mask
-                    .iter_mut()
-                    .zip(&scratch.path3_feature_reverse_mask)
-                {
-                    *dst |= *src;
-                }
-            } else {
-                scratch.path3_feature_candidate_mask.clear();
-                scratch
-                    .path3_feature_candidate_mask
-                    .extend_from_slice(&scratch.path3_feature_reverse_mask);
-            }
-        } else if !forward_has_candidates {
-            scratch.path3_feature_candidate_mask.clear();
-        }
+        merge_reversible_feature_mask(
+            forward_has_candidates,
+            reverse_has_candidates,
+            &mut scratch.path3_feature_candidate_mask,
+            &scratch.path3_feature_reverse_mask,
+        );
 
         accumulate_feature_id_mask_counts(
             &self.indexed_path3_feature_count_index,
@@ -1732,33 +1696,27 @@ impl TargetCorpusIndex {
             );
         }
 
-        scratch.path4_touched_targets.clear();
-        if scratch.path4_count_by_target.len() != self.screens.len() {
-            scratch.path4_count_by_target.clear();
-            scratch.path4_count_by_target.resize(self.screens.len(), 0);
-        }
+        prepare_sparse_candidate_counts(
+            self.screens.len(),
+            &mut scratch.path4_count_by_target,
+            &mut scratch.path4_touched_targets,
+        );
 
         self.collect_path4_domain_matches(query_feature, scratch);
         self.accumulate_indexed_path4_matches(query_feature, scratch, active_candidate_mask);
 
-        let population = finalize_sparse_candidate_mask(
+        finalize_cached_sparse_candidate_mask(
             self.screens.len(),
+            query_feature,
             required_count,
-            &mut scratch.path4_count_by_target,
-            &scratch.path4_touched_targets,
-            &mut scratch.path4_candidate_mask,
-        );
-        if active_candidate_mask.is_none() {
-            scratch.path4_mask_cache.insert(
-                (query_feature, required_count),
-                CachedFeatureMask {
-                    population,
-                    words: scratch.path4_candidate_mask.clone().into_boxed_slice(),
-                },
-            );
-        }
-
-        population
+            active_candidate_mask,
+            SparseCandidateMaskBuffers {
+                cache: &mut scratch.path4_mask_cache,
+                count_by_target: scratch.path4_count_by_target.as_mut_slice(),
+                touched_targets: &scratch.path4_touched_targets,
+                candidate_mask: &mut scratch.path4_candidate_mask,
+            },
+        )
     }
 
     fn collect_path4_domain_matches(
@@ -1855,24 +1813,12 @@ impl TargetCorpusIndex {
             &mut scratch.path4_feature_component_mask,
         );
 
-        if reverse_has_candidates {
-            if forward_has_candidates {
-                for (dst, src) in scratch
-                    .path4_feature_candidate_mask
-                    .iter_mut()
-                    .zip(&scratch.path4_feature_reverse_mask)
-                {
-                    *dst |= *src;
-                }
-            } else {
-                scratch.path4_feature_candidate_mask.clear();
-                scratch
-                    .path4_feature_candidate_mask
-                    .extend_from_slice(&scratch.path4_feature_reverse_mask);
-            }
-        } else if !forward_has_candidates {
-            scratch.path4_feature_candidate_mask.clear();
-        }
+        merge_reversible_feature_mask(
+            forward_has_candidates,
+            reverse_has_candidates,
+            &mut scratch.path4_feature_candidate_mask,
+            &scratch.path4_feature_reverse_mask,
+        );
 
         accumulate_feature_id_mask_counts(
             &self.indexed_path4_feature_count_index,
@@ -1904,33 +1850,27 @@ impl TargetCorpusIndex {
             );
         }
 
-        scratch.star3_touched_targets.clear();
-        if scratch.star3_count_by_target.len() != self.screens.len() {
-            scratch.star3_count_by_target.clear();
-            scratch.star3_count_by_target.resize(self.screens.len(), 0);
-        }
+        prepare_sparse_candidate_counts(
+            self.screens.len(),
+            &mut scratch.star3_count_by_target,
+            &mut scratch.star3_touched_targets,
+        );
 
         self.collect_star3_domain_matches(query_feature, scratch);
         self.accumulate_indexed_star3_matches(query_feature, scratch, active_candidate_mask);
 
-        let population = finalize_sparse_candidate_mask(
+        finalize_cached_sparse_candidate_mask(
             self.screens.len(),
+            query_feature,
             required_count,
-            &mut scratch.star3_count_by_target,
-            &scratch.star3_touched_targets,
-            &mut scratch.star3_candidate_mask,
-        );
-        if active_candidate_mask.is_none() {
-            scratch.star3_mask_cache.insert(
-                (query_feature, required_count),
-                CachedFeatureMask {
-                    population,
-                    words: scratch.star3_candidate_mask.clone().into_boxed_slice(),
-                },
-            );
-        }
-
-        population
+            active_candidate_mask,
+            SparseCandidateMaskBuffers {
+                cache: &mut scratch.star3_mask_cache,
+                count_by_target: scratch.star3_count_by_target.as_mut_slice(),
+                touched_targets: &scratch.star3_touched_targets,
+                candidate_mask: &mut scratch.star3_candidate_mask,
+            },
+        )
     }
 
     fn collect_star3_domain_matches(
@@ -2170,6 +2110,18 @@ fn accumulate_sparse_counts(
     }
 }
 
+fn prepare_sparse_candidate_counts(
+    target_count: usize,
+    count_by_target: &mut Vec<u16>,
+    touched_targets: &mut Vec<usize>,
+) {
+    touched_targets.clear();
+    if count_by_target.len() != target_count {
+        count_by_target.clear();
+        count_by_target.resize(target_count, 0);
+    }
+}
+
 fn finalize_sparse_candidate_mask(
     target_count: usize,
     required_count: u16,
@@ -2191,6 +2143,46 @@ fn finalize_sparse_candidate_mask(
             population += 1;
         }
         count_by_target[target_id] = 0;
+    }
+
+    population
+}
+
+struct SparseCandidateMaskBuffers<'a, T> {
+    cache: &'a mut BTreeMap<(T, u16), CachedFeatureMask>,
+    count_by_target: &'a mut [u16],
+    touched_targets: &'a [usize],
+    candidate_mask: &'a mut Vec<u64>,
+}
+
+fn finalize_cached_sparse_candidate_mask<T: Copy + Ord>(
+    target_count: usize,
+    query_feature: T,
+    required_count: u16,
+    active_candidate_mask: Option<&[u64]>,
+    buffers: SparseCandidateMaskBuffers<'_, T>,
+) -> usize {
+    let SparseCandidateMaskBuffers {
+        cache,
+        count_by_target,
+        touched_targets,
+        candidate_mask,
+    } = buffers;
+    let population = finalize_sparse_candidate_mask(
+        target_count,
+        required_count,
+        count_by_target,
+        touched_targets,
+        candidate_mask,
+    );
+    if active_candidate_mask.is_none() {
+        cache.insert(
+            (query_feature, required_count),
+            CachedFeatureMask {
+                population,
+                words: candidate_mask.clone().into_boxed_slice(),
+            },
+        );
     }
 
     population
@@ -2225,6 +2217,26 @@ fn load_cached_candidate_mask(
         population += word.count_ones() as usize;
     }
     population
+}
+
+fn merge_reversible_feature_mask(
+    forward_has_candidates: bool,
+    reverse_has_candidates: bool,
+    candidate_mask: &mut Vec<u64>,
+    reverse_mask: &[u64],
+) {
+    if reverse_has_candidates {
+        if forward_has_candidates {
+            for (dst, src) in candidate_mask.iter_mut().zip(reverse_mask) {
+                *dst |= *src;
+            }
+        } else {
+            candidate_mask.clear();
+            candidate_mask.extend_from_slice(reverse_mask);
+        }
+    } else if !forward_has_candidates {
+        candidate_mask.clear();
+    }
 }
 
 fn find_count_index<'a, T: Ord>(

@@ -5735,10 +5735,17 @@ mod tests {
     fn assert_canonical_roundtrips(source: &str) {
         let query = QueryMol::from_str(source).unwrap();
         let canonical = query.canonicalize();
+        let recanonicalized = canonical.canonicalize();
         let rendered = canonical.to_string();
         let reparsed = QueryMol::from_str(&rendered).unwrap();
+        let reparsed_canonical = reparsed.canonicalize();
+        assert_eq!(canonical, recanonicalized);
+        assert!(canonical.is_canonical());
+        assert_eq!(canonical.atom_count(), query.atom_count());
+        assert_eq!(canonical.bond_count(), query.bond_count());
+        assert_eq!(canonical.component_count(), query.component_count());
         assert_eq!(rendered, query.to_canonical_smarts());
-        assert_eq!(canonical, reparsed.canonicalize());
+        assert_eq!(canonical, reparsed_canonical);
         assert_eq!(rendered, reparsed.to_canonical_smarts());
     }
 
@@ -6699,35 +6706,14 @@ mod tests {
 
     #[test]
     fn canonicalize_handles_disconnected_sulfur_rich_fuzz_artifact() {
-        let query = QueryMol::from_str(
+        assert_canonical_roundtrips(
             "CCCC.OCCCSSSSSSSSSSCC.CCC.OCCCC.CCC.OCCCSSSSSSSSSSCCSOSSSSSSSSSCC.OCOC",
-        )
-        .unwrap();
-
-        let canonical = query.canonicalize();
-        let rendered = canonical.to_string();
-        let reparsed = QueryMol::from_str(&rendered).unwrap();
-
-        assert!(canonical.is_canonical());
-        assert_eq!(canonical.atom_count(), query.atom_count());
-        assert_eq!(canonical.bond_count(), query.bond_count());
-        assert_eq!(canonical.component_count(), query.component_count());
-        assert_eq!(canonical, reparsed.canonicalize());
+        );
     }
 
     #[test]
     fn canonicalize_handles_recursive_high_and_fuzz_artifact() {
-        let query = QueryMol::from_str("[$(COcccccccc)]([RRRRRRRRRSmRR+])").unwrap();
-
-        let canonical = query.canonicalize();
-        let rendered = canonical.to_string();
-        let reparsed = QueryMol::from_str(&rendered).unwrap();
-
-        assert!(canonical.is_canonical());
-        assert_eq!(canonical.atom_count(), query.atom_count());
-        assert_eq!(canonical.bond_count(), query.bond_count());
-        assert_eq!(canonical.component_count(), query.component_count());
-        assert_eq!(canonical, reparsed.canonicalize());
+        assert_canonical_roundtrips("[$(COcccccccc)]([RRRRRRRRRSmRR+])");
     }
 
     #[test]
@@ -6741,33 +6727,12 @@ mod tests {
             93, 79, 46, 79, 80, 64, 65, 65, 67, 67, 65, 65, 65, 65,
         ])
         .unwrap();
-        let query = QueryMol::from_str(&source).unwrap();
-
-        let canonical = query.canonicalize();
-        let rendered = canonical.to_string();
-        let reparsed = QueryMol::from_str(&rendered).unwrap();
-
-        assert!(canonical.is_canonical());
-        assert_eq!(canonical.atom_count(), query.atom_count());
-        assert_eq!(canonical.bond_count(), query.bond_count());
-        assert_eq!(canonical.component_count(), query.component_count());
-        assert_eq!(canonical, reparsed.canonicalize());
+        assert_canonical_roundtrips(&source);
     }
 
     #[test]
     fn canonicalize_handles_recursive_component_oom_fuzz_artifact() {
-        let query = QueryMol::from_str("[$(Cs[$(*.sO)]O.OO)]O.O").unwrap();
-
-        let canonical = query.canonicalize();
-        let rendered = canonical.to_string();
-        let reparsed = QueryMol::from_str(&rendered).unwrap();
-
-        assert!(canonical.is_canonical());
-        assert_eq!(canonical.atom_count(), query.atom_count());
-        assert_eq!(canonical.bond_count(), query.bond_count());
-        assert_eq!(canonical.component_count(), query.component_count());
-        assert_eq!(rendered, canonical.to_canonical_smarts());
-        assert_eq!(canonical, reparsed.canonicalize());
+        assert_canonical_roundtrips("[$(Cs[$(*.sO)]O.OO)]O.O");
     }
 
     #[test]
@@ -6779,245 +6744,73 @@ mod tests {
             0x5d, 0x0a,
         ])
         .unwrap();
-        let query = QueryMol::from_str(source.trim_end()).unwrap();
-
-        let canonical = query.canonicalize();
-        let rendered = canonical.to_string();
-        let reparsed = QueryMol::from_str(&rendered).unwrap();
-
-        assert!(canonical.is_canonical());
-        assert_eq!(canonical.atom_count(), query.atom_count());
-        assert_eq!(canonical.bond_count(), query.bond_count());
-        assert_eq!(canonical.component_count(), query.component_count());
-        assert_eq!(rendered, canonical.to_canonical_smarts());
-        assert_eq!(canonical, reparsed.canonicalize());
+        assert_canonical_roundtrips(source.trim_end());
     }
 
     #[test]
     fn canonicalize_handles_recursive_disconnected_triple_oom_fuzz_artifact() {
-        let query = QueryMol::from_str("[$(C#[$(CsO)].OO)]O.O").unwrap();
-
-        let canonical = query.canonicalize();
-        let rendered = canonical.to_string();
-        let reparsed = QueryMol::from_str(&rendered).unwrap();
-
-        assert!(canonical.is_canonical());
-        assert_eq!(canonical.atom_count(), query.atom_count());
-        assert_eq!(canonical.bond_count(), query.bond_count());
-        assert_eq!(canonical.component_count(), query.component_count());
-        assert_eq!(rendered, canonical.to_canonical_smarts());
-        assert_eq!(canonical, reparsed.canonicalize());
+        assert_canonical_roundtrips("[$(C#[$(CsO)].OO)]O.O");
     }
 
     #[test]
     fn canonicalize_handles_duplicate_wildcard_bracket_fuzz_artifact() {
         let source = String::from_utf8(vec![0x5b, 0x2a, 0x2a, 0x5d, 0x0c, 0x43]).unwrap();
-        let query = QueryMol::from_str(&source).unwrap();
-
-        let canonical = query.canonicalize();
-        let rendered = canonical.to_string();
-        let reparsed = QueryMol::from_str(&rendered).unwrap();
-
-        assert!(canonical.is_canonical());
-        assert_eq!(canonical.atom_count(), query.atom_count());
-        assert_eq!(canonical.bond_count(), query.bond_count());
-        assert_eq!(canonical.component_count(), query.component_count());
-        assert_eq!(rendered, canonical.to_canonical_smarts());
-        assert_eq!(canonical, reparsed.canonicalize());
+        assert_canonical_roundtrips(&source);
     }
 
     #[test]
     fn canonicalize_handles_unpaired_directional_single_bond_fuzz_artifact() {
-        let query = QueryMol::from_str("C/C").unwrap();
-
-        let canonical = query.canonicalize();
-        let rendered = canonical.to_string();
-        let reparsed = QueryMol::from_str(&rendered).unwrap();
-
-        assert!(canonical.is_canonical());
-        assert_eq!(canonical.atom_count(), query.atom_count());
-        assert_eq!(canonical.bond_count(), query.bond_count());
-        assert_eq!(canonical.component_count(), query.component_count());
-        assert_eq!(rendered, canonical.to_canonical_smarts());
-        assert_eq!(canonical, reparsed.canonicalize());
+        assert_canonical_roundtrips("C/C");
     }
 
     #[test]
     fn canonicalize_handles_repeated_directional_single_bond_fuzz_artifact() {
-        let query = QueryMol::from_str("CC//C").unwrap();
-
-        let canonical = query.canonicalize();
-        let rendered = canonical.to_string();
-        let reparsed = QueryMol::from_str(&rendered).unwrap();
-
-        assert!(canonical.is_canonical());
-        assert_eq!(canonical.atom_count(), query.atom_count());
-        assert_eq!(canonical.bond_count(), query.bond_count());
-        assert_eq!(canonical.component_count(), query.component_count());
-        assert_eq!(rendered, canonical.to_canonical_smarts());
-        assert_eq!(canonical, reparsed.canonicalize());
+        assert_canonical_roundtrips("CC//C");
     }
 
     #[test]
     fn canonicalize_handles_directional_single_bond_conjunction_fuzz_artifact() {
-        let query = QueryMol::from_str(r"C\;-O\O/n").unwrap();
-
-        let canonical = query.canonicalize();
-        let recanonicalized = canonical.canonicalize();
-        let rendered = canonical.to_string();
-        let reparsed = QueryMol::from_str(&rendered).unwrap();
-
-        assert_eq!(canonical, recanonicalized);
-        assert!(canonical.is_canonical());
-        assert_eq!(canonical.atom_count(), query.atom_count());
-        assert_eq!(canonical.bond_count(), query.bond_count());
-        assert_eq!(canonical.component_count(), query.component_count());
-        assert_eq!(rendered, canonical.to_canonical_smarts());
-        assert_eq!(canonical, reparsed.canonicalize());
+        assert_canonical_roundtrips(r"C\;-O\O/n");
     }
 
     #[test]
     fn canonicalize_handles_lone_bracket_hydrogen_fuzz_artifact() {
-        let query = QueryMol::from_str("C. [*H].O").unwrap();
-
-        let canonical = query.canonicalize();
-        let rendered = canonical.to_string();
-        let reparsed = QueryMol::from_str(&rendered).unwrap();
-
-        assert!(canonical.is_canonical());
-        assert_eq!(canonical.atom_count(), query.atom_count());
-        assert_eq!(canonical.bond_count(), query.bond_count());
-        assert_eq!(canonical.component_count(), query.component_count());
-        assert_eq!(rendered, canonical.to_canonical_smarts());
-        assert_eq!(canonical, reparsed.canonicalize());
+        assert_canonical_roundtrips("C. [*H].O");
     }
 
     #[test]
     fn canonicalize_handles_repeated_ring_bond_conjunction_fuzz_artifact() {
-        let query = QueryMol::from_str(r"CC\--@@@@NCC").unwrap();
-
-        let canonical = query.canonicalize();
-        let recanonicalized = canonical.canonicalize();
-        let rendered = canonical.to_string();
-        let reparsed = QueryMol::from_str(&rendered).unwrap();
-
-        assert_eq!(canonical, recanonicalized);
-        assert!(canonical.is_canonical());
-        assert_eq!(canonical.atom_count(), query.atom_count());
-        assert_eq!(canonical.bond_count(), query.bond_count());
-        assert_eq!(canonical.component_count(), query.component_count());
-        assert_eq!(rendered, canonical.to_canonical_smarts());
-        assert_eq!(canonical, reparsed.canonicalize());
+        assert_canonical_roundtrips(r"CC\--@@@@NCC");
     }
 
     #[test]
     fn canonicalize_handles_negated_directional_single_bond_fuzz_artifact() {
-        let query = QueryMol::from_str("ACPaOCCCCCC!/CC").unwrap();
-
-        let canonical = query.canonicalize();
-        let recanonicalized = canonical.canonicalize();
-        let rendered = canonical.to_string();
-        let reparsed = QueryMol::from_str(&rendered).unwrap();
-
-        assert_eq!(canonical, recanonicalized);
-        assert!(canonical.is_canonical());
-        assert_eq!(canonical.atom_count(), query.atom_count());
-        assert_eq!(canonical.bond_count(), query.bond_count());
-        assert_eq!(canonical.component_count(), query.component_count());
-        assert_eq!(rendered, canonical.to_canonical_smarts());
-        assert_eq!(canonical, reparsed.canonicalize());
+        assert_canonical_roundtrips("ACPaOCCCCCC!/CC");
     }
 
     #[test]
     fn canonicalize_handles_recursive_hydrogen_bundle_fuzz_artifact() {
-        let query = QueryMol::from_str("[!$([N;Tm*H-;H-])]").unwrap();
-
-        let canonical = query.canonicalize();
-        let recanonicalized = canonical.canonicalize();
-        let rendered = canonical.to_string();
-        let reparsed = QueryMol::from_str(&rendered).unwrap();
-
-        assert_eq!(canonical, recanonicalized);
-        assert!(canonical.is_canonical());
-        assert_eq!(canonical.atom_count(), query.atom_count());
-        assert_eq!(canonical.bond_count(), query.bond_count());
-        assert_eq!(canonical.component_count(), query.component_count());
-        assert_eq!(rendered, canonical.to_canonical_smarts());
-        assert_eq!(canonical, reparsed.canonicalize());
+        assert_canonical_roundtrips("[!$([N;Tm*H-;H-])]");
     }
 
     #[test]
     fn canonicalize_handles_recursive_oom_bundle_fuzz_artifact() {
-        let query = QueryMol::from_str("[$(Cs[$(CsO[$(Cs[$(CsO)]O.OO)]O.O)]O.OO)]O.O").unwrap();
-
-        let canonical = query.canonicalize();
-        let recanonicalized = canonical.canonicalize();
-        let rendered = canonical.to_string();
-        let reparsed = QueryMol::from_str(&rendered).unwrap();
-
-        assert_eq!(canonical, recanonicalized);
-        assert!(canonical.is_canonical());
-        assert_eq!(canonical.atom_count(), query.atom_count());
-        assert_eq!(canonical.bond_count(), query.bond_count());
-        assert_eq!(canonical.component_count(), query.component_count());
-        assert_eq!(rendered, canonical.to_canonical_smarts());
-        assert_eq!(canonical, reparsed.canonicalize());
+        assert_canonical_roundtrips("[$(Cs[$(CsO[$(Cs[$(CsO)]O.OO)]O.O)]O.OO)]O.O");
     }
 
     #[test]
     fn canonicalize_handles_repeated_ring_topology_bundle_fuzz_artifact() {
-        let query = QueryMol::from_str("C-;@;@@CCC-;@CC--;@CP-;@CC@a").unwrap();
-
-        let canonical = query.canonicalize();
-        let recanonicalized = canonical.canonicalize();
-        let rendered = canonical.to_string();
-        let reparsed = QueryMol::from_str(&rendered).unwrap();
-
-        assert_eq!(canonical, recanonicalized);
-        assert!(canonical.is_canonical());
-        assert_eq!(canonical.atom_count(), query.atom_count());
-        assert_eq!(canonical.bond_count(), query.bond_count());
-        assert_eq!(canonical.component_count(), query.component_count());
-        assert_eq!(rendered, canonical.to_canonical_smarts());
-        assert_eq!(canonical, reparsed.canonicalize());
+        assert_canonical_roundtrips("C-;@;@@CCC-;@CC--;@CP-;@CC@a");
     }
 
     #[test]
     fn canonicalize_handles_directional_bond_bundle_fuzz_artifact() {
-        let query = QueryMol::from_str(r"C#[R0]\\;\\\\,\\\\\\\\\\C\\\\\\\\\\\\\\C\:CCC").unwrap();
-
-        let canonical = query.canonicalize();
-        let recanonicalized = canonical.canonicalize();
-        let rendered = canonical.to_string();
-        let reparsed = QueryMol::from_str(&rendered).unwrap();
-
-        assert_eq!(canonical, recanonicalized);
-        assert!(canonical.is_canonical());
-        assert_eq!(canonical.atom_count(), query.atom_count());
-        assert_eq!(canonical.bond_count(), query.bond_count());
-        assert_eq!(canonical.component_count(), query.component_count());
-        assert_eq!(rendered, canonical.to_canonical_smarts());
-        assert_eq!(canonical, reparsed.canonicalize());
+        assert_canonical_roundtrips(r"C#[R0]\\;\\\\,\\\\\\\\\\C\\\\\\\\\\\\\\C\:CCC");
     }
 
     #[test]
     fn canonicalize_handles_directional_bond_bundle_2_fuzz_artifact() {
-        let query =
-            QueryMol::from_str(r"CC:CC\\\\\\,\\\\\\\\#\\\\\\\\\\\\\\\\\\\\\\\\C:CCACC").unwrap();
-
-        let canonical = query.canonicalize();
-        let recanonicalized = canonical.canonicalize();
-        let rendered = canonical.to_string();
-        let reparsed = QueryMol::from_str(&rendered).unwrap();
-        let reparsed_canonical = reparsed.canonicalize();
-
-        assert_eq!(canonical, recanonicalized);
-        assert!(canonical.is_canonical());
-        assert_eq!(canonical.atom_count(), query.atom_count());
-        assert_eq!(canonical.bond_count(), query.bond_count());
-        assert_eq!(canonical.component_count(), query.component_count());
-        assert_eq!(rendered, canonical.to_canonical_smarts());
-        assert_eq!(canonical, reparsed_canonical);
+        assert_canonical_roundtrips(r"CC:CC\\\\\\,\\\\\\\\#\\\\\\\\\\\\\\\\\\\\\\\\C:CCACC");
     }
 
     #[test]
@@ -7032,97 +6825,27 @@ mod tests {
 
     #[test]
     fn canonicalize_handles_chiral_directional_timeout_fuzz_artifact() {
-        let query = QueryMol::from_str(r"C\[Cn@@@@@B@A@B@A@@N@]\\C").unwrap();
-
-        let canonical = query.canonicalize();
-        let recanonicalized = canonical.canonicalize();
-        let rendered = canonical.to_string();
-        let reparsed = QueryMol::from_str(&rendered).unwrap();
-        let reparsed_canonical = reparsed.canonicalize();
-
-        assert_eq!(canonical, recanonicalized);
-        assert!(canonical.is_canonical());
-        assert_eq!(canonical.atom_count(), query.atom_count());
-        assert_eq!(canonical.bond_count(), query.bond_count());
-        assert_eq!(canonical.component_count(), query.component_count());
-        assert_eq!(rendered, canonical.to_canonical_smarts());
-        assert_eq!(canonical, reparsed_canonical);
+        assert_canonical_roundtrips(r"C\[Cn@@@@@B@A@B@A@@N@]\\C");
     }
 
     #[test]
     fn canonicalize_handles_trigonal_bipyramidal_parallel_bond_fuzz_artifact() {
-        let query = QueryMol::from_str(r"[@PasBP]17O[@TBP]17O").unwrap();
-
-        let canonical = query.canonicalize();
-        let recanonicalized = canonical.canonicalize();
-        let rendered = canonical.to_string();
-        let reparsed = QueryMol::from_str(&rendered).unwrap();
-        let reparsed_canonical = reparsed.canonicalize();
-
-        assert_eq!(canonical, recanonicalized);
-        assert!(canonical.is_canonical());
-        assert_eq!(canonical.atom_count(), query.atom_count());
-        assert_eq!(canonical.bond_count(), query.bond_count());
-        assert_eq!(canonical.component_count(), query.component_count());
-        assert_eq!(rendered, canonical.to_canonical_smarts());
-        assert_eq!(canonical, reparsed_canonical);
+        assert_canonical_roundtrips(r"[@PasBP]17O[@TBP]17O");
     }
 
     #[test]
     fn canonicalize_handles_underconstrained_ring_chirality_fuzz_artifact() {
-        let query = QueryMol::from_str("C[No]1[21Al43AlB]2[21AlBNo@@]1[21Al24AlB]2[21Al]").unwrap();
-
-        let canonical = query.canonicalize();
-        let recanonicalized = canonical.canonicalize();
-        let rendered = canonical.to_string();
-        let reparsed = QueryMol::from_str(&rendered).unwrap();
-        let reparsed_canonical = reparsed.canonicalize();
-
-        assert_eq!(canonical, recanonicalized);
-        assert!(canonical.is_canonical());
-        assert_eq!(canonical.atom_count(), query.atom_count());
-        assert_eq!(canonical.bond_count(), query.bond_count());
-        assert_eq!(canonical.component_count(), query.component_count());
-        assert_eq!(rendered, canonical.to_canonical_smarts());
-        assert_eq!(canonical, reparsed_canonical);
+        assert_canonical_roundtrips("C[No]1[21Al43AlB]2[21AlBNo@@]1[21Al24AlB]2[21Al]");
     }
 
     #[test]
     fn canonicalize_handles_underconstrained_ring_chirality_with_h_fuzz_artifact() {
-        let query = QueryMol::from_str("C[No]1[21Al43AlB]2[21AlBNo@H]1[21Al40AlB]2[21Al]").unwrap();
-
-        let canonical = query.canonicalize();
-        let recanonicalized = canonical.canonicalize();
-        let rendered = canonical.to_string();
-        let reparsed = QueryMol::from_str(&rendered).unwrap();
-        let reparsed_canonical = reparsed.canonicalize();
-
-        assert_eq!(canonical, recanonicalized);
-        assert!(canonical.is_canonical());
-        assert_eq!(canonical.atom_count(), query.atom_count());
-        assert_eq!(canonical.bond_count(), query.bond_count());
-        assert_eq!(canonical.component_count(), query.component_count());
-        assert_eq!(rendered, canonical.to_canonical_smarts());
-        assert_eq!(canonical, reparsed_canonical);
+        assert_canonical_roundtrips("C[No]1[21Al43AlB]2[21AlBNo@H]1[21Al40AlB]2[21Al]");
     }
 
     #[test]
     fn canonicalize_handles_fused_ring_generic_chirality_fuzz_artifact() {
-        let query = QueryMol::from_str("c[@]8[C@@]71cOC7=8s1").unwrap();
-
-        let canonical = query.canonicalize();
-        let recanonicalized = canonical.canonicalize();
-        let rendered = canonical.to_string();
-        let reparsed = QueryMol::from_str(&rendered).unwrap();
-        let reparsed_canonical = reparsed.canonicalize();
-
-        assert_eq!(canonical, recanonicalized);
-        assert!(canonical.is_canonical());
-        assert_eq!(canonical.atom_count(), query.atom_count());
-        assert_eq!(canonical.bond_count(), query.bond_count());
-        assert_eq!(canonical.component_count(), query.component_count());
-        assert_eq!(rendered, canonical.to_canonical_smarts());
-        assert_eq!(canonical, reparsed_canonical);
+        assert_canonical_roundtrips("c[@]8[C@@]71cOC7=8s1");
     }
 
     #[test]

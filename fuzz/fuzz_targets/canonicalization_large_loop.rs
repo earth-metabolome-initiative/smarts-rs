@@ -3,19 +3,23 @@
 use std::time::{Duration, Instant};
 
 use libfuzzer_sys::fuzz_target;
-use smarts_rs::{parse_smarts, AtomExpr, AtomPrimitive, BracketExprTree, QueryMol};
+use query_fuzz_common::{query_exceeds_budget, QueryBudgetLimits};
+use smarts_rs::{parse_smarts, QueryMol};
 
-#[derive(Default)]
-struct QueryBudget {
-    total_atoms: usize,
-    total_bonds: usize,
-    total_components: usize,
-    recursive_queries: usize,
-    recursive_work: usize,
-    max_depth: usize,
-}
+mod query_fuzz_common;
 
 const PHASE_SLOW_LIMIT: Duration = Duration::from_millis(250);
+const QUERY_LIMITS: QueryBudgetLimits = QueryBudgetLimits {
+    atom_count: 48,
+    bond_count: 64,
+    component_count: 8,
+    total_atoms: 80,
+    total_bonds: 96,
+    total_components: 12,
+    recursive_queries: 6,
+    recursive_work: 24,
+    max_depth: 3,
+};
 
 fn run_phase_with_slow_guard<R>(
     phase: &str,
@@ -70,57 +74,6 @@ fn assert_reduced_canonicalization_is_stable(input: &str, query: &QueryMol) {
     assert_eq!(canonical_smarts, recanonicalized.to_string());
 }
 
-fn query_is_too_large(query: &QueryMol) -> bool {
-    let mut budget = QueryBudget::default();
-    accumulate_query_budget(query, 1, &mut budget);
-    query.atom_count() > 48
-        || query.bond_count() > 64
-        || query.component_count() > 8
-        || budget.total_atoms > 80
-        || budget.total_bonds > 96
-        || budget.total_components > 12
-        || budget.recursive_queries > 6
-        || budget.recursive_work > 24
-        || budget.max_depth > 3
-}
-
-fn accumulate_query_budget(query: &QueryMol, depth: usize, budget: &mut QueryBudget) {
-    budget.total_atoms += query.atom_count();
-    budget.total_bonds += query.bond_count();
-    budget.total_components += query.component_count();
-    budget.recursive_work += depth
-        * (query.atom_count()
-            + query.bond_count()
-            + 4 * query.component_count().max(1));
-    budget.max_depth = budget.max_depth.max(depth);
-
-    for atom in query.atoms() {
-        let AtomExpr::Bracket(bracket) = &atom.expr else {
-            continue;
-        };
-        accumulate_tree_budget(&bracket.tree, depth, budget);
-    }
-}
-
-fn accumulate_tree_budget(tree: &BracketExprTree, depth: usize, budget: &mut QueryBudget) {
-    budget.recursive_work += depth;
-    match tree {
-        BracketExprTree::Primitive(AtomPrimitive::RecursiveQuery(nested)) => {
-            budget.recursive_queries += 1;
-            accumulate_query_budget(nested, depth + 1, budget);
-        }
-        BracketExprTree::Primitive(_) => {}
-        BracketExprTree::Not(inner) => accumulate_tree_budget(inner, depth, budget),
-        BracketExprTree::HighAnd(items)
-        | BracketExprTree::Or(items)
-        | BracketExprTree::LowAnd(items) => {
-            for item in items {
-                accumulate_tree_budget(item, depth, budget);
-            }
-        }
-    }
-}
-
 fuzz_target!(|data: &[u8]| {
     if data.len() > 256 {
         return;
@@ -132,7 +85,7 @@ fuzz_target!(|data: &[u8]| {
     let Ok(query) = parse_smarts(input) else {
         return;
     };
-    if query_is_too_large(&query) {
+    if query_exceeds_budget(&query, QUERY_LIMITS) {
         return;
     }
 

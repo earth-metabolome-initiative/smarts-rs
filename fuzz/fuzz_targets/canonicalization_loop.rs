@@ -3,23 +3,27 @@
 use std::time::{Duration, Instant};
 
 use libfuzzer_sys::fuzz_target;
+use query_fuzz_common::{query_contains_chirality, query_exceeds_budget, QueryBudgetLimits};
 use smarts_rs::{
     parse_smarts, AtomExpr, AtomPrimitive, BondExpr, BondExprTree, BondPrimitive, BracketExprTree,
     QueryAtom, QueryBond, QueryCanonicalLabeling, QueryMol,
 };
 use smiles_parser::bond::Bond;
 
-#[derive(Default)]
-struct QueryBudget {
-    total_atoms: usize,
-    total_bonds: usize,
-    total_components: usize,
-    recursive_queries: usize,
-    recursive_work: usize,
-    max_depth: usize,
-}
-
 const PHASE_SLOW_LIMIT: Duration = Duration::from_millis(250);
+const QUERY_LIMITS: QueryBudgetLimits = QueryBudgetLimits {
+    atom_count: 24,
+    bond_count: 32,
+    component_count: 4,
+    total_atoms: 32,
+    total_bonds: 40,
+    total_components: 6,
+    recursive_queries: 0,
+    recursive_work: 12,
+    max_depth: 1,
+};
+
+mod query_fuzz_common;
 
 fn assert_labeling_is_permutation(labeling: &QueryCanonicalLabeling, atom_count: usize) {
     assert_eq!(labeling.order().len(), atom_count);
@@ -107,48 +111,28 @@ fn run_phase_with_slow_guard<R>(
     result
 }
 
-fn query_contains_chirality(query: &QueryMol) -> bool {
-    query.atoms().iter().any(atom_contains_chirality)
-}
-
 fn query_allows_deep_labeling_checks(query: &QueryMol) -> bool {
     if query_contains_chirality(query) {
         return false;
     }
 
-    let mut budget = QueryBudget::default();
-    accumulate_query_budget(query, 1, &mut budget);
     query.atom_count() <= 32
         && query.bond_count() <= 40
         && query.component_count() <= 6
-        && budget.total_atoms <= 48
-        && budget.total_bonds <= 56
-        && budget.total_components <= 8
-        && budget.recursive_queries == 0
-        && budget.recursive_work <= 20
-        && budget.max_depth <= 1
-}
-
-fn atom_contains_chirality(atom: &QueryAtom) -> bool {
-    match &atom.expr {
-        AtomExpr::Wildcard => false,
-        AtomExpr::Bare { .. } => false,
-        AtomExpr::Bracket(bracket) => tree_contains_chirality(&bracket.tree),
-    }
-}
-
-fn tree_contains_chirality(tree: &BracketExprTree) -> bool {
-    match tree {
-        BracketExprTree::Primitive(AtomPrimitive::Chirality(_)) => true,
-        BracketExprTree::Primitive(AtomPrimitive::RecursiveQuery(nested)) => {
-            query_contains_chirality(nested)
-        }
-        BracketExprTree::Primitive(_) => false,
-        BracketExprTree::Not(inner) => tree_contains_chirality(inner),
-        BracketExprTree::HighAnd(items)
-        | BracketExprTree::Or(items)
-        | BracketExprTree::LowAnd(items) => items.iter().any(tree_contains_chirality),
-    }
+        && !query_exceeds_budget(
+            query,
+            QueryBudgetLimits {
+                atom_count: 32,
+                bond_count: 40,
+                component_count: 6,
+                total_atoms: 48,
+                total_bonds: 56,
+                total_components: 8,
+                recursive_queries: 0,
+                recursive_work: 20,
+                max_depth: 1,
+            },
+        )
 }
 
 fn relabel_query(query: &QueryMol, labeling: &QueryCanonicalLabeling) -> QueryMol {
@@ -280,57 +264,6 @@ fn assert_recursive_query_children_are_stable(query: &QueryMol) {
     }
 }
 
-fn query_is_too_large(query: &QueryMol) -> bool {
-    let mut budget = QueryBudget::default();
-    accumulate_query_budget(query, 1, &mut budget);
-    query.atom_count() > 24
-        || query.bond_count() > 32
-        || query.component_count() > 4
-        || budget.total_atoms > 32
-        || budget.total_bonds > 40
-        || budget.total_components > 6
-        || budget.recursive_queries > 0
-        || budget.recursive_work > 12
-        || budget.max_depth > 1
-}
-
-fn accumulate_query_budget(query: &QueryMol, depth: usize, budget: &mut QueryBudget) {
-    budget.total_atoms += query.atom_count();
-    budget.total_bonds += query.bond_count();
-    budget.total_components += query.component_count();
-    budget.recursive_work += depth
-        * (query.atom_count()
-            + query.bond_count()
-            + 4 * query.component_count().max(1));
-    budget.max_depth = budget.max_depth.max(depth);
-
-    for atom in query.atoms() {
-        let AtomExpr::Bracket(bracket) = &atom.expr else {
-            continue;
-        };
-        accumulate_tree_budget(&bracket.tree, depth, budget);
-    }
-}
-
-fn accumulate_tree_budget(tree: &BracketExprTree, depth: usize, budget: &mut QueryBudget) {
-    budget.recursive_work += depth;
-    match tree {
-        BracketExprTree::Primitive(AtomPrimitive::RecursiveQuery(nested)) => {
-            budget.recursive_queries += 1;
-            accumulate_query_budget(nested, depth + 1, budget);
-        }
-        BracketExprTree::Primitive(_) => {}
-        BracketExprTree::Not(inner) => accumulate_tree_budget(inner, depth, budget),
-        BracketExprTree::HighAnd(items)
-        | BracketExprTree::Or(items)
-        | BracketExprTree::LowAnd(items) => {
-            for item in items {
-                accumulate_tree_budget(item, depth, budget);
-            }
-        }
-    }
-}
-
 fuzz_target!(|data: &[u8]| {
     if data.len() > 256 {
         return;
@@ -342,7 +275,7 @@ fuzz_target!(|data: &[u8]| {
     let Ok(query) = parse_smarts(input) else {
         return;
     };
-    if query_is_too_large(&query) {
+    if query_exceeds_budget(&query, QUERY_LIMITS) {
         return;
     }
 

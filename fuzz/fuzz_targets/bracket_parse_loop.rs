@@ -1,48 +1,10 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use smarts_rs::{
-    fuzz_parse_bracket_text, parse_smarts, AtomExpr, AtomPrimitive, BracketExprTree, QueryMol,
-};
+use query_fuzz_common::{assert_query_render_is_stable, assert_recursive_queries_lowered};
+use smarts_rs::{fuzz_parse_bracket_text, parse_smarts, AtomExpr, QueryMol};
 
-fn assert_recursive_queries_lowered(query: &QueryMol) {
-    for atom in query.atoms() {
-        let AtomExpr::Bracket(bracket) = &atom.expr else {
-            continue;
-        };
-        assert_recursive_tree_lowered(&bracket.tree);
-    }
-}
-
-fn assert_recursive_tree_lowered(tree: &BracketExprTree) {
-    match tree {
-        BracketExprTree::Primitive(AtomPrimitive::RecursiveQuery(nested)) => {
-            assert_query_render_is_stable(nested);
-            assert_recursive_queries_lowered(nested);
-        }
-        BracketExprTree::Primitive(_) => {}
-        BracketExprTree::Not(inner) => assert_recursive_tree_lowered(inner),
-        BracketExprTree::HighAnd(items)
-        | BracketExprTree::Or(items)
-        | BracketExprTree::LowAnd(items) => {
-            for item in items {
-                assert_recursive_tree_lowered(item);
-            }
-        }
-    }
-}
-
-fn assert_query_render_is_stable(query: &QueryMol) {
-    let rendered = query.to_string();
-    let reparsed = parse_smarts(&rendered).expect("displayed SMARTS must parse again");
-    let rerendered = reparsed.to_string();
-    let reparsed_again = parse_smarts(&rerendered).expect("normalized SMARTS must reparse again");
-
-    assert_eq!(rerendered, reparsed_again.to_string());
-    assert_eq!(reparsed.atom_count(), reparsed_again.atom_count());
-    assert_eq!(reparsed.bond_count(), reparsed_again.bond_count());
-    assert_eq!(reparsed.component_count(), reparsed_again.component_count());
-}
+mod query_fuzz_common;
 
 fn query_is_too_large(query: &QueryMol) -> bool {
     query.atom_count() > 64 || query.bond_count() > 96 || query.component_count() > 16
