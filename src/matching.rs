@@ -1999,12 +1999,15 @@ fn compile_component_prechecks(query: &QueryMol) -> Result<Box<[CompiledQuery]>,
         return Ok(Box::default());
     }
 
-    (0..query.component_count())
-        .map(|component_id| {
-            let component = extract_single_component_query(query, component_id);
-            CompiledQuery::new(component)
-        })
-        .collect()
+    let mut prechecks = alloc::vec::Vec::new();
+    for component_id in 0..query.component_count() {
+        if component_contains_recursive_predicate(query, component_id) {
+            continue;
+        }
+        let component = extract_single_component_query(query, component_id);
+        prechecks.push(CompiledQuery::new(component)?);
+    }
+    Ok(prechecks.into_boxed_slice())
 }
 
 fn extract_single_component_query(query: &QueryMol, component_id: usize) -> QueryMol {
@@ -2038,6 +2041,34 @@ fn extract_single_component_query(query: &QueryMol, component_id: usize) -> Quer
         .collect::<alloc::vec::Vec<_>>();
 
     QueryMol::from_parts(atoms, bonds, 1, alloc::vec![None])
+}
+
+fn component_contains_recursive_predicate(query: &QueryMol, component_id: usize) -> bool {
+    query
+        .component_atoms(component_id)
+        .iter()
+        .copied()
+        .any(|atom_id| atom_expr_contains_recursive_predicate(&query.atoms()[atom_id].expr))
+}
+
+fn atom_expr_contains_recursive_predicate(expr: &AtomExpr) -> bool {
+    match expr {
+        AtomExpr::Wildcard | AtomExpr::Bare { .. } => false,
+        AtomExpr::Bracket(expr) => bracket_tree_contains_recursive_predicate(&expr.tree),
+    }
+}
+
+fn bracket_tree_contains_recursive_predicate(tree: &BracketExprTree) -> bool {
+    match tree {
+        BracketExprTree::Primitive(AtomPrimitive::RecursiveQuery(_)) => true,
+        BracketExprTree::Primitive(_) => false,
+        BracketExprTree::Not(inner) => bracket_tree_contains_recursive_predicate(inner),
+        BracketExprTree::HighAnd(items)
+        | BracketExprTree::Or(items)
+        | BracketExprTree::LowAnd(items) => {
+            items.iter().any(bracket_tree_contains_recursive_predicate)
+        }
+    }
 }
 
 fn query_matches(query: &CompiledQuery, target: &PreparedTarget) -> bool {
@@ -5314,7 +5345,10 @@ fn is_hidden_attached_hydrogen(target: &PreparedTarget, atom_id: usize) -> bool 
 
 #[cfg(test)]
 mod tests {
-    use alloc::format;
+    use alloc::{
+        format,
+        string::{String, ToString},
+    };
     use core::str::FromStr;
 
     use smiles_parser::Smiles;
@@ -5330,6 +5364,14 @@ mod tests {
 
     fn query_matches_smiles(smarts: &str, smiles: &str) -> bool {
         QueryMol::from_str(smarts).unwrap().matches(smiles).unwrap()
+    }
+
+    fn recursive_component_chain(depth: usize) -> String {
+        let mut nested = String::from("CsO");
+        for _ in 0..depth {
+            nested = format!("Cs[$({nested})]O.OO");
+        }
+        format!("[$({nested})]O.O")
     }
 
     fn assert_coverage_close(actual: f64, expected: f64) {
@@ -5815,6 +5857,23 @@ mod tests {
                 "scratch boolean mismatch for {smarts} against {smiles}"
             );
         }
+    }
+
+    #[test]
+    fn disconnected_prechecks_skip_recursive_components() {
+        let compiled = CompiledQuery::new(QueryMol::from_str("[$(C.O)].N").unwrap()).unwrap();
+
+        assert_eq!(compiled.component_prechecks.len(), 1);
+        assert_eq!(compiled.component_prechecks[0].query().to_string(), "N");
+    }
+
+    #[test]
+    fn compiled_query_handles_deep_recursive_component_chain_regression() {
+        let smarts = recursive_component_chain(12);
+        let compiled = CompiledQuery::new(QueryMol::from_str(&smarts).unwrap()).unwrap();
+
+        assert_eq!(compiled.query().component_count(), 2);
+        assert_eq!(compiled.component_prechecks.len(), 1);
     }
 
     #[test]
