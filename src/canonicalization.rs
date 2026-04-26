@@ -213,12 +213,23 @@ impl QueryMol {
         if self.atom_count() == 0 {
             return QueryCanonicalLabeling::new(Vec::new());
         }
+        if self.atom_count() == 2 {
+            let first_label = self.atoms()[0].expr.to_string();
+            let second_label = self.atoms()[1].expr.to_string();
+            let order = if second_label < first_label {
+                vec![1, 0]
+            } else {
+                vec![0, 1]
+            };
+            return QueryCanonicalLabeling::new(order);
+        }
 
         let atom_labels = self
             .atoms()
             .iter()
             .map(|atom| atom.expr.to_string())
             .collect::<Vec<_>>();
+
         let bond_multiset_labels = build_bond_multiset_labels(self);
         let nodes = SortedVec::try_from((0..self.atom_count()).collect::<Vec<_>>())
             .unwrap_or_else(|_| unreachable!("dense node ids are always sorted"));
@@ -249,6 +260,10 @@ impl QueryMol {
     }
 
     fn exact_canonicalize_with_labeling(&self, labeling: &QueryCanonicalLabeling) -> Self {
+        if let Some(canonicalized) = self.exact_canonicalize_single_bond_with_labeling(labeling) {
+            return canonicalized;
+        }
+
         let order = labeling.order();
         let new_index_of_old_atom = labeling.new_index_of_old_atom();
         let has_chirality = self
@@ -320,6 +335,55 @@ impl QueryMol {
             1,
             vec![self.component_group(0)],
         )
+    }
+
+    fn exact_canonicalize_single_bond_with_labeling(
+        &self,
+        labeling: &QueryCanonicalLabeling,
+    ) -> Option<Self> {
+        if self.atom_count() != 2 || self.bond_count() != 1 {
+            return None;
+        }
+        if self
+            .atoms()
+            .iter()
+            .any(|atom| atom_expr_contains_chirality(&atom.expr))
+        {
+            return None;
+        }
+
+        let bond = &self.bonds()[0];
+        if bond_expr_contains_direction(&bond.expr) {
+            return None;
+        }
+
+        let order = labeling.order();
+        let new_index_of_old_atom = labeling.new_index_of_old_atom();
+        let atoms = order
+            .iter()
+            .copied()
+            .map(|old_atom| QueryAtom {
+                id: new_index_of_old_atom[old_atom],
+                component: 0,
+                expr: self.atoms()[old_atom].expr.clone(),
+            })
+            .collect::<Vec<_>>();
+        let src = new_index_of_old_atom[bond.src];
+        let dst = new_index_of_old_atom[bond.dst];
+        let (src, dst) = if src <= dst { (src, dst) } else { (dst, src) };
+        let bonds = vec![QueryBond {
+            id: 0,
+            src,
+            dst,
+            expr: bond.expr.clone(),
+        }];
+
+        Some(Self::from_parts(
+            atoms,
+            bonds,
+            1,
+            vec![self.component_group(0)],
+        ))
     }
 
     fn componentwise_canonicalize_with_labeling(&self) -> (Self, QueryCanonicalLabeling) {
