@@ -1451,22 +1451,13 @@ impl TargetCorpusIndex {
         self.collect_edge_domain_matches(query_feature, scratch);
         self.accumulate_indexed_edge_matches(query_feature, scratch, active_candidate_mask);
 
-        let word_count = bitset_word_count(self.screens.len());
-        if scratch.edge_candidate_mask.len() == word_count {
-            scratch.edge_candidate_mask.fill(0);
-        } else {
-            scratch.edge_candidate_mask.resize(word_count, 0);
-        }
-
-        let mut population = 0usize;
-        for &target_id in &scratch.edge_touched_targets {
-            if scratch.edge_count_by_target[target_id] >= required_count {
-                set_bit(&mut scratch.edge_candidate_mask, target_id);
-                population += 1;
-            }
-            scratch.edge_count_by_target[target_id] = 0;
-        }
-
+        let population = finalize_sparse_candidate_mask(
+            self.screens.len(),
+            required_count,
+            &mut scratch.edge_count_by_target,
+            &scratch.edge_touched_targets,
+            &mut scratch.edge_candidate_mask,
+        );
         if active_candidate_mask.is_none() {
             scratch.edge_mask_cache.insert(
                 (query_feature, required_count),
@@ -1596,22 +1587,13 @@ impl TargetCorpusIndex {
         self.collect_path3_domain_matches(query_feature, scratch);
         self.accumulate_indexed_path3_matches(query_feature, scratch, active_candidate_mask);
 
-        let word_count = bitset_word_count(self.screens.len());
-        if scratch.path3_candidate_mask.len() == word_count {
-            scratch.path3_candidate_mask.fill(0);
-        } else {
-            scratch.path3_candidate_mask.resize(word_count, 0);
-        }
-
-        let mut population = 0usize;
-        for &target_id in &scratch.path3_touched_targets {
-            if scratch.path3_count_by_target[target_id] >= required_count {
-                set_bit(&mut scratch.path3_candidate_mask, target_id);
-                population += 1;
-            }
-            scratch.path3_count_by_target[target_id] = 0;
-        }
-
+        let population = finalize_sparse_candidate_mask(
+            self.screens.len(),
+            required_count,
+            &mut scratch.path3_count_by_target,
+            &scratch.path3_touched_targets,
+            &mut scratch.path3_candidate_mask,
+        );
         if active_candidate_mask.is_none() {
             scratch.path3_mask_cache.insert(
                 (query_feature, required_count),
