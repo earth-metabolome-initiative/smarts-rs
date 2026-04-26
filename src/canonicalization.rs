@@ -103,22 +103,17 @@ struct TopLevelComponentEntry {
 }
 
 #[derive(Default)]
-struct RecursiveCanonicalizationCache {
-    queries: BTreeMap<String, QueryMol>,
+struct RecursiveCanonicalizationContext;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecursiveCanonicalizationMode {
+    Canonicalize,
+    Preserve,
 }
 
-impl RecursiveCanonicalizationCache {
+impl RecursiveCanonicalizationContext {
     fn canonicalize_recursive_query(&mut self, query: &QueryMol) -> QueryMol {
-        let key = query.to_string();
-        if let Some(canonical) = self.queries.get(&key) {
-            return canonical.clone();
-        }
-
-        let canonical = query.canonicalize_with_labeling_with_cache(self).0;
-        let canonical_key = canonical.to_string();
-        self.queries.insert(key, canonical.clone());
-        self.queries.insert(canonical_key, canonical.clone());
-        canonical
+        query.canonicalize_with_labeling_with_context(self).0
     }
 }
 
@@ -148,20 +143,25 @@ impl QueryMol {
     }
 
     fn canonicalize_with_labeling(&self) -> (Self, QueryCanonicalLabeling) {
-        let mut recursive_cache = RecursiveCanonicalizationCache::default();
-        self.canonicalize_with_labeling_with_cache(&mut recursive_cache)
+        let mut recursive_context = RecursiveCanonicalizationContext;
+        self.canonicalize_with_labeling_with_context(&mut recursive_context)
     }
 
-    fn canonicalize_with_labeling_with_cache(
+    fn canonicalize_with_labeling_with_context(
         &self,
-        recursive_cache: &mut RecursiveCanonicalizationCache,
+        recursive_context: &mut RecursiveCanonicalizationContext,
     ) -> (Self, QueryCanonicalLabeling) {
-        let (first_query, first_labeling) = self.canonicalize_once_with_labeling(recursive_cache);
+        let (first_query, first_labeling) = self.canonicalize_once_with_labeling(
+            recursive_context,
+            RecursiveCanonicalizationMode::Canonicalize,
+        );
         if first_query == *self {
             return (first_query, first_labeling);
         }
-        let (second_query, second_step_labeling) =
-            first_query.canonicalize_once_with_labeling(recursive_cache);
+        let (second_query, second_step_labeling) = first_query.canonicalize_once_with_labeling(
+            recursive_context,
+            RecursiveCanonicalizationMode::Preserve,
+        );
         if second_query == first_query {
             return (first_query, first_labeling);
         }
@@ -179,9 +179,11 @@ impl QueryMol {
         ];
         let cycle_start = loop {
             let current_index = states.len() - 1;
-            let (next_query, next_step_labeling) = states[current_index]
-                .0
-                .canonicalize_once_with_labeling(recursive_cache);
+            let (next_query, next_step_labeling) =
+                states[current_index].0.canonicalize_once_with_labeling(
+                    recursive_context,
+                    RecursiveCanonicalizationMode::Preserve,
+                );
             let next_labeling = compose_labelings(&states[current_index].1, &next_step_labeling);
             let next_key = canonical_whole_query_state_key(&next_query);
             if let Some(&repeat_index) = seen.get(&next_key) {
@@ -202,9 +204,10 @@ impl QueryMol {
 
     fn canonicalize_once_with_labeling(
         &self,
-        recursive_cache: &mut RecursiveCanonicalizationCache,
+        recursive_context: &mut RecursiveCanonicalizationContext,
+        recursive_mode: RecursiveCanonicalizationMode,
     ) -> (Self, QueryCanonicalLabeling) {
-        let normalized = self.canonicalization_normal_form(recursive_cache);
+        let normalized = self.canonicalization_normal_form(recursive_context, recursive_mode);
         if normalized.atom_count() <= 1 && normalized.component_count() <= 1 {
             let labeling = QueryCanonicalLabeling::new((0..normalized.atom_count()).collect());
             return (normalized, labeling);
@@ -220,7 +223,8 @@ impl QueryMol {
 
     fn canonicalization_normal_form(
         &self,
-        recursive_cache: &mut RecursiveCanonicalizationCache,
+        recursive_context: &mut RecursiveCanonicalizationContext,
+        recursive_mode: RecursiveCanonicalizationMode,
     ) -> Self {
         let atoms = self
             .atoms()
@@ -228,7 +232,7 @@ impl QueryMol {
             .map(|atom| QueryAtom {
                 id: atom.id,
                 component: atom.component,
-                expr: canonical_atom_expr(&atom.expr, recursive_cache),
+                expr: canonical_atom_expr(&atom.expr, recursive_context, recursive_mode),
             })
             .collect::<Vec<_>>();
         let bonds = self
@@ -782,7 +786,8 @@ fn compose_labelings(
 
 fn canonical_atom_expr(
     expr: &AtomExpr,
-    recursive_cache: &mut RecursiveCanonicalizationCache,
+    recursive_context: &mut RecursiveCanonicalizationContext,
+    recursive_mode: RecursiveCanonicalizationMode,
 ) -> AtomExpr {
     match expr {
         AtomExpr::Wildcard => AtomExpr::Wildcard,
@@ -791,7 +796,7 @@ fn canonical_atom_expr(
             aromatic: *aromatic,
         },
         AtomExpr::Bracket(expr) => {
-            let canonical = canonical_bracket_expr(expr, recursive_cache);
+            let canonical = canonical_bracket_expr(expr, recursive_context, recursive_mode);
             if canonical.atom_map.is_none() {
                 match canonical.tree {
                     BracketExprTree::Primitive(AtomPrimitive::Wildcard) => AtomExpr::Wildcard,
@@ -813,13 +818,14 @@ fn canonical_atom_expr(
 
 fn canonical_bracket_expr(
     expr: &BracketExpr,
-    recursive_cache: &mut RecursiveCanonicalizationCache,
+    recursive_context: &mut RecursiveCanonicalizationContext,
+    recursive_mode: RecursiveCanonicalizationMode,
 ) -> BracketExpr {
     let mut normalized = expr.clone();
     normalized
         .normalize()
         .unwrap_or_else(|_| unreachable!("parsed SMARTS expressions are never empty"));
-    let mut tree = canonical_bracket_tree(normalized.tree, recursive_cache);
+    let mut tree = canonical_bracket_tree(normalized.tree, recursive_context, recursive_mode);
     tree = simplify_bracket_tree(tree);
     let mut bracket = BracketExpr {
         tree,
@@ -828,7 +834,11 @@ fn canonical_bracket_expr(
     bracket
         .normalize()
         .unwrap_or_else(|_| unreachable!("parsed SMARTS expressions are never empty"));
-    let mut tree = canonical_bracket_tree(bracket.tree, recursive_cache);
+    let mut tree = canonical_bracket_tree(
+        bracket.tree,
+        recursive_context,
+        RecursiveCanonicalizationMode::Preserve,
+    );
     tree = simplify_bracket_tree(tree);
     tree = simplify_top_level_negated_numeric_primitive(tree);
     let mut bracket = BracketExpr {
@@ -846,19 +856,22 @@ fn canonical_bracket_expr(
 
 fn canonical_bracket_tree(
     tree: BracketExprTree,
-    recursive_cache: &mut RecursiveCanonicalizationCache,
+    recursive_context: &mut RecursiveCanonicalizationContext,
+    recursive_mode: RecursiveCanonicalizationMode,
 ) -> BracketExprTree {
     match tree {
-        BracketExprTree::Primitive(primitive) => {
-            BracketExprTree::Primitive(canonical_atom_primitive(primitive, recursive_cache))
-        }
-        BracketExprTree::Not(inner) => {
-            BracketExprTree::Not(Box::new(canonical_bracket_tree(*inner, recursive_cache)))
-        }
+        BracketExprTree::Primitive(primitive) => BracketExprTree::Primitive(
+            canonical_atom_primitive(primitive, recursive_context, recursive_mode),
+        ),
+        BracketExprTree::Not(inner) => BracketExprTree::Not(Box::new(canonical_bracket_tree(
+            *inner,
+            recursive_context,
+            recursive_mode,
+        ))),
         BracketExprTree::HighAnd(items) => {
             let mut items = items
                 .into_iter()
-                .map(|item| canonical_bracket_tree(item, recursive_cache))
+                .map(|item| canonical_bracket_tree(item, recursive_context, recursive_mode))
                 .collect::<Vec<_>>();
             items.sort_by_cached_key(BracketExprTree::to_string);
             items.dedup();
@@ -867,7 +880,7 @@ fn canonical_bracket_tree(
         BracketExprTree::Or(items) => {
             let mut items = items
                 .into_iter()
-                .map(|item| canonical_bracket_tree(item, recursive_cache))
+                .map(|item| canonical_bracket_tree(item, recursive_context, recursive_mode))
                 .collect::<Vec<_>>();
             items.sort_by_cached_key(BracketExprTree::to_string);
             items.dedup();
@@ -876,7 +889,7 @@ fn canonical_bracket_tree(
         BracketExprTree::LowAnd(items) => {
             let mut items = items
                 .into_iter()
-                .map(|item| canonical_bracket_tree(item, recursive_cache))
+                .map(|item| canonical_bracket_tree(item, recursive_context, recursive_mode))
                 .collect::<Vec<_>>();
             items.sort_by_cached_key(BracketExprTree::to_string);
             items.dedup();
@@ -887,7 +900,8 @@ fn canonical_bracket_tree(
 
 fn canonical_atom_primitive(
     primitive: AtomPrimitive,
-    recursive_cache: &mut RecursiveCanonicalizationCache,
+    recursive_context: &mut RecursiveCanonicalizationContext,
+    recursive_mode: RecursiveCanonicalizationMode,
 ) -> AtomPrimitive {
     match primitive {
         AtomPrimitive::Symbol {
@@ -918,9 +932,12 @@ fn canonical_atom_primitive(
         AtomPrimitive::AliphaticHeteroNeighbor(query) => {
             canonical_count_primitive(query, AtomPrimitive::AliphaticHeteroNeighbor)
         }
-        AtomPrimitive::RecursiveQuery(query) => AtomPrimitive::RecursiveQuery(Box::new(
-            recursive_cache.canonicalize_recursive_query(&query),
-        )),
+        AtomPrimitive::RecursiveQuery(query) => match recursive_mode {
+            RecursiveCanonicalizationMode::Canonicalize => AtomPrimitive::RecursiveQuery(Box::new(
+                recursive_context.canonicalize_recursive_query(&query),
+            )),
+            RecursiveCanonicalizationMode::Preserve => AtomPrimitive::RecursiveQuery(query),
+        },
         other => other,
     }
 }
