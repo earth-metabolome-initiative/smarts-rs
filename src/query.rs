@@ -859,8 +859,12 @@ impl<'a> QueryMolWriter<'a> {
             return false;
         }
 
-        let parent_text = self.mol.atoms[atom_id].expr.to_string();
-        let child_text = self.mol.atoms[child_id].expr.to_string();
+        let Some(parent_text) = bare_atom_expr_text(&self.mol.atoms[atom_id].expr) else {
+            return false;
+        };
+        let Some(child_text) = bare_atom_expr_text(&self.mol.atoms[child_id].expr) else {
+            return false;
+        };
         let parent_width = parent_text.len();
         let combined = parent_text + &child_text;
 
@@ -1022,6 +1026,21 @@ fn bond_expr_rank(expr: &BondExpr) -> (u8, String) {
         BondExpr::Query(BondExprTree::LowAnd(_)) => 5,
     };
     (rank, expr.to_string())
+}
+
+fn bare_atom_expr_text(expr: &AtomExpr) -> Option<String> {
+    let AtomExpr::Bare { element, aromatic } = expr else {
+        return None;
+    };
+    if !can_write_bare_atom_expr_element(*element, *aromatic) {
+        return None;
+    }
+
+    let mut symbol = element.to_string();
+    if *aromatic {
+        symbol.make_ascii_lowercase();
+    }
+    Some(symbol)
 }
 
 #[allow(clippy::redundant_pub_crate)]
