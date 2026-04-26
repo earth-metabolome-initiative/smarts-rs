@@ -255,6 +255,45 @@ struct RecursiveQueryEntry {
     compiled: Box<CompiledQuery>,
 }
 
+#[derive(Debug, Clone)]
+struct ComponentPlanEntry {
+    component_id: usize,
+    group: Option<usize>,
+    atom_count: usize,
+    precheckable: bool,
+    matcher: ComponentMatcher,
+}
+
+#[derive(Debug, Clone)]
+enum ComponentMatcher {
+    Compiled(Box<CompiledQuery>),
+    SingleAtom(QueryAtomId),
+    UnsupportedRecursive,
+}
+
+impl ComponentPlanEntry {
+    const fn supports_precheck(&self) -> bool {
+        self.precheckable
+    }
+
+    const fn supports_component_search(&self) -> bool {
+        match &self.matcher {
+            ComponentMatcher::Compiled(_) | ComponentMatcher::SingleAtom(_) => true,
+            ComponentMatcher::UnsupportedRecursive => false,
+        }
+    }
+}
+
+struct ComponentEmbedding {
+    target_atoms: Box<[usize]>,
+    target_component: Option<usize>,
+}
+
+struct ComponentEmbeddingSet<'a> {
+    entry: &'a ComponentPlanEntry,
+    embeddings: alloc::vec::Vec<ComponentEmbedding>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct CompiledBondMatcher {
     state_mask: u16,
@@ -1119,7 +1158,7 @@ pub struct CompiledQuery {
     recursive_cache_slots: usize,
     recursive_query_lookup: BTreeMap<usize, usize>,
     recursive_queries: Box<[RecursiveQueryEntry]>,
-    component_prechecks: Box<[Self]>,
+    component_plan: Box<[ComponentPlanEntry]>,
 }
 
 impl CompiledQuery {
@@ -1153,7 +1192,7 @@ impl CompiledQuery {
             .enumerate()
             .map(|(index, entry)| (entry.query_key, index))
             .collect();
-        let component_prechecks = compile_component_prechecks(&query)?;
+        let component_plan = compile_component_plan(&query)?;
         Ok(Self {
             query,
             query_neighbors,
@@ -1167,7 +1206,7 @@ impl CompiledQuery {
             recursive_cache_slots: *next_recursive_cache_slot,
             recursive_query_lookup,
             recursive_queries,
-            component_prechecks,
+            component_plan,
         })
     }
 
@@ -1994,20 +2033,34 @@ fn collect_recursive_queries_from_bracket_tree(
     }
 }
 
-fn compile_component_prechecks(query: &QueryMol) -> Result<Box<[CompiledQuery]>, SmartsMatchError> {
+fn compile_component_plan(query: &QueryMol) -> Result<Box<[ComponentPlanEntry]>, SmartsMatchError> {
     if query.component_count() <= 1 {
         return Ok(Box::default());
     }
 
-    let mut prechecks = alloc::vec::Vec::new();
+    let mut entries = alloc::vec::Vec::new();
     for component_id in 0..query.component_count() {
-        if component_contains_recursive_predicate(query, component_id) {
-            continue;
-        }
-        let component = extract_single_component_query(query, component_id);
-        prechecks.push(CompiledQuery::new(component)?);
+        let component_atoms = query.component_atoms(component_id);
+        let precheckable = !component_contains_recursive_predicate(query, component_id);
+        let matcher = if let [query_atom] = component_atoms {
+            ComponentMatcher::SingleAtom(*query_atom)
+        } else if !precheckable {
+            ComponentMatcher::UnsupportedRecursive
+        } else {
+            ComponentMatcher::Compiled(Box::new(CompiledQuery::new(
+                extract_single_component_query(query, component_id),
+            )?))
+        };
+        let entry = ComponentPlanEntry {
+            component_id,
+            group: query.component_group(component_id),
+            atom_count: component_atoms.len(),
+            precheckable,
+            matcher,
+        };
+        entries.push(entry);
     }
-    Ok(prechecks.into_boxed_slice())
+    Ok(entries.into_boxed_slice())
 }
 
 fn extract_single_component_query(query: &QueryMol, component_id: usize) -> QueryMol {
@@ -2398,7 +2451,7 @@ fn query_matches_with_mapping_state<L: MatchLimiter>(
     else {
         return false;
     };
-    if mapped_count == 0 && !component_prechecks_match(query, target, context.limit) {
+    if mapped_count == 0 && !component_prechecks_match(query, target, &mut context) {
         return false;
     }
 
@@ -2409,6 +2462,10 @@ fn query_matches_with_mapping_state<L: MatchLimiter>(
         if should_precompute_bondless_candidates(target, &context) {
             return search_bondless_mapping(&query.query, target, &mut context, mapped_count);
         }
+    }
+
+    if mapped_count == 0 && component_search_supported(query) {
+        return disconnected_component_search_matches(query, target, &mut context);
     }
 
     search_mapping(&query.query, target, &mut context, mapped_count)
@@ -2440,17 +2497,37 @@ fn query_match_outcome_with_mapping(
 fn component_prechecks_match<L: MatchLimiter>(
     query: &CompiledQuery,
     target: &PreparedTarget,
-    limit: &L,
+    context: &mut SearchContext<'_, L>,
 ) -> bool {
-    if query.component_prechecks.is_empty() {
+    if query.component_plan.is_empty() {
         return true;
     }
 
     let mut scratch = MatchScratch::new();
     query
-        .component_prechecks
+        .component_plan
         .iter()
-        .all(|component| query_matches_with_scratch_limit(component, target, &mut scratch, limit))
+        .filter(|component| component.supports_precheck())
+        .all(|component| match &component.matcher {
+            ComponentMatcher::Compiled(component_query) => query_matches_with_scratch_limit(
+                component_query,
+                target,
+                &mut scratch,
+                context.limit,
+            ),
+            ComponentMatcher::SingleAtom(query_atom) => {
+                single_atom_component_matches(query, target, context, *query_atom)
+            }
+            ComponentMatcher::UnsupportedRecursive => true,
+        })
+}
+
+fn component_search_supported(query: &CompiledQuery) -> bool {
+    !query.component_plan.is_empty()
+        && query
+            .component_plan
+            .iter()
+            .all(ComponentPlanEntry::supports_component_search)
 }
 
 fn with_fresh_bound_search_context<R>(
@@ -3954,6 +4031,275 @@ fn search_bondless_assignment(
     )
 }
 
+fn disconnected_component_search_matches(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    context: &mut SearchContext<'_, impl MatchLimiter>,
+) -> bool {
+    let mut component_sets = alloc::vec::Vec::new();
+    for entry in &query.component_plan {
+        let embeddings = collect_component_embeddings(query, target, context, entry);
+        if embeddings.is_empty() {
+            return false;
+        }
+        component_sets.push(ComponentEmbeddingSet { entry, embeddings });
+    }
+    component_sets.sort_by_key(|set| {
+        (
+            set.embeddings.len(),
+            core::cmp::Reverse(set.entry.atom_count),
+            set.entry.component_id,
+        )
+    });
+
+    let mut used_target_atoms = alloc::vec![false; target.atom_count()];
+    let group_count = component_sets
+        .iter()
+        .filter_map(|set| set.entry.group)
+        .max()
+        .map_or(0, |group| group + 1);
+    let mut group_targets = alloc::vec![None; group_count];
+    component_embedding_assignment_exists(
+        &component_sets,
+        0,
+        &mut used_target_atoms,
+        &mut group_targets,
+        context.limit,
+    )
+}
+
+fn collect_component_embeddings(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    context: &mut SearchContext<'_, impl MatchLimiter>,
+    entry: &ComponentPlanEntry,
+) -> alloc::vec::Vec<ComponentEmbedding> {
+    match &entry.matcher {
+        ComponentMatcher::Compiled(component) => {
+            collect_compiled_component_embeddings(component, target, context.limit)
+        }
+        ComponentMatcher::SingleAtom(query_atom) => {
+            collect_single_atom_component_embeddings(query, target, context, *query_atom)
+        }
+        ComponentMatcher::UnsupportedRecursive => alloc::vec::Vec::new(),
+    }
+}
+
+fn single_atom_component_matches(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    context: &mut SearchContext<'_, impl MatchLimiter>,
+    query_atom: QueryAtomId,
+) -> bool {
+    let mut anchored_target_atoms = alloc::vec::Vec::new();
+    single_atom_candidates(
+        &query.atom_matchers[query_atom],
+        target,
+        None,
+        &mut anchored_target_atoms,
+    )
+    .any(|target_atom| {
+        single_atom_component_target_matches(query, target, context, query_atom, target_atom)
+    })
+}
+
+fn collect_single_atom_component_embeddings(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    context: &mut SearchContext<'_, impl MatchLimiter>,
+    query_atom: QueryAtomId,
+) -> alloc::vec::Vec<ComponentEmbedding> {
+    let mut anchored_target_atoms = alloc::vec::Vec::new();
+    single_atom_candidates(
+        &query.atom_matchers[query_atom],
+        target,
+        None,
+        &mut anchored_target_atoms,
+    )
+    .collect_matches(|target_atom| {
+        single_atom_component_target_matches(query, target, context, query_atom, target_atom)
+    })
+    .into_vec()
+    .into_iter()
+    .map(|target_atoms| component_embedding(target, target_atoms))
+    .collect()
+}
+
+fn single_atom_component_target_matches(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    context: &mut SearchContext<'_, impl MatchLimiter>,
+    query_atom: QueryAtomId,
+    target_atom: usize,
+) -> bool {
+    compiled_query_atom_matches_with_limit(
+        query,
+        target,
+        context.recursive_cache,
+        query_atom,
+        target_atom,
+        context.limit,
+    )
+}
+
+fn collect_compiled_component_embeddings(
+    component: &CompiledQuery,
+    target: &PreparedTarget,
+    limit: &impl MatchLimiter,
+) -> alloc::vec::Vec<ComponentEmbedding> {
+    let mut atom_stereo_cache = AtomStereoCache::new();
+    let mut recursive_cache =
+        RecursiveMatchCache::new(component.recursive_cache_slots, target.atom_count());
+    let mut scratch =
+        FreshSearchBuffers::new_with_limit(component, target, &mut recursive_cache, limit);
+    let mut context = scratch.view_with_limit(limit).into_context(
+        component,
+        &mut atom_stereo_cache,
+        &mut recursive_cache,
+    );
+    let mut seen = BTreeSet::new();
+    let mut embeddings = alloc::vec::Vec::new();
+    for_each_mapping(
+        &component.query,
+        target,
+        &mut context,
+        0,
+        &mut |query_to_target| {
+            let target_atoms = current_canonical_match_key(query_to_target);
+            if seen.insert(target_atoms.clone()) {
+                embeddings.push(component_embedding(target, target_atoms));
+            }
+            false
+        },
+    );
+    embeddings
+}
+
+fn component_embedding(target: &PreparedTarget, target_atoms: Box<[usize]>) -> ComponentEmbedding {
+    let target_component = target_atoms
+        .first()
+        .and_then(|&target_atom| target.connected_component(target_atom));
+    ComponentEmbedding {
+        target_atoms,
+        target_component,
+    }
+}
+
+fn component_embedding_assignment_exists(
+    component_sets: &[ComponentEmbeddingSet<'_>],
+    set_index: usize,
+    used_target_atoms: &mut [bool],
+    group_targets: &mut [Option<usize>],
+    limit: &impl MatchLimiter,
+) -> bool {
+    if !limit.continue_search() {
+        return false;
+    }
+    if set_index == component_sets.len() {
+        return true;
+    }
+
+    let component_set = &component_sets[set_index];
+    for embedding in &component_set.embeddings {
+        if component_embedding_overlaps(embedding, used_target_atoms)
+            || !component_embedding_group_matches(
+                component_set.entry.group,
+                embedding,
+                group_targets,
+            )
+        {
+            continue;
+        }
+
+        let previous_group_target =
+            bind_component_embedding_group(component_set.entry.group, embedding, group_targets);
+        set_component_embedding_used(embedding, used_target_atoms, true);
+        let matched = component_embedding_assignment_exists(
+            component_sets,
+            set_index + 1,
+            used_target_atoms,
+            group_targets,
+            limit,
+        );
+        set_component_embedding_used(embedding, used_target_atoms, false);
+        unbind_component_embedding_group(
+            component_set.entry.group,
+            previous_group_target,
+            group_targets,
+        );
+        if matched {
+            return true;
+        }
+    }
+    false
+}
+
+fn component_embedding_overlaps(
+    embedding: &ComponentEmbedding,
+    used_target_atoms: &[bool],
+) -> bool {
+    embedding
+        .target_atoms
+        .iter()
+        .any(|&target_atom| used_target_atoms[target_atom])
+}
+
+fn set_component_embedding_used(
+    embedding: &ComponentEmbedding,
+    used_target_atoms: &mut [bool],
+    used: bool,
+) {
+    for &target_atom in &embedding.target_atoms {
+        used_target_atoms[target_atom] = used;
+    }
+}
+
+fn component_embedding_group_matches(
+    group: Option<usize>,
+    embedding: &ComponentEmbedding,
+    group_targets: &[Option<usize>],
+) -> bool {
+    let Some(group) = group else {
+        return true;
+    };
+    let Some(target_component) = embedding.target_component else {
+        return false;
+    };
+    group_targets
+        .iter()
+        .enumerate()
+        .all(|(other_group, existing_target_component)| {
+            existing_target_component.is_none_or(|existing_target_component| {
+                if other_group == group {
+                    existing_target_component == target_component
+                } else {
+                    existing_target_component != target_component
+                }
+            })
+        })
+}
+
+fn bind_component_embedding_group(
+    group: Option<usize>,
+    embedding: &ComponentEmbedding,
+    group_targets: &mut [Option<usize>],
+) -> Option<usize> {
+    let group = group?;
+    let previous = group_targets[group];
+    group_targets[group] = embedding.target_component;
+    previous
+}
+
+fn unbind_component_embedding_group(
+    group: Option<usize>,
+    previous_target_component: Option<usize>,
+    group_targets: &mut [Option<usize>],
+) {
+    if let Some(group) = group {
+        group_targets[group] = previous_target_component;
+    }
+}
+
 const fn can_solve_bondless_by_assignment(query: &CompiledQuery) -> bool {
     !query.has_component_constraints && !query.has_stereo_constraints
 }
@@ -5345,10 +5691,7 @@ fn is_hidden_attached_hydrogen(target: &PreparedTarget, atom_id: usize) -> bool 
 
 #[cfg(test)]
 mod tests {
-    use alloc::{
-        format,
-        string::{String, ToString},
-    };
+    use alloc::{format, string::String};
     use core::str::FromStr;
 
     use smiles_parser::Smiles;
@@ -5862,18 +6205,64 @@ mod tests {
     #[test]
     fn disconnected_prechecks_skip_recursive_components() {
         let compiled = CompiledQuery::new(QueryMol::from_str("[$(C.O)].N").unwrap()).unwrap();
+        let precheck_count = compiled
+            .component_plan
+            .iter()
+            .filter(|component| component.supports_precheck())
+            .count();
 
-        assert_eq!(compiled.component_prechecks.len(), 1);
-        assert_eq!(compiled.component_prechecks[0].query().to_string(), "N");
+        assert_eq!(precheck_count, 1);
+    }
+
+    #[test]
+    fn disconnected_component_search_handles_repeated_component_fuzz_artifact() {
+        let smarts = concat!(
+            "[!!12C,16O,D,D11,h,v14].",
+            "([!r6&$([#6,#7]):57773].[R:30837]).",
+            "[+0,z11,+0&+0,+0]-;@[+0&+0,+0,z11,+0](!:[+0,z11,+0&+0,+0]).",
+            "[+0&+0,+0,z11,+0]!:[+0,z11,+0&+0,+0](-;@[+0&+0,+0,z11,+0]).",
+            "[z11,+0&+0,+0,z11]!:[+0,+0,z11,+0](!:[+0,z11,+0&+0,+0]).",
+            "[+0,+0,z11,+0]!:[+0,z11,+0&+0,+0](-;@[+0&+0,+0,z11,+0])",
+        );
+        let target = PreparedTarget::new(
+            Smiles::from_str("CCN1C(=O)C(=CNC2=CC=C(C=C2)CCN3CCN(CC3)C)SC1=C(C#N)C(=O)OCC")
+                .unwrap(),
+        );
+        let compiled = CompiledQuery::new(QueryMol::from_str(smarts).unwrap()).unwrap();
+        let mut scratch = MatchScratch::new();
+
+        let mut polls = 0usize;
+        assert_eq!(
+            compiled.matches_with_scratch_and_interrupt(&target, &mut scratch, || {
+                polls += 1;
+                polls > 1_000
+            }),
+            MatchLimitResult::Complete(false)
+        );
+    }
+
+    #[test]
+    fn disconnected_component_search_respects_zero_level_groups() {
+        let compiled = CompiledQuery::new(QueryMol::from_str("(C-C.N)").unwrap()).unwrap();
+        let same_component = PreparedTarget::new(Smiles::from_str("CCN").unwrap());
+        let separate_components = PreparedTarget::new(Smiles::from_str("CC.N").unwrap());
+
+        assert!(compiled.matches(&same_component));
+        assert!(!compiled.matches(&separate_components));
     }
 
     #[test]
     fn compiled_query_handles_deep_recursive_component_chain_regression() {
         let smarts = recursive_component_chain(12);
         let compiled = CompiledQuery::new(QueryMol::from_str(&smarts).unwrap()).unwrap();
+        let precheck_count = compiled
+            .component_plan
+            .iter()
+            .filter(|component| component.supports_precheck())
+            .count();
 
         assert_eq!(compiled.query().component_count(), 2);
-        assert_eq!(compiled.component_prechecks.len(), 1);
+        assert_eq!(precheck_count, 1);
     }
 
     #[test]
