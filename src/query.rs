@@ -430,96 +430,43 @@ impl QueryMol {
 
 impl fmt::Display for QueryMol {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        QueryMolWriter::new(self).write(f)
+        write_query_mol_nonrecursive(f, self)
     }
 }
 
 impl fmt::Display for AtomExpr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Wildcard => f.write_str("*"),
-            Self::Bare { element, aromatic } => write_atom_expr_element(f, *element, *aromatic),
-            Self::Bracket(expr) => write!(f, "[{expr}]"),
-        }
+        write_atom_expr_nonrecursive(f, self)
     }
 }
 
 impl fmt::Display for BracketExpr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.tree.fmt(f)?;
-        if let Some(atom_map) = self.atom_map {
-            write!(f, ":{atom_map}")?;
-        }
-        Ok(())
+        write_bracket_expr_nonrecursive(f, self)
     }
 }
 
 impl fmt::Display for BracketExprTree {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Primitive(primitive) => primitive.fmt(f),
-            Self::Not(inner) => write!(f, "!{inner}"),
-            Self::HighAnd(items) => write_joined(f, items, "&"),
-            Self::Or(items) => write_joined(f, items, ","),
-            Self::LowAnd(items) => write_joined(f, items, ";"),
-        }
+        write_bracket_expr_tree_nonrecursive(f, self)
     }
 }
 
 impl fmt::Display for AtomPrimitive {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Wildcard => f.write_str("*"),
-            Self::AliphaticAny => f.write_str("A"),
-            Self::AromaticAny => f.write_str("a"),
-            Self::Symbol {
-                element: Element::H,
-                aromatic: false,
-            } => f.write_str("#1"),
-            Self::Symbol { element, aromatic } => write_smarts_element(f, *element, *aromatic),
-            Self::Isotope { isotope, aromatic } => write_smarts_isotope(f, *isotope, *aromatic),
-            Self::IsotopeWildcard(mass_number) => write!(f, "{mass_number}*"),
-            Self::AtomicNumber(atomic_number) => write!(f, "#{atomic_number}"),
-            Self::Degree(query) => write_numeric_query_suffix(f, "D", *query),
-            Self::Connectivity(query) => write_numeric_query_suffix(f, "X", *query),
-            Self::Valence(query) => write_numeric_query_suffix(f, "v", *query),
-            Self::RecursiveQuery(query) => write!(f, "$({query})"),
-            Self::Hydrogen(HydrogenKind::Total, query) => {
-                write_numeric_query_suffix(f, "H", *query)
-            }
-            Self::Hydrogen(HydrogenKind::Implicit, query) => {
-                write_numeric_query_suffix(f, "h", *query)
-            }
-            Self::RingMembership(query) => write_numeric_query_suffix(f, "R", *query),
-            Self::RingSize(query) => write_numeric_query_suffix(f, "r", *query),
-            Self::RingConnectivity(query) => write_numeric_query_suffix(f, "x", *query),
-            Self::Hybridization(query) => write_required_numeric_query_suffix(f, "^", *query),
-            Self::HeteroNeighbor(query) => write_numeric_query_suffix(f, "z", *query),
-            Self::AliphaticHeteroNeighbor(query) => write_numeric_query_suffix(f, "Z", *query),
-            Self::Chirality(chirality) => chirality.fmt(f),
-            Self::Charge(charge) => write_charge(f, *charge),
-        }
+        write_atom_primitive_nonrecursive(f, self)
     }
 }
 
 impl fmt::Display for BondExpr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Elided => Ok(()),
-            Self::Query(tree) => tree.fmt(f),
-        }
+        write_bond_expr_nonrecursive(f, self)
     }
 }
 
 impl fmt::Display for BondExprTree {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Primitive(primitive) => primitive.fmt(f),
-            Self::Not(inner) => write!(f, "!{inner}"),
-            Self::HighAnd(items) => write_joined(f, items, "&"),
-            Self::Or(items) => write_joined(f, items, ","),
-            Self::LowAnd(items) => write_joined(f, items, ";"),
-        }
+        write_bond_expr_tree_nonrecursive(f, self)
     }
 }
 
@@ -533,18 +480,367 @@ impl fmt::Display for BondPrimitive {
     }
 }
 
-fn write_joined(
+fn write_query_mol_nonrecursive(f: &mut fmt::Formatter<'_>, mol: &QueryMol) -> fmt::Result {
+    let mut writer = QueryDisplayWriter::new();
+    writer.push_query(mol);
+    writer.write(f)
+}
+
+fn write_atom_expr_nonrecursive(f: &mut fmt::Formatter<'_>, expr: &AtomExpr) -> fmt::Result {
+    let mut writer = QueryDisplayWriter::new();
+    writer.push_atom_expr(expr);
+    writer.write(f)
+}
+
+fn write_bracket_expr_nonrecursive(f: &mut fmt::Formatter<'_>, expr: &BracketExpr) -> fmt::Result {
+    let mut writer = QueryDisplayWriter::new();
+    writer.push_bracket_expr(expr);
+    writer.write(f)
+}
+
+fn write_bracket_expr_tree_nonrecursive(
     f: &mut fmt::Formatter<'_>,
-    items: &[impl fmt::Display],
-    separator: &str,
+    tree: &BracketExprTree,
 ) -> fmt::Result {
-    for (index, item) in items.iter().enumerate() {
-        if index > 0 {
-            f.write_str(separator)?;
+    let mut writer = QueryDisplayWriter::new();
+    writer.push_bracket_expr_tree(tree);
+    writer.write(f)
+}
+
+fn write_atom_primitive_nonrecursive(
+    f: &mut fmt::Formatter<'_>,
+    primitive: &AtomPrimitive,
+) -> fmt::Result {
+    let mut writer = QueryDisplayWriter::new();
+    writer.push_atom_primitive(primitive);
+    writer.write(f)
+}
+
+fn write_bond_expr_nonrecursive(f: &mut fmt::Formatter<'_>, expr: &BondExpr) -> fmt::Result {
+    match expr {
+        BondExpr::Elided => Ok(()),
+        BondExpr::Query(tree) => write_bond_expr_tree_nonrecursive(f, tree),
+    }
+}
+
+fn write_bond_expr_tree_nonrecursive(
+    f: &mut fmt::Formatter<'_>,
+    tree: &BondExprTree,
+) -> fmt::Result {
+    let mut stack = vec![BondDisplayTask::Tree(tree)];
+    while let Some(task) = stack.pop() {
+        match task {
+            BondDisplayTask::Text(text) => f.write_str(text)?,
+            BondDisplayTask::Tree(tree) => match tree {
+                BondExprTree::Primitive(primitive) => write!(f, "{primitive}")?,
+                BondExprTree::Not(inner) => {
+                    stack.push(BondDisplayTask::Tree(inner));
+                    stack.push(BondDisplayTask::Text("!"));
+                }
+                BondExprTree::HighAnd(items) => {
+                    push_bond_join_tasks(&mut stack, items, "&");
+                }
+                BondExprTree::Or(items) => {
+                    push_bond_join_tasks(&mut stack, items, ",");
+                }
+                BondExprTree::LowAnd(items) => {
+                    push_bond_join_tasks(&mut stack, items, ";");
+                }
+            },
         }
-        write!(f, "{item}")?;
     }
     Ok(())
+}
+
+fn push_bond_join_tasks<'a>(
+    stack: &mut Vec<BondDisplayTask<'a>>,
+    items: &'a [BondExprTree],
+    separator: &'static str,
+) {
+    for index in (0..items.len()).rev() {
+        stack.push(BondDisplayTask::Tree(&items[index]));
+        if index > 0 {
+            stack.push(BondDisplayTask::Text(separator));
+        }
+    }
+}
+
+enum BondDisplayTask<'a> {
+    Text(&'static str),
+    Tree(&'a BondExprTree),
+}
+
+struct QueryDisplayWriter<'a> {
+    query_writers: Vec<QueryMolWriter<'a>>,
+    tasks: Vec<QueryDisplayTask<'a>>,
+}
+
+enum QueryDisplayTask<'a> {
+    Text(&'static str),
+    Query(usize),
+    QueryAtom(usize, AtomId),
+    QueryBondToChild(usize, AtomId),
+    QueryRingTokenBond(usize, AtomId, usize),
+    RingLabel(u32),
+    AtomExpr(&'a AtomExpr),
+    BracketExpr(&'a BracketExpr),
+    BracketExprTree(&'a BracketExprTree),
+    AtomPrimitive(&'a AtomPrimitive),
+    AtomMap(u32),
+}
+
+impl<'a> QueryDisplayWriter<'a> {
+    const fn new() -> Self {
+        Self {
+            query_writers: Vec::new(),
+            tasks: Vec::new(),
+        }
+    }
+
+    fn push_query(&mut self, mol: &'a QueryMol) {
+        let writer_index = self.query_writers.len();
+        self.query_writers.push(QueryMolWriter::new(mol));
+        self.tasks.push(QueryDisplayTask::Query(writer_index));
+    }
+
+    fn push_atom_expr(&mut self, expr: &'a AtomExpr) {
+        self.tasks.push(QueryDisplayTask::AtomExpr(expr));
+    }
+
+    fn push_bracket_expr(&mut self, expr: &'a BracketExpr) {
+        self.tasks.push(QueryDisplayTask::BracketExpr(expr));
+    }
+
+    fn push_bracket_expr_tree(&mut self, tree: &'a BracketExprTree) {
+        self.tasks.push(QueryDisplayTask::BracketExprTree(tree));
+    }
+
+    fn push_atom_primitive(&mut self, primitive: &'a AtomPrimitive) {
+        self.tasks.push(QueryDisplayTask::AtomPrimitive(primitive));
+    }
+
+    fn write(&mut self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        while let Some(task) = self.tasks.pop() {
+            match task {
+                QueryDisplayTask::Text(text) => f.write_str(text)?,
+                QueryDisplayTask::Query(writer_index) => self.push_query_tasks(writer_index),
+                QueryDisplayTask::QueryAtom(writer_index, atom_id) => {
+                    self.push_query_atom_tasks(writer_index, atom_id);
+                }
+                QueryDisplayTask::QueryBondToChild(writer_index, child_id) => {
+                    self.write_bond_to_child(writer_index, child_id, f)?;
+                }
+                QueryDisplayTask::QueryRingTokenBond(writer_index, atom_id, token_index) => {
+                    self.write_ring_token_bond(writer_index, atom_id, token_index, f)?;
+                }
+                QueryDisplayTask::RingLabel(label) => write_ring_label(f, label)?,
+                QueryDisplayTask::AtomExpr(expr) => self.write_atom_expr(expr, f)?,
+                QueryDisplayTask::BracketExpr(expr) => self.push_bracket_expr_tasks(expr),
+                QueryDisplayTask::BracketExprTree(tree) => self.write_bracket_expr_tree(tree),
+                QueryDisplayTask::AtomPrimitive(primitive) => {
+                    self.write_atom_primitive(primitive, f)?;
+                }
+                QueryDisplayTask::AtomMap(atom_map) => write!(f, ":{atom_map}")?,
+            }
+        }
+        Ok(())
+    }
+
+    fn push_query_tasks(&mut self, writer_index: usize) {
+        let entries = self.query_writers[writer_index].top_level_entries.clone();
+        for entry_index in (0..entries.len()).rev() {
+            let entry = &entries[entry_index];
+            if entry.grouped {
+                self.tasks.push(QueryDisplayTask::Text(")"));
+            }
+            for component_index in (0..entry.components.len()).rev() {
+                self.tasks.push(QueryDisplayTask::QueryAtom(
+                    writer_index,
+                    entry.components[component_index],
+                ));
+                if component_index > 0 {
+                    self.tasks.push(QueryDisplayTask::Text("."));
+                }
+            }
+            if entry.grouped {
+                self.tasks.push(QueryDisplayTask::Text("("));
+            }
+            if entry_index > 0 {
+                self.tasks.push(QueryDisplayTask::Text("."));
+            }
+        }
+    }
+
+    fn push_query_atom_tasks(&mut self, writer_index: usize, atom_id: AtomId) {
+        self.push_atom_children_tasks(writer_index, atom_id);
+        self.push_ring_token_tasks(writer_index, atom_id);
+        let expr = &self.query_writers[writer_index].mol.atoms[atom_id].expr;
+        self.tasks.push(QueryDisplayTask::AtomExpr(expr));
+    }
+
+    fn push_atom_children_tasks(&mut self, writer_index: usize, atom_id: AtomId) {
+        let children = self.query_writers[writer_index].children_by_atom[atom_id].clone();
+        let Some(&main_child) = children.last() else {
+            return;
+        };
+
+        if self.query_writers[writer_index].requires_parenthesized_main_child(atom_id, main_child) {
+            self.tasks.push(QueryDisplayTask::Text(")"));
+            self.tasks
+                .push(QueryDisplayTask::QueryAtom(writer_index, main_child));
+            self.tasks
+                .push(QueryDisplayTask::QueryBondToChild(writer_index, main_child));
+            self.tasks.push(QueryDisplayTask::Text("("));
+        } else {
+            self.tasks
+                .push(QueryDisplayTask::QueryAtom(writer_index, main_child));
+            self.tasks
+                .push(QueryDisplayTask::QueryBondToChild(writer_index, main_child));
+        }
+
+        for &child in children[..children.len() - 1].iter().rev() {
+            self.tasks.push(QueryDisplayTask::Text(")"));
+            self.tasks
+                .push(QueryDisplayTask::QueryAtom(writer_index, child));
+            self.tasks
+                .push(QueryDisplayTask::QueryBondToChild(writer_index, child));
+            self.tasks.push(QueryDisplayTask::Text("("));
+        }
+    }
+
+    fn push_ring_token_tasks(&mut self, writer_index: usize, atom_id: AtomId) {
+        let token_count = self.query_writers[writer_index].ring_tokens_by_atom[atom_id].len();
+        for token_index in (0..token_count).rev() {
+            let label =
+                self.query_writers[writer_index].ring_tokens_by_atom[atom_id][token_index].label;
+            self.tasks.push(QueryDisplayTask::RingLabel(label));
+            self.tasks.push(QueryDisplayTask::QueryRingTokenBond(
+                writer_index,
+                atom_id,
+                token_index,
+            ));
+        }
+    }
+
+    fn write_bond_to_child(
+        &self,
+        writer_index: usize,
+        child_id: AtomId,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result {
+        let writer = &self.query_writers[writer_index];
+        let bond_id = writer.parent_bond_by_atom[child_id].expect("child must have a parent bond");
+        write_bond_expr_nonrecursive(f, &writer.mol.bonds[bond_id].expr)
+    }
+
+    fn write_ring_token_bond(
+        &self,
+        writer_index: usize,
+        atom_id: AtomId,
+        token_index: usize,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result {
+        let token = &self.query_writers[writer_index].ring_tokens_by_atom[atom_id][token_index];
+        write_bond_expr_nonrecursive(f, &token.expr)
+    }
+
+    fn write_atom_expr(&mut self, expr: &'a AtomExpr, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match expr {
+            AtomExpr::Wildcard => f.write_str("*"),
+            AtomExpr::Bare { element, aromatic } => write_atom_expr_element(f, *element, *aromatic),
+            AtomExpr::Bracket(expr) => {
+                self.tasks.push(QueryDisplayTask::Text("]"));
+                self.tasks.push(QueryDisplayTask::BracketExpr(expr));
+                self.tasks.push(QueryDisplayTask::Text("["));
+                Ok(())
+            }
+        }
+    }
+
+    fn push_bracket_expr_tasks(&mut self, expr: &'a BracketExpr) {
+        if let Some(atom_map) = expr.atom_map {
+            self.tasks.push(QueryDisplayTask::AtomMap(atom_map));
+        }
+        self.tasks
+            .push(QueryDisplayTask::BracketExprTree(&expr.tree));
+    }
+
+    fn write_bracket_expr_tree(&mut self, tree: &'a BracketExprTree) {
+        match tree {
+            BracketExprTree::Primitive(primitive) => {
+                self.tasks.push(QueryDisplayTask::AtomPrimitive(primitive));
+            }
+            BracketExprTree::Not(inner) => {
+                self.tasks.push(QueryDisplayTask::BracketExprTree(inner));
+                self.tasks.push(QueryDisplayTask::Text("!"));
+            }
+            BracketExprTree::HighAnd(items) => self.push_bracket_join_tasks(items, "&"),
+            BracketExprTree::Or(items) => self.push_bracket_join_tasks(items, ","),
+            BracketExprTree::LowAnd(items) => self.push_bracket_join_tasks(items, ";"),
+        }
+    }
+
+    fn push_bracket_join_tasks(&mut self, items: &'a [BracketExprTree], separator: &'static str) {
+        for index in (0..items.len()).rev() {
+            self.tasks
+                .push(QueryDisplayTask::BracketExprTree(&items[index]));
+            if index > 0 {
+                self.tasks.push(QueryDisplayTask::Text(separator));
+            }
+        }
+    }
+
+    fn write_atom_primitive(
+        &mut self,
+        primitive: &'a AtomPrimitive,
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result {
+        match primitive {
+            AtomPrimitive::RecursiveQuery(query) => {
+                self.tasks.push(QueryDisplayTask::Text(")"));
+                self.push_query(query);
+                self.tasks.push(QueryDisplayTask::Text("$("));
+                Ok(())
+            }
+            other => write_atom_primitive_leaf(f, other),
+        }
+    }
+}
+
+fn write_atom_primitive_leaf(f: &mut fmt::Formatter<'_>, primitive: &AtomPrimitive) -> fmt::Result {
+    match primitive {
+        AtomPrimitive::Wildcard => f.write_str("*"),
+        AtomPrimitive::AliphaticAny => f.write_str("A"),
+        AtomPrimitive::AromaticAny => f.write_str("a"),
+        AtomPrimitive::Symbol {
+            element: Element::H,
+            aromatic: false,
+        } => f.write_str("#1"),
+        AtomPrimitive::Symbol { element, aromatic } => write_smarts_element(f, *element, *aromatic),
+        AtomPrimitive::Isotope { isotope, aromatic } => {
+            write_smarts_isotope(f, *isotope, *aromatic)
+        }
+        AtomPrimitive::IsotopeWildcard(mass_number) => write!(f, "{mass_number}*"),
+        AtomPrimitive::AtomicNumber(atomic_number) => write!(f, "#{atomic_number}"),
+        AtomPrimitive::Degree(query) => write_numeric_query_suffix(f, "D", *query),
+        AtomPrimitive::Connectivity(query) => write_numeric_query_suffix(f, "X", *query),
+        AtomPrimitive::Valence(query) => write_numeric_query_suffix(f, "v", *query),
+        AtomPrimitive::RecursiveQuery(_) => unreachable!("recursive queries are handled by stack"),
+        AtomPrimitive::Hydrogen(HydrogenKind::Total, query) => {
+            write_numeric_query_suffix(f, "H", *query)
+        }
+        AtomPrimitive::Hydrogen(HydrogenKind::Implicit, query) => {
+            write_numeric_query_suffix(f, "h", *query)
+        }
+        AtomPrimitive::RingMembership(query) => write_numeric_query_suffix(f, "R", *query),
+        AtomPrimitive::RingSize(query) => write_numeric_query_suffix(f, "r", *query),
+        AtomPrimitive::RingConnectivity(query) => write_numeric_query_suffix(f, "x", *query),
+        AtomPrimitive::Hybridization(query) => write_required_numeric_query_suffix(f, "^", *query),
+        AtomPrimitive::HeteroNeighbor(query) => write_numeric_query_suffix(f, "z", *query),
+        AtomPrimitive::AliphaticHeteroNeighbor(query) => write_numeric_query_suffix(f, "Z", *query),
+        AtomPrimitive::Chirality(chirality) => write!(f, "{chirality}"),
+        AtomPrimitive::Charge(charge) => write_charge(f, *charge),
+    }
 }
 
 fn write_smarts_element(
@@ -755,13 +1051,6 @@ struct QueryMolWriter<'a> {
     top_level_entries: Vec<TopLevelEntry>,
 }
 
-enum WriteTask {
-    Atom(AtomId),
-    Bond(AtomId),
-    OpenParen,
-    CloseParen,
-}
-
 impl<'a> QueryMolWriter<'a> {
     fn new(mol: &'a QueryMol) -> Self {
         let (parent_bond_by_atom, component_roots) = build_spanning_forest(mol);
@@ -803,73 +1092,6 @@ impl<'a> QueryMolWriter<'a> {
         }
     }
 
-    fn write(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (index, entry) in self.top_level_entries.iter().enumerate() {
-            if index > 0 {
-                f.write_str(".")?;
-            }
-            if entry.grouped {
-                f.write_str("(")?;
-            }
-            for (component_index, root) in entry.components.iter().enumerate() {
-                if component_index > 0 {
-                    f.write_str(".")?;
-                }
-                self.write_atom_with_subtree(*root, f)?;
-            }
-            if entry.grouped {
-                f.write_str(")")?;
-            }
-        }
-        Ok(())
-    }
-
-    fn write_atom_with_subtree(&self, atom_id: AtomId, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut stack = vec![WriteTask::Atom(atom_id)];
-        while let Some(task) = stack.pop() {
-            match task {
-                WriteTask::Atom(atom_id) => {
-                    write!(f, "{}", self.mol.atoms[atom_id].expr)?;
-                    self.write_ring_tokens(atom_id, f)?;
-
-                    let children = &self.children_by_atom[atom_id];
-                    if children.is_empty() {
-                        continue;
-                    }
-
-                    let main_child = *children.last().expect("children non-empty");
-                    if self.requires_parenthesized_main_child(atom_id, main_child) {
-                        stack.push(WriteTask::CloseParen);
-                        stack.push(WriteTask::Atom(main_child));
-                        stack.push(WriteTask::Bond(main_child));
-                        stack.push(WriteTask::OpenParen);
-                    } else {
-                        stack.push(WriteTask::Atom(main_child));
-                        stack.push(WriteTask::Bond(main_child));
-                    }
-
-                    for &child in children[..children.len() - 1].iter().rev() {
-                        stack.push(WriteTask::CloseParen);
-                        stack.push(WriteTask::Atom(child));
-                        stack.push(WriteTask::Bond(child));
-                        stack.push(WriteTask::OpenParen);
-                    }
-                }
-                WriteTask::Bond(child_id) => self.write_bond_to_child(child_id, f)?,
-                WriteTask::OpenParen => f.write_str("(")?,
-                WriteTask::CloseParen => f.write_str(")")?,
-            }
-        }
-
-        Ok(())
-    }
-
-    fn write_bond_to_child(&self, child_id: AtomId, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let bond_id = self.parent_bond_by_atom[child_id].expect("child must have a parent bond");
-        let bond = &self.mol.bonds[bond_id];
-        write!(f, "{}", bond.expr)
-    }
-
     fn requires_parenthesized_main_child(&self, atom_id: AtomId, child_id: AtomId) -> bool {
         let bond_id = self.parent_bond_by_atom[child_id].expect("child must have a parent bond");
         let bond = &self.mol.bonds[bond_id];
@@ -887,14 +1109,6 @@ impl<'a> QueryMolWriter<'a> {
         let combined = parent_text + &child_text;
 
         parse_supported_bare_element(&combined).is_some_and(|(_, _, width)| width > parent_width)
-    }
-
-    fn write_ring_tokens(&self, atom_id: AtomId, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for token in &self.ring_tokens_by_atom[atom_id] {
-            write!(f, "{}", token.expr)?;
-            write_ring_label(f, token.label)?;
-        }
-        Ok(())
     }
 }
 
@@ -1761,5 +1975,150 @@ mod tests {
         let query = QueryMol::from_parts(atoms, bonds, 1, vec![None]);
 
         assert_eq!(query.to_string(), "C".repeat(atom_count));
+    }
+
+    #[test]
+    #[cfg(all(not(target_arch = "wasm32"), target_family = "unix"))]
+    fn query_display_handles_deep_recursive_structures_without_stack_overflow() {
+        const CHILD_ENV: &str = "SMARTS_RS_DEEP_DISPLAY_REPRO";
+        const TEST_NAME: &str =
+            "query::tests::query_display_handles_deep_recursive_structures_without_stack_overflow";
+
+        if let Some(mode) = std::env::var_os(CHILD_ENV) {
+            let mode = mode.to_string_lossy().into_owned();
+            let handle = std::thread::Builder::new()
+                .stack_size(64 * 1024)
+                .spawn(move || run_deep_display_repro(&mode))
+                .unwrap();
+            handle.join().unwrap();
+            return;
+        }
+
+        for mode in [
+            "bracket-not",
+            "bond-not",
+            "recursive-query",
+            "mixed-bracket",
+        ] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .arg(TEST_NAME)
+                .arg("--exact")
+                .arg("--nocapture")
+                .arg("--test-threads=1")
+                .env(CHILD_ENV, mode)
+                .output()
+                .unwrap();
+
+            assert!(
+                output.status.success(),
+                "deep query display mode `{mode}` failed\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+        }
+    }
+
+    #[cfg(all(not(target_arch = "wasm32"), target_family = "unix"))]
+    fn run_deep_display_repro(mode: &str) {
+        match mode {
+            "bracket-not" => {
+                let query = Box::new(deeply_nested_bracket_query(50_000));
+                let rendered = query.to_string();
+                assert!(rendered.starts_with('['));
+                assert!(rendered.ends_with(']'));
+                std::mem::forget(query);
+            }
+            "bond-not" => {
+                let tree = Box::new(deeply_nested_bond_tree(50_000));
+                let rendered = tree.to_string();
+                assert!(rendered.starts_with('!'));
+                assert!(rendered.ends_with('@'));
+                std::mem::forget(tree);
+            }
+            "recursive-query" => {
+                let query = Box::new(deeply_nested_recursive_query(10_000));
+                let rendered = query.to_string();
+                assert!(rendered.starts_with("[$("));
+                assert!(rendered.ends_with(")]"));
+                std::mem::forget(query);
+            }
+            "mixed-bracket" => {
+                let query = Box::new(deeply_nested_mixed_bracket_query(20_000));
+                let rendered = query.to_string();
+                assert!(rendered.starts_with('['));
+                assert!(rendered.ends_with(']'));
+                std::mem::forget(query);
+            }
+            other => panic!("unknown deep display repro mode: {other}"),
+        }
+    }
+
+    #[cfg(all(not(target_arch = "wasm32"), target_family = "unix"))]
+    fn deeply_nested_bracket_query(depth: usize) -> QueryMol {
+        let mut tree = BracketExprTree::Primitive(AtomPrimitive::AtomicNumber(6));
+        for _ in 0..depth {
+            tree = BracketExprTree::Not(Box::new(tree));
+        }
+        one_atom_bracket_query(tree)
+    }
+
+    #[cfg(all(not(target_arch = "wasm32"), target_family = "unix"))]
+    fn deeply_nested_mixed_bracket_query(depth: usize) -> QueryMol {
+        let mut tree = BracketExprTree::Primitive(AtomPrimitive::AtomicNumber(6));
+        for index in 0..depth {
+            tree = match index % 3 {
+                0 => BracketExprTree::HighAnd(vec![
+                    tree,
+                    BracketExprTree::Primitive(AtomPrimitive::AliphaticAny),
+                ]),
+                1 => BracketExprTree::Or(vec![
+                    BracketExprTree::Primitive(AtomPrimitive::AromaticAny),
+                    tree,
+                ]),
+                _ => BracketExprTree::LowAnd(vec![
+                    tree,
+                    BracketExprTree::Primitive(AtomPrimitive::Wildcard),
+                ]),
+            };
+        }
+        one_atom_bracket_query(tree)
+    }
+
+    #[cfg(all(not(target_arch = "wasm32"), target_family = "unix"))]
+    fn deeply_nested_recursive_query(depth: usize) -> QueryMol {
+        let mut query =
+            one_atom_bracket_query(BracketExprTree::Primitive(AtomPrimitive::AtomicNumber(6)));
+        for _ in 0..depth {
+            query = one_atom_bracket_query(BracketExprTree::Primitive(
+                AtomPrimitive::RecursiveQuery(Box::new(query)),
+            ));
+        }
+        query
+    }
+
+    #[cfg(all(not(target_arch = "wasm32"), target_family = "unix"))]
+    fn one_atom_bracket_query(tree: BracketExprTree) -> QueryMol {
+        QueryMol::from_parts(
+            vec![QueryAtom {
+                id: 0,
+                component: 0,
+                expr: AtomExpr::Bracket(BracketExpr {
+                    tree,
+                    atom_map: None,
+                }),
+            }],
+            vec![],
+            1,
+            vec![None],
+        )
+    }
+
+    #[cfg(all(not(target_arch = "wasm32"), target_family = "unix"))]
+    fn deeply_nested_bond_tree(depth: usize) -> BondExprTree {
+        let mut tree = BondExprTree::Primitive(BondPrimitive::Ring);
+        for _ in 0..depth {
+            tree = BondExprTree::Not(Box::new(tree));
+        }
+        tree
     }
 }

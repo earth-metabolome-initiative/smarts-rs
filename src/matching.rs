@@ -268,7 +268,7 @@ struct ComponentPlanEntry {
 enum ComponentMatcher {
     Compiled(Box<CompiledQuery>),
     SingleAtom(QueryAtomId),
-    UnsupportedRecursive,
+    RecursiveComponent,
 }
 
 impl ComponentPlanEntry {
@@ -278,8 +278,9 @@ impl ComponentPlanEntry {
 
     const fn supports_component_search(&self) -> bool {
         match &self.matcher {
-            ComponentMatcher::Compiled(_) | ComponentMatcher::SingleAtom(_) => true,
-            ComponentMatcher::UnsupportedRecursive => false,
+            ComponentMatcher::Compiled(_)
+            | ComponentMatcher::SingleAtom(_)
+            | ComponentMatcher::RecursiveComponent => true,
         }
     }
 }
@@ -2051,7 +2052,7 @@ fn compile_component_plan(query: &QueryMol) -> Result<Box<[ComponentPlanEntry]>,
         let matcher = if let [query_atom] = component_atoms {
             ComponentMatcher::SingleAtom(*query_atom)
         } else if !precheckable {
-            ComponentMatcher::UnsupportedRecursive
+            ComponentMatcher::RecursiveComponent
         } else {
             ComponentMatcher::Compiled(Box::new(CompiledQuery::new(
                 extract_single_component_query(query, component_id),
@@ -2524,7 +2525,7 @@ fn component_prechecks_match<L: MatchLimiter>(
             ComponentMatcher::SingleAtom(query_atom) => {
                 single_atom_component_matches(query, target, context, *query_atom)
             }
-            ComponentMatcher::UnsupportedRecursive => true,
+            ComponentMatcher::RecursiveComponent => true,
         })
 }
 
@@ -4086,7 +4087,9 @@ fn collect_component_embeddings(
         ComponentMatcher::SingleAtom(query_atom) => {
             collect_single_atom_component_embeddings(query, target, context, *query_atom)
         }
-        ComponentMatcher::UnsupportedRecursive => alloc::vec::Vec::new(),
+        ComponentMatcher::RecursiveComponent => {
+            collect_recursive_component_embeddings(query, target, context, entry.component_id)
+        }
     }
 }
 
@@ -4130,6 +4133,32 @@ fn collect_single_atom_component_embeddings(
     .collect()
 }
 
+fn collect_recursive_component_embeddings(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    context: &mut SearchContext<'_, impl MatchLimiter>,
+    component_id: usize,
+) -> alloc::vec::Vec<ComponentEmbedding> {
+    let mut seen = BTreeSet::new();
+    let mut embeddings = alloc::vec::Vec::new();
+    for_each_component_mapping(
+        query,
+        target,
+        context,
+        component_id,
+        0,
+        &mut |query_to_target| {
+            let target_atoms =
+                current_component_canonical_match_key(&query.query, component_id, query_to_target);
+            if seen.insert(target_atoms.clone()) {
+                embeddings.push(component_embedding(target, target_atoms));
+            }
+            false
+        },
+    );
+    embeddings
+}
+
 fn single_atom_component_target_matches(
     query: &CompiledQuery,
     target: &PreparedTarget,
@@ -4145,6 +4174,146 @@ fn single_atom_component_target_matches(
         target_atom,
         context.limit,
     )
+}
+
+fn for_each_component_mapping(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    context: &mut SearchContext<'_, impl MatchLimiter>,
+    component_id: usize,
+    mapped_count: usize,
+    visit: &mut impl FnMut(&[Option<usize>]) -> bool,
+) -> bool {
+    if !context.continue_search() {
+        return true;
+    }
+    if mapped_count == query.query.component_atoms(component_id).len() {
+        return component_mapping_stereo_constraints_match(
+            query,
+            component_id,
+            target,
+            context.query_to_target,
+            context.atom_stereo_cache,
+        ) && visit(context.query_to_target);
+    }
+
+    let next_query_atom =
+        select_next_component_query_atom_for_target(&query.query, context, component_id);
+    for target_atom in candidate_target_atoms(next_query_atom, target, context) {
+        if !compiled_query_atom_matches_with_limit(
+            context.compiled_query,
+            target,
+            context.recursive_cache,
+            next_query_atom,
+            target_atom,
+            context.limit,
+        ) {
+            continue;
+        }
+
+        context.query_to_target[next_query_atom] = Some(target_atom);
+        context.mark_target_atom_used(target_atom);
+        let stop = for_each_component_mapping(
+            query,
+            target,
+            context,
+            component_id,
+            mapped_count + 1,
+            visit,
+        );
+        context.unmark_target_atom_used(target_atom);
+        context.query_to_target[next_query_atom] = None;
+        if stop {
+            return true;
+        }
+    }
+    false
+}
+
+fn select_next_component_query_atom_for_target(
+    query: &QueryMol,
+    context: &SearchContext<'_, impl MatchLimiter>,
+    component_id: usize,
+) -> QueryAtomId {
+    let mut best_atom = None;
+    let mut best_key = (
+        0usize,
+        core::cmp::Reverse(usize::MAX),
+        0usize,
+        0usize,
+        core::cmp::Reverse(usize::MAX),
+    );
+
+    for &query_atom in query.component_atoms(component_id) {
+        if context.query_to_target[query_atom].is_some() {
+            continue;
+        }
+        let neighbors = &context.query_neighbors[query_atom];
+        let mapped_neighbors = neighbors
+            .iter()
+            .filter(|(neighbor, _)| context.query_to_target[*neighbor].is_some())
+            .count();
+        let search_width_estimate = if mapped_neighbors == 0 {
+            context.query_atom_anchor_widths[query_atom]
+        } else {
+            usize::MAX
+        };
+        let key = (
+            mapped_neighbors,
+            core::cmp::Reverse(search_width_estimate),
+            context.query_atom_scores[query_atom],
+            neighbors.len(),
+            core::cmp::Reverse(query_atom),
+        );
+        if best_atom.is_none() || key > best_key {
+            best_atom = Some(query_atom);
+            best_key = key;
+        }
+    }
+
+    best_atom.expect("at least one unmapped component query atom must remain")
+}
+
+fn component_mapping_stereo_constraints_match(
+    query: &CompiledQuery,
+    component_id: usize,
+    target: &PreparedTarget,
+    query_to_target: &[Option<usize>],
+    atom_stereo_cache: &mut AtomStereoCache,
+) -> bool {
+    if !query.has_stereo_constraints {
+        return true;
+    }
+
+    let query_mol = &query.query;
+    query
+        .stereo_plan
+        .double_bond_constraints
+        .iter()
+        .filter(|constraint| query_mol.atoms()[constraint.left_atom].component == component_id)
+        .all(|constraint| {
+            let Some(left_target) = query_to_target[constraint.left_atom] else {
+                return false;
+            };
+            let Some(right_target) = query_to_target[constraint.right_atom] else {
+                return false;
+            };
+            target.double_bond_stereo_config(left_target, right_target) == Some(constraint.config)
+        })
+        && query_mol
+            .component_atoms(component_id)
+            .iter()
+            .copied()
+            .all(|query_atom_id| {
+                atom_chirality_matches(
+                    query_mol,
+                    &query.query_neighbors,
+                    query_atom_id,
+                    target,
+                    query_to_target,
+                    atom_stereo_cache,
+                )
+            })
 }
 
 fn collect_compiled_component_embeddings(
@@ -4831,6 +5000,22 @@ fn current_canonical_match_key(query_to_target: &[Option<usize>]) -> Box<[usize]
     let mut canonical = query_to_target
         .iter()
         .map(|target_atom| target_atom.expect("complete mappings must bind every query atom"))
+        .collect::<alloc::vec::Vec<_>>();
+    canonical.sort_unstable();
+    canonical.into_boxed_slice()
+}
+
+fn current_component_canonical_match_key(
+    query: &QueryMol,
+    component_id: usize,
+    query_to_target: &[Option<usize>],
+) -> Box<[usize]> {
+    let mut canonical = query
+        .component_atoms(component_id)
+        .iter()
+        .map(|&query_atom| {
+            query_to_target[query_atom].expect("complete component mappings must bind every atom")
+        })
         .collect::<alloc::vec::Vec<_>>();
     canonical.sort_unstable();
     canonical.into_boxed_slice()
@@ -6269,6 +6454,39 @@ mod tests {
         let mut scratch = MatchScratch::new();
 
         let mut polls = 0usize;
+        assert_eq!(
+            compiled.matches_with_scratch_and_interrupt(&target, &mut scratch, || {
+                polls += 1;
+                polls > 1_000
+            }),
+            MatchLimitResult::Complete(false)
+        );
+    }
+
+    #[test]
+    fn disconnected_component_search_handles_recursive_component_timeout_artifact() {
+        let smarts = concat!(
+            "*~[!!#6&!!#6&!!#6&!!#6]",
+            "(~[!!#6&!!#6&!!#6&!!#6]~[!!#6&!!#6&!!#6&!!#6]).",
+            "[!!#6&!!#6&!!#6&!!#6].",
+            "[!!#6&!#6&$([#6,#7])&r]~[!!R&!!#6&!!#6].",
+            "[!!#6&!!#6&!!#6&!!#6].",
+            "[!!#6&!!#6&!!#6&!!#6]",
+        );
+        let target = PreparedTarget::new(
+            Smiles::from_str(
+                "C1CCN(C1)CCOC2=CC=C(C=C2)CC3=C(SC4=CC=CC=C43)C5=CC=C(C=C5)CCNCC6=CN=CC=C6",
+            )
+            .unwrap(),
+        );
+        let compiled = CompiledQuery::new(QueryMol::from_str(smarts).unwrap()).unwrap();
+        let mut scratch = MatchScratch::new();
+        let mut polls = 0usize;
+
+        assert!(compiled
+            .component_plan
+            .iter()
+            .all(ComponentPlanEntry::supports_component_search));
         assert_eq!(
             compiled.matches_with_scratch_and_interrupt(&target, &mut scratch, || {
                 polls += 1;

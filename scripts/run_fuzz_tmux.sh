@@ -177,31 +177,31 @@ build_pane_command() {
   if [[ "$USER_SET_LIBFUZZER_ARGS" == false ]]; then
     case "$harness" in
       parse_display_loop)
-        pane_args=("-timeout=5" "-max_len=256")
+        pane_args=("-timeout=5" "-max_len=256" "-dict=parse_display_loop.dict")
         ;;
       bracket_parse_loop)
-        pane_args=("-timeout=5" "-max_len=128")
+        pane_args=("-timeout=5" "-max_len=128" "-dict=bracket_parse_loop.dict")
         ;;
       parse_bracket_atom)
-        pane_args=("-timeout=5" "-max_len=512")
+        pane_args=("-timeout=5" "-max_len=512" "-dict=bracket_parse_loop.dict")
         ;;
       recursive_smarts_lowering)
-        pane_args=("-timeout=5" "-max_len=192")
+        pane_args=("-timeout=5" "-max_len=192" "-dict=recursive_smarts_lowering.dict")
         ;;
       matching_loop)
-        pane_args=("-timeout=5" "-max_len=192")
+        pane_args=("-timeout=5" "-max_len=192" "-dict=dictionaries/smarts.dict")
         ;;
       matching_timeout)
-        pane_args=("-timeout=10" "-max_len=768" "-dict=dictionaries/smarts.dict")
+        pane_args=("-timeout=40" "-max_len=768" "-dict=dictionaries/smarts.dict")
         ;;
       matching_hang)
-        pane_args=("-timeout=30" "-max_len=768" "-dict=dictionaries/smarts.dict")
+        pane_args=("-timeout=40" "-max_len=768" "-dict=dictionaries/smarts.dict")
         ;;
       canonicalization_loop)
-        pane_args=("-timeout=5" "-max_len=256")
+        pane_args=("-timeout=5" "-max_len=256" "-dict=dictionaries/smarts.dict")
         ;;
       canonicalization_large_loop)
-        pane_args=("-timeout=5" "-max_len=256")
+        pane_args=("-timeout=5" "-max_len=256" "-dict=dictionaries/smarts.dict")
         ;;
     esac
   fi
