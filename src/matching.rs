@@ -294,6 +294,12 @@ struct ComponentEmbeddingSet<'a> {
     embeddings: alloc::vec::Vec<ComponentEmbedding>,
 }
 
+struct ComponentAssignmentFrame {
+    next_embedding: usize,
+    selected_embedding: Option<usize>,
+    previous_group_target: Option<usize>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct CompiledBondMatcher {
     state_mask: u16,
@@ -4061,7 +4067,6 @@ fn disconnected_component_search_matches(
     let mut group_targets = alloc::vec![None; group_count];
     component_embedding_assignment_exists(
         &component_sets,
-        0,
         &mut used_target_atoms,
         &mut group_targets,
         context.limit,
@@ -4187,51 +4192,81 @@ fn component_embedding(target: &PreparedTarget, target_atoms: Box<[usize]>) -> C
 
 fn component_embedding_assignment_exists(
     component_sets: &[ComponentEmbeddingSet<'_>],
-    set_index: usize,
     used_target_atoms: &mut [bool],
     group_targets: &mut [Option<usize>],
     limit: &impl MatchLimiter,
 ) -> bool {
-    if !limit.continue_search() {
-        return false;
-    }
-    if set_index == component_sets.len() {
+    if component_sets.is_empty() {
         return true;
     }
 
-    let component_set = &component_sets[set_index];
-    for embedding in &component_set.embeddings {
-        if component_embedding_overlaps(embedding, used_target_atoms)
-            || !component_embedding_group_matches(
+    let mut frames = alloc::vec![ComponentAssignmentFrame {
+        next_embedding: 0,
+        selected_embedding: None,
+        previous_group_target: None,
+    }];
+
+    loop {
+        if !limit.continue_search() {
+            return false;
+        }
+
+        let set_index = frames.len() - 1;
+        if let Some(embedding_index) = frames[set_index].selected_embedding.take() {
+            let component_set = &component_sets[set_index];
+            let embedding = &component_set.embeddings[embedding_index];
+            set_component_embedding_used(embedding, used_target_atoms, false);
+            unbind_component_embedding_group(
                 component_set.entry.group,
-                embedding,
+                frames[set_index].previous_group_target.take(),
                 group_targets,
-            )
-        {
+            );
+        }
+
+        let component_set = &component_sets[set_index];
+        let mut descended = false;
+        while frames[set_index].next_embedding < component_set.embeddings.len() {
+            let embedding_index = frames[set_index].next_embedding;
+            frames[set_index].next_embedding += 1;
+            let embedding = &component_set.embeddings[embedding_index];
+            if component_embedding_overlaps(embedding, used_target_atoms)
+                || !component_embedding_group_matches(
+                    component_set.entry.group,
+                    embedding,
+                    group_targets,
+                )
+            {
+                continue;
+            }
+
+            let previous_group_target =
+                bind_component_embedding_group(component_set.entry.group, embedding, group_targets);
+            set_component_embedding_used(embedding, used_target_atoms, true);
+            if set_index + 1 == component_sets.len() {
+                return true;
+            }
+
+            frames[set_index].selected_embedding = Some(embedding_index);
+            frames[set_index].previous_group_target = previous_group_target;
+            frames.push(ComponentAssignmentFrame {
+                next_embedding: 0,
+                selected_embedding: None,
+                previous_group_target: None,
+            });
+            descended = true;
+            break;
+        }
+
+        if descended {
             continue;
         }
 
-        let previous_group_target =
-            bind_component_embedding_group(component_set.entry.group, embedding, group_targets);
-        set_component_embedding_used(embedding, used_target_atoms, true);
-        let matched = component_embedding_assignment_exists(
-            component_sets,
-            set_index + 1,
-            used_target_atoms,
-            group_targets,
-            limit,
-        );
-        set_component_embedding_used(embedding, used_target_atoms, false);
-        unbind_component_embedding_group(
-            component_set.entry.group,
-            previous_group_target,
-            group_targets,
-        );
-        if matched {
-            return true;
+        if set_index == 0 {
+            return false;
         }
+
+        frames.pop();
     }
-    false
 }
 
 fn component_embedding_overlaps(
@@ -5691,14 +5726,16 @@ fn is_hidden_attached_hydrogen(target: &PreparedTarget, atom_id: usize) -> bool 
 
 #[cfg(test)]
 mod tests {
-    use alloc::{format, string::String};
+    use alloc::{format, string::String, vec, vec::Vec};
     use core::str::FromStr;
 
     use smiles_parser::Smiles;
 
     use super::{
-        component_constraints_match, select_next_query_atom, select_next_query_atom_for_target,
-        AtomStereoCache, CompiledQuery, FreshSearchBuffers, MatchScratch, RecursiveMatchCache,
+        component_constraints_match, component_embedding_assignment_exists, select_next_query_atom,
+        select_next_query_atom_for_target, AtomStereoCache, CompiledQuery, ComponentEmbedding,
+        ComponentEmbeddingSet, ComponentMatcher, ComponentPlanEntry, FreshSearchBuffers,
+        MatchScratch, RecursiveMatchCache, NO_MATCH_LIMIT,
     };
     use super::{MatchLimitResult, MatchOutcomeLimitResult};
     use crate::error::SmartsMatchError;
@@ -6249,6 +6286,40 @@ mod tests {
 
         assert!(compiled.matches(&same_component));
         assert!(!compiled.matches(&separate_components));
+    }
+
+    #[test]
+    fn disconnected_component_assignment_handles_deep_component_lists_without_recursing() {
+        let component_count = 50_000usize;
+        let entries = (0..component_count)
+            .map(|component_id| ComponentPlanEntry {
+                component_id,
+                group: None,
+                atom_count: 1,
+                precheckable: true,
+                matcher: ComponentMatcher::SingleAtom(0),
+            })
+            .collect::<Vec<_>>();
+        let component_sets = entries
+            .iter()
+            .enumerate()
+            .map(|(target_atom, entry)| ComponentEmbeddingSet {
+                entry,
+                embeddings: vec![ComponentEmbedding {
+                    target_atoms: alloc::boxed::Box::<[usize]>::from([target_atom]),
+                    target_component: Some(0),
+                }],
+            })
+            .collect::<Vec<_>>();
+        let mut used_target_atoms = vec![false; component_count];
+        let mut group_targets = Vec::new();
+
+        assert!(component_embedding_assignment_exists(
+            &component_sets,
+            &mut used_target_atoms,
+            &mut group_targets,
+            &NO_MATCH_LIMIT,
+        ));
     }
 
     #[test]

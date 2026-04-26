@@ -755,6 +755,13 @@ struct QueryMolWriter<'a> {
     top_level_entries: Vec<TopLevelEntry>,
 }
 
+enum WriteTask {
+    Atom(AtomId),
+    Bond(AtomId),
+    OpenParen,
+    CloseParen,
+}
+
 impl<'a> QueryMolWriter<'a> {
     fn new(mol: &'a QueryMol) -> Self {
         let (parent_bond_by_atom, component_roots) = build_spanning_forest(mol);
@@ -818,32 +825,43 @@ impl<'a> QueryMolWriter<'a> {
     }
 
     fn write_atom_with_subtree(&self, atom_id: AtomId, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.mol.atoms[atom_id].expr)?;
-        self.write_ring_tokens(atom_id, f)?;
+        let mut stack = vec![WriteTask::Atom(atom_id)];
+        while let Some(task) = stack.pop() {
+            match task {
+                WriteTask::Atom(atom_id) => {
+                    write!(f, "{}", self.mol.atoms[atom_id].expr)?;
+                    self.write_ring_tokens(atom_id, f)?;
 
-        let children = &self.children_by_atom[atom_id];
-        if children.is_empty() {
-            return Ok(());
+                    let children = &self.children_by_atom[atom_id];
+                    if children.is_empty() {
+                        continue;
+                    }
+
+                    let main_child = *children.last().expect("children non-empty");
+                    if self.requires_parenthesized_main_child(atom_id, main_child) {
+                        stack.push(WriteTask::CloseParen);
+                        stack.push(WriteTask::Atom(main_child));
+                        stack.push(WriteTask::Bond(main_child));
+                        stack.push(WriteTask::OpenParen);
+                    } else {
+                        stack.push(WriteTask::Atom(main_child));
+                        stack.push(WriteTask::Bond(main_child));
+                    }
+
+                    for &child in children[..children.len() - 1].iter().rev() {
+                        stack.push(WriteTask::CloseParen);
+                        stack.push(WriteTask::Atom(child));
+                        stack.push(WriteTask::Bond(child));
+                        stack.push(WriteTask::OpenParen);
+                    }
+                }
+                WriteTask::Bond(child_id) => self.write_bond_to_child(child_id, f)?,
+                WriteTask::OpenParen => f.write_str("(")?,
+                WriteTask::CloseParen => f.write_str(")")?,
+            }
         }
 
-        for child in &children[..children.len() - 1] {
-            f.write_str("(")?;
-            self.write_bond_to_child(*child, f)?;
-            self.write_atom_with_subtree(*child, f)?;
-            f.write_str(")")?;
-        }
-
-        let main_child = *children.last().expect("children non-empty");
-        if self.requires_parenthesized_main_child(atom_id, main_child) {
-            f.write_str("(")?;
-            self.write_bond_to_child(main_child, f)?;
-            self.write_atom_with_subtree(main_child, f)?;
-            f.write_str(")")?;
-            return Ok(());
-        }
-
-        self.write_bond_to_child(main_child, f)?;
-        self.write_atom_with_subtree(main_child, f)
+        Ok(())
     }
 
     fn write_bond_to_child(&self, child_id: AtomId, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1717,5 +1735,31 @@ mod tests {
         ];
         let query = QueryMol::from_parts(atoms, bonds, 1, vec![None]);
         assert_eq!(query.to_string(), "C(C1=C2)-C12");
+    }
+
+    #[test]
+    fn writer_handles_deep_linear_queries_without_recursing() {
+        let atom_count = 50_000usize;
+        let atoms = (0..atom_count)
+            .map(|id| QueryAtom {
+                id,
+                component: 0,
+                expr: AtomExpr::Bare {
+                    element: Element::C,
+                    aromatic: false,
+                },
+            })
+            .collect();
+        let bonds = (1..atom_count)
+            .map(|id| QueryBond {
+                id: id - 1,
+                src: id - 1,
+                dst: id,
+                expr: BondExpr::Elided,
+            })
+            .collect();
+        let query = QueryMol::from_parts(atoms, bonds, 1, vec![None]);
+
+        assert_eq!(query.to_string(), "C".repeat(atom_count));
     }
 }
