@@ -439,6 +439,29 @@ impl MatchLimitResult {
     }
 }
 
+/// Result of a limited SMARTS match outcome.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MatchOutcomeLimitResult {
+    /// Matching and coverage accumulation completed within the requested limit.
+    Complete(MatchOutcome),
+    /// Matching stopped because the limit was exceeded.
+    Exceeded,
+}
+
+impl MatchOutcomeLimitResult {
+    /// Converts the result to an optional match outcome.
+    ///
+    /// Returns `None` when the limit was exceeded.
+    #[inline]
+    #[must_use]
+    pub const fn into_option(self) -> Option<MatchOutcome> {
+        match self {
+            Self::Complete(outcome) => Some(outcome),
+            Self::Exceeded => None,
+        }
+    }
+}
+
 /// Boolean SMARTS match result plus target-topology coverage.
 ///
 /// `coverage` is the fraction of target atoms and target bonds covered by the
@@ -1152,6 +1175,89 @@ impl CompiledQuery {
         scratch: &mut MatchScratch,
     ) -> MatchOutcome {
         query_match_outcome_with_scratch(self, target, scratch)
+    }
+
+    /// Match this compiled SMARTS query and accumulate coverage with a
+    /// cooperative caller-provided interrupt predicate.
+    ///
+    /// The matcher calls `should_stop` periodically from its search loop. A
+    /// result of [`MatchOutcomeLimitResult::Exceeded`] means the boolean result
+    /// and coverage are unknown.
+    #[inline]
+    #[must_use]
+    pub fn match_outcome_with_interrupt<F>(
+        &self,
+        target: &PreparedTarget,
+        should_stop: F,
+    ) -> MatchOutcomeLimitResult
+    where
+        F: FnMut() -> bool,
+    {
+        let mut scratch = MatchScratch::new();
+        self.match_outcome_with_scratch_and_interrupt(target, &mut scratch, should_stop)
+    }
+
+    /// Match this compiled SMARTS query using reusable scratch and accumulate
+    /// coverage with a cooperative caller-provided interrupt predicate.
+    ///
+    /// Use this for wasm by closing over a host-provided clock, for example a
+    /// JavaScript deadline check. The predicate is polled periodically; it is
+    /// not hard preemption.
+    #[inline]
+    #[must_use]
+    pub fn match_outcome_with_scratch_and_interrupt<F>(
+        &self,
+        target: &PreparedTarget,
+        scratch: &mut MatchScratch,
+        should_stop: F,
+    ) -> MatchOutcomeLimitResult
+    where
+        F: FnMut() -> bool,
+    {
+        query_match_outcome_with_scratch_and_interrupt(self, target, scratch, should_stop)
+    }
+
+    /// Match this compiled SMARTS query and accumulate coverage with a
+    /// cooperative wall-clock limit.
+    ///
+    /// The matcher checks the clock periodically from its search loop. This is
+    /// a safety fuse, not hard preemption: a result of
+    /// [`MatchOutcomeLimitResult::Exceeded`] means the boolean result and
+    /// coverage are unknown.
+    #[cfg(all(
+        feature = "std",
+        not(all(target_family = "wasm", target_os = "unknown"))
+    ))]
+    #[inline]
+    #[must_use]
+    pub fn match_outcome_with_time_limit(
+        &self,
+        target: &PreparedTarget,
+        max_elapsed: Duration,
+    ) -> MatchOutcomeLimitResult {
+        let mut scratch = MatchScratch::new();
+        self.match_outcome_with_scratch_and_time_limit(target, &mut scratch, max_elapsed)
+    }
+
+    /// Match this compiled SMARTS query using reusable scratch and accumulate
+    /// coverage with a cooperative wall-clock limit.
+    ///
+    /// Returns [`MatchOutcomeLimitResult::Exceeded`] if the limit is exceeded
+    /// before proving either a non-match or the complete coverage for all
+    /// accepted embeddings.
+    #[cfg(all(
+        feature = "std",
+        not(all(target_family = "wasm", target_os = "unknown"))
+    ))]
+    #[inline]
+    #[must_use]
+    pub fn match_outcome_with_scratch_and_time_limit(
+        &self,
+        target: &PreparedTarget,
+        scratch: &mut MatchScratch,
+        max_elapsed: Duration,
+    ) -> MatchOutcomeLimitResult {
+        query_match_outcome_with_scratch_and_time_limit(self, target, scratch, max_elapsed)
     }
 
     /// Match this compiled SMARTS query with a cooperative caller-provided
@@ -2041,18 +2147,98 @@ fn query_match_outcome_with_scratch(
 ) -> MatchOutcome {
     let mut coverage = MatchCoverageAccumulator::new(target);
     let _ = with_scratch_bound_search_context(query, target, scratch, |context, mapped_count| {
-        for_each_mapping(
-            &query.query,
-            target,
-            context,
-            mapped_count,
-            &mut |query_to_target| {
-                coverage.cover_mapping(&query.query, target, query_to_target);
-                false
-            },
-        );
+        accumulate_match_outcome(query, target, context, mapped_count, &mut coverage);
     });
     coverage.into_outcome(target)
+}
+
+fn query_match_outcome_with_scratch_and_interrupt<F>(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    scratch: &mut MatchScratch,
+    should_stop: F,
+) -> MatchOutcomeLimitResult
+where
+    F: FnMut() -> bool,
+{
+    let limit = MatchInterrupt::new(should_stop);
+    let outcome = query_match_outcome_with_scratch_limit(query, target, scratch, &limit);
+    if limit.exceeded() {
+        MatchOutcomeLimitResult::Exceeded
+    } else {
+        MatchOutcomeLimitResult::Complete(outcome)
+    }
+}
+
+#[cfg(all(
+    feature = "std",
+    not(all(target_family = "wasm", target_os = "unknown"))
+))]
+fn query_match_outcome_with_scratch_and_time_limit(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    scratch: &mut MatchScratch,
+    max_elapsed: Duration,
+) -> MatchOutcomeLimitResult {
+    let limit = MatchTimeLimit::new(max_elapsed);
+    let outcome = query_match_outcome_with_scratch_limit(query, target, scratch, &limit);
+    if limit.exceeded() {
+        MatchOutcomeLimitResult::Exceeded
+    } else {
+        MatchOutcomeLimitResult::Complete(outcome)
+    }
+}
+
+fn query_match_outcome_with_scratch_limit<L: MatchLimiter>(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    scratch: &mut MatchScratch,
+    limit: &L,
+) -> MatchOutcome {
+    scratch.prepare_with_limit(query, target, limit);
+    let mut context = SearchScratchView {
+        query_atom_anchor_widths: &scratch.query_atom_anchor_widths,
+        query_to_target: &mut scratch.query_to_target,
+        used_target_atoms: &mut scratch.used_target_atoms,
+        used_target_generation: scratch.used_target_generation,
+        bondless_query_order: &mut scratch.bondless_query_order,
+        bondless_candidate_offsets: &mut scratch.bondless_candidate_offsets,
+        bondless_candidates: &mut scratch.bondless_candidates,
+        bondless_target_assignments: &mut scratch.bondless_target_assignments,
+        bondless_seen_targets: &mut scratch.bondless_seen_targets,
+        limit,
+    }
+    .into_context(
+        query,
+        &mut scratch.atom_stereo_cache,
+        &mut scratch.recursive_cache,
+    );
+    let mut coverage = MatchCoverageAccumulator::new(target);
+    if let Some(mapped_count) =
+        bind_initial_mapping(query, target, &mut context, InitialAtomMapping::default())
+    {
+        accumulate_match_outcome(query, target, &mut context, mapped_count, &mut coverage);
+    }
+    coverage.into_outcome(target)
+}
+
+fn accumulate_match_outcome<L: MatchLimiter>(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    context: &mut SearchContext<'_, L>,
+    mapped_count: usize,
+    coverage: &mut MatchCoverageAccumulator,
+) {
+    for_each_mapping(
+        &query.query,
+        target,
+        context,
+        mapped_count,
+        &mut |query_to_target| {
+            coverage.cover_mapping(&query.query, target, query_to_target);
+            false
+        },
+    );
 }
 
 fn with_scratch_bound_search_context<R>(
@@ -2203,16 +2389,7 @@ fn query_match_outcome_with_mapping(
         recursive_cache,
         initial_mapping,
         |context, mapped_count| {
-            for_each_mapping(
-                &query.query,
-                target,
-                context,
-                mapped_count,
-                &mut |query_to_target| {
-                    coverage.cover_mapping(&query.query, target, query_to_target);
-                    false
-                },
-            );
+            accumulate_match_outcome(query, target, context, mapped_count, &mut coverage);
         },
     );
     coverage.into_outcome(target)
@@ -4155,10 +4332,13 @@ fn search_mapping_candidate(
 fn for_each_mapping(
     query: &QueryMol,
     target: &PreparedTarget,
-    context: &mut SearchContext<'_, NoMatchLimit>,
+    context: &mut SearchContext<'_, impl MatchLimiter>,
     mapped_count: usize,
     visit: &mut impl FnMut(&[Option<usize>]) -> bool,
 ) -> bool {
+    if !context.continue_search() {
+        return true;
+    }
     if mapped_count == query.atom_count() {
         return compiled_query_stereo_constraints_match(
             context.compiled_query,
@@ -4181,12 +4361,13 @@ fn for_each_mapping(
         {
             continue;
         }
-        if !compiled_query_atom_matches(
+        if !compiled_query_atom_matches_with_limit(
             context.compiled_query,
             target,
             context.recursive_cache,
             next_query_atom,
             target_atom,
+            context.limit,
         ) {
             continue;
         }
@@ -4471,7 +4652,7 @@ fn count_query_atom_target_matches_with_limit<L: MatchLimiter>(
 fn candidate_target_atoms(
     query_atom: QueryAtomId,
     target: &PreparedTarget,
-    context: &SearchContext<'_, NoMatchLimit>,
+    context: &SearchContext<'_, impl MatchLimiter>,
 ) -> alloc::vec::Vec<usize> {
     let query_degree = context.query_neighbors[query_atom].len();
     let Some(MappedNeighborSeed {
@@ -5127,11 +5308,11 @@ mod tests {
 
     use smiles_parser::Smiles;
 
-    use super::MatchLimitResult;
     use super::{
         component_constraints_match, select_next_query_atom, select_next_query_atom_for_target,
         AtomStereoCache, CompiledQuery, FreshSearchBuffers, MatchScratch, RecursiveMatchCache,
     };
+    use super::{MatchLimitResult, MatchOutcomeLimitResult};
     use crate::error::SmartsMatchError;
     use crate::prepared::PreparedTarget;
     use crate::QueryMol;
@@ -5257,6 +5438,66 @@ mod tests {
             MatchLimitResult::Complete(compiled.matches(&target))
         );
         assert!(compiled.matches(&target));
+    }
+
+    #[test]
+    fn compiled_query_outcome_interrupt_reports_exhaustion_without_poisoning_scratch() {
+        let compiled = CompiledQuery::new(QueryMol::from_str("CC").unwrap()).unwrap();
+        let target = PreparedTarget::new(Smiles::from_str("CCC").unwrap());
+        let mut scratch = MatchScratch::new();
+        let expected = compiled.match_outcome(&target);
+
+        assert_eq!(
+            compiled.match_outcome_with_scratch_and_interrupt(&target, &mut scratch, || true),
+            MatchOutcomeLimitResult::Exceeded
+        );
+        assert_eq!(
+            compiled.match_outcome_with_scratch_and_interrupt(&target, &mut scratch, || false),
+            MatchOutcomeLimitResult::Complete(expected)
+        );
+        assert_eq!(
+            compiled.match_outcome_with_interrupt(&target, || false),
+            MatchOutcomeLimitResult::Complete(expected)
+        );
+        assert!(expected.matched);
+        assert_coverage_close(expected.coverage, 1.0);
+    }
+
+    #[test]
+    #[cfg(all(
+        feature = "std",
+        not(all(target_family = "wasm", target_os = "unknown"))
+    ))]
+    fn compiled_query_outcome_time_limit_reports_exhaustion_without_poisoning_scratch() {
+        use std::time::Duration;
+
+        let compiled = CompiledQuery::new(QueryMol::from_str("CC").unwrap()).unwrap();
+        let target = PreparedTarget::new(Smiles::from_str("CCC").unwrap());
+        let mut scratch = MatchScratch::new();
+        let expected = compiled.match_outcome(&target);
+
+        assert_eq!(
+            compiled.match_outcome_with_scratch_and_time_limit(
+                &target,
+                &mut scratch,
+                Duration::ZERO
+            ),
+            MatchOutcomeLimitResult::Exceeded
+        );
+        assert_eq!(
+            compiled.match_outcome_with_scratch_and_time_limit(
+                &target,
+                &mut scratch,
+                Duration::from_mins(1)
+            ),
+            MatchOutcomeLimitResult::Complete(expected)
+        );
+        assert_eq!(
+            compiled.match_outcome_with_time_limit(&target, Duration::from_mins(1)),
+            MatchOutcomeLimitResult::Complete(expected)
+        );
+        assert!(expected.matched);
+        assert_coverage_close(expected.coverage, 1.0);
     }
 
     #[test]
