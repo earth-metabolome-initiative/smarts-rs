@@ -1,4 +1,9 @@
-use alloc::{boxed::Box, collections::BTreeMap, string::String, string::ToString};
+use alloc::{
+    boxed::Box,
+    collections::{BTreeMap, BTreeSet},
+    string::String,
+    string::ToString,
+};
 use core::cell::{Cell, RefCell};
 #[cfg(all(
     feature = "std",
@@ -434,6 +439,106 @@ impl MatchLimitResult {
     }
 }
 
+/// Boolean SMARTS match result plus target-topology coverage.
+///
+/// `coverage` is the fraction of target atoms and target bonds covered by the
+/// union of all accepted full embeddings:
+///
+/// `(covered target atoms + covered target bonds) / (target atoms + target bonds)`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MatchOutcome {
+    /// Whether at least one full SMARTS embedding matched the target.
+    pub matched: bool,
+    /// Combined target atom/bond coverage for the accepted full embeddings.
+    pub coverage: f64,
+}
+
+impl MatchOutcome {
+    /// Builds a match outcome from a boolean match flag and combined coverage.
+    #[inline]
+    #[must_use]
+    pub const fn new(matched: bool, coverage: f64) -> Self {
+        Self { matched, coverage }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct MatchCoverageAccumulator {
+    matched: bool,
+    covered_atoms: alloc::vec::Vec<bool>,
+    covered_bonds: BTreeSet<(usize, usize)>,
+}
+
+impl MatchCoverageAccumulator {
+    fn new(target: &PreparedTarget) -> Self {
+        Self {
+            matched: false,
+            covered_atoms: alloc::vec![false; target.atom_count()],
+            covered_bonds: BTreeSet::new(),
+        }
+    }
+
+    fn cover_mapping(
+        &mut self,
+        query: &QueryMol,
+        target: &PreparedTarget,
+        query_to_target: &[Option<usize>],
+    ) {
+        self.matched = true;
+        for target_atom in query_to_target
+            .iter()
+            .copied()
+            .map(|target_atom| target_atom.expect("complete mappings must bind every query atom"))
+        {
+            self.covered_atoms[target_atom] = true;
+        }
+
+        for query_bond in query.bonds() {
+            let left = query_to_target[query_bond.src]
+                .expect("complete mappings must bind every query bond source");
+            let right = query_to_target[query_bond.dst]
+                .expect("complete mappings must bind every query bond destination");
+            if target.bond(left, right).is_some() {
+                self.covered_bonds
+                    .insert(canonical_target_bond_key(left, right));
+            }
+        }
+    }
+
+    fn into_outcome(self, target: &PreparedTarget) -> MatchOutcome {
+        if !self.matched {
+            return MatchOutcome::new(false, 0.0);
+        }
+
+        let denominator = target.atom_count() + target.bond_count();
+        if denominator == 0 {
+            return MatchOutcome::new(true, 0.0);
+        }
+
+        let covered_atom_count = self
+            .covered_atoms
+            .iter()
+            .filter(|&&covered| covered)
+            .count();
+        let numerator = covered_atom_count + self.covered_bonds.len();
+        MatchOutcome::new(true, coverage_ratio(numerator, denominator))
+    }
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn coverage_ratio(numerator: usize, denominator: usize) -> f64 {
+    numerator as f64 / denominator as f64
+}
+
+#[inline]
+const fn canonical_target_bond_key(left: usize, right: usize) -> (usize, usize) {
+    if left < right {
+        (left, right)
+    } else {
+        (right, left)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ThreeAtomTreeLayout {
     center: QueryAtomId,
@@ -810,6 +915,50 @@ impl QueryMol {
         Ok(compiled.matches(target))
     }
 
+    /// Match this SMARTS query against a target `SMILES` string and return
+    /// both the boolean result and combined target atom/bond coverage.
+    ///
+    /// Coverage is computed from the union of target atoms and bonds covered by
+    /// accepted full embeddings. If the SMARTS does not match, coverage is
+    /// `0.0`.
+    ///
+    /// # Errors
+    ///
+    /// Returns:
+    /// - [`SmartsMatchError::EmptyTarget`] for empty target strings
+    /// - [`SmartsMatchError::InvalidTargetSmiles`] when the target is not
+    ///   valid `SMILES`
+    /// - [`SmartsMatchError::UnsupportedAtomPrimitive`] when the query uses an
+    ///   atom primitive outside the current matcher implementation
+    /// - [`SmartsMatchError::UnsupportedBondPrimitive`] when the query uses a
+    ///   bond primitive outside the current matcher implementation
+    pub fn match_outcome(&self, target: &str) -> Result<MatchOutcome, SmartsMatchError> {
+        let target = prepare_target_smiles(target)?;
+        self.match_outcome_prepared(&target)
+    }
+
+    /// Match this SMARTS query against a prepared target and return both the
+    /// boolean result and combined target atom/bond coverage.
+    ///
+    /// This convenience method derives reusable query-side state for each
+    /// call. For repeated matching of one SMARTS against many targets, prefer
+    /// [`CompiledQuery`] plus [`CompiledQuery::match_outcome`].
+    ///
+    /// # Errors
+    ///
+    /// Returns:
+    /// - [`SmartsMatchError::UnsupportedAtomPrimitive`] when the query uses an
+    ///   atom primitive outside the current matcher implementation
+    /// - [`SmartsMatchError::UnsupportedBondPrimitive`] when the query uses a
+    ///   bond primitive outside the current matcher implementation
+    pub fn match_outcome_prepared(
+        &self,
+        target: &PreparedTarget,
+    ) -> Result<MatchOutcome, SmartsMatchError> {
+        let compiled = CompiledQuery::new(self.clone())?;
+        Ok(compiled.match_outcome(target))
+    }
+
     /// Collect all unique accepted substructure matches against a target
     /// `SMILES` string.
     ///
@@ -978,6 +1127,31 @@ impl CompiledQuery {
         scratch: &mut MatchScratch,
     ) -> bool {
         query_matches_with_scratch(self, target, scratch)
+    }
+
+    /// Match this compiled SMARTS query against a prepared target and return
+    /// both the boolean result and combined target atom/bond coverage.
+    ///
+    /// This enumerates accepted full embeddings once and accumulates the union
+    /// of covered target atoms and bonds. Use [`Self::matches`] when only a
+    /// boolean early-exit answer is needed.
+    #[inline]
+    #[must_use]
+    pub fn match_outcome(&self, target: &PreparedTarget) -> MatchOutcome {
+        query_match_outcome(self, target)
+    }
+
+    /// Match this compiled SMARTS query against a prepared target using
+    /// reusable per-thread scratch buffers, returning both the boolean result
+    /// and combined target atom/bond coverage.
+    #[inline]
+    #[must_use]
+    pub fn match_outcome_with_scratch(
+        &self,
+        target: &PreparedTarget,
+        scratch: &mut MatchScratch,
+    ) -> MatchOutcome {
+        query_match_outcome_with_scratch(self, target, scratch)
     }
 
     /// Match this compiled SMARTS query with a cooperative caller-provided
@@ -1846,6 +2020,70 @@ fn query_matches_with_scratch_limit<L: MatchLimiter>(
     )
 }
 
+fn query_match_outcome(query: &CompiledQuery, target: &PreparedTarget) -> MatchOutcome {
+    let mut atom_stereo_cache = AtomStereoCache::new();
+    let mut recursive_cache =
+        RecursiveMatchCache::new(query.recursive_cache_slots, target.atom_count());
+    query_match_outcome_with_mapping(
+        query,
+        target,
+        &mut atom_stereo_cache,
+        &mut recursive_cache,
+        None,
+        None,
+    )
+}
+
+fn query_match_outcome_with_scratch(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    scratch: &mut MatchScratch,
+) -> MatchOutcome {
+    let mut coverage = MatchCoverageAccumulator::new(target);
+    let _ = with_scratch_bound_search_context(query, target, scratch, |context, mapped_count| {
+        for_each_mapping(
+            &query.query,
+            target,
+            context,
+            mapped_count,
+            &mut |query_to_target| {
+                coverage.cover_mapping(&query.query, target, query_to_target);
+                false
+            },
+        );
+    });
+    coverage.into_outcome(target)
+}
+
+fn with_scratch_bound_search_context<R>(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    scratch: &mut MatchScratch,
+    run: impl FnOnce(&mut SearchContext<'_, NoMatchLimit>, usize) -> R,
+) -> Option<R> {
+    scratch.prepare(query, target);
+    let mut context = SearchScratchView {
+        query_atom_anchor_widths: &scratch.query_atom_anchor_widths,
+        query_to_target: &mut scratch.query_to_target,
+        used_target_atoms: &mut scratch.used_target_atoms,
+        used_target_generation: scratch.used_target_generation,
+        bondless_query_order: &mut scratch.bondless_query_order,
+        bondless_candidate_offsets: &mut scratch.bondless_candidate_offsets,
+        bondless_candidates: &mut scratch.bondless_candidates,
+        bondless_target_assignments: &mut scratch.bondless_target_assignments,
+        bondless_seen_targets: &mut scratch.bondless_seen_targets,
+        limit: &NO_MATCH_LIMIT,
+    }
+    .into_context(
+        query,
+        &mut scratch.atom_stereo_cache,
+        &mut scratch.recursive_cache,
+    );
+    let mapped_count =
+        bind_initial_mapping(query, target, &mut context, InitialAtomMapping::default())?;
+    Some(run(&mut context, mapped_count))
+}
+
 fn query_substructure_matches(
     query: &CompiledQuery,
     target: &PreparedTarget,
@@ -1946,6 +2184,38 @@ fn query_matches_with_mapping_state<L: MatchLimiter>(
     }
 
     search_mapping(&query.query, target, &mut context, mapped_count)
+}
+
+fn query_match_outcome_with_mapping(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    atom_stereo_cache: &mut AtomStereoCache,
+    recursive_cache: &mut RecursiveMatchCache,
+    initial_query_atom: Option<QueryAtomId>,
+    initial_target_atom: Option<usize>,
+) -> MatchOutcome {
+    let initial_mapping = InitialAtomMapping::new(initial_query_atom, initial_target_atom);
+    let mut coverage = MatchCoverageAccumulator::new(target);
+    let _ = with_fresh_bound_search_context(
+        query,
+        target,
+        atom_stereo_cache,
+        recursive_cache,
+        initial_mapping,
+        |context, mapped_count| {
+            for_each_mapping(
+                &query.query,
+                target,
+                context,
+                mapped_count,
+                &mut |query_to_target| {
+                    coverage.cover_mapping(&query.query, target, query_to_target);
+                    false
+                },
+            );
+        },
+    );
+    coverage.into_outcome(target)
 }
 
 fn component_prechecks_match<L: MatchLimiter>(
@@ -2113,7 +2383,24 @@ fn query_substructure_matches_with_mapping(
         initial_mapping,
         |context, mapped_count| {
             let mut matches = UniqueMatches::new();
-            collect_mappings(&query.query, target, context, mapped_count, &mut matches);
+            for_each_mapping(
+                &query.query,
+                target,
+                context,
+                mapped_count,
+                &mut |query_to_target| {
+                    let mapping = current_query_order_mapping(query_to_target);
+                    matches
+                        .entry(canonical_match_key(&mapping))
+                        .and_modify(|existing| {
+                            if mapping < *existing {
+                                existing.clone_from(&mapping);
+                            }
+                        })
+                        .or_insert(mapping);
+                    false
+                },
+            );
             matches
                 .into_values()
                 .collect::<alloc::vec::Vec<_>>()
@@ -2162,7 +2449,16 @@ fn query_match_count_with_mapping(
         initial_mapping,
         |context, mapped_count| {
             let mut matches = MatchKeys::new();
-            collect_match_keys(&query.query, target, context, mapped_count, &mut matches);
+            for_each_mapping(
+                &query.query,
+                target,
+                context,
+                mapped_count,
+                &mut |query_to_target| {
+                    matches.push(current_canonical_match_key(query_to_target));
+                    false
+                },
+            );
             matches.sort_unstable();
             matches.dedup();
             matches.len()
@@ -2279,36 +2575,7 @@ fn two_atom_query_matches(
     recursive_cache: &mut RecursiveMatchCache,
     initial_mapping: InitialAtomMapping,
 ) -> bool {
-    let bond = &query.query.bonds()[0];
-    let query_mapping = TwoAtomQueryMapping {
-        left: bond.src,
-        right: bond.dst,
-    };
-    for_each_target_bond(target, |left_atom, right_atom, bond_label| {
-        mapping_matches_two_atom_query(
-            query,
-            target,
-            recursive_cache,
-            query_mapping,
-            TwoAtomTargetMapping {
-                left: left_atom,
-                right: right_atom,
-                bond: bond_label,
-            },
-            initial_mapping,
-        ) || mapping_matches_two_atom_query(
-            query,
-            target,
-            recursive_cache,
-            query_mapping,
-            TwoAtomTargetMapping {
-                left: right_atom,
-                right: left_atom,
-                bond: bond_label,
-            },
-            initial_mapping,
-        )
-    })
+    for_each_two_atom_mapping(query, target, recursive_cache, initial_mapping, |_| true)
 }
 
 fn two_atom_query_substructure_matches(
@@ -2317,39 +2584,17 @@ fn two_atom_query_substructure_matches(
     recursive_cache: &mut RecursiveMatchCache,
     initial_mapping: InitialAtomMapping,
 ) -> Box<[Box<[usize]>]> {
-    let bond = &query.query.bonds()[0];
-    let query_mapping = TwoAtomQueryMapping {
-        left: bond.src,
-        right: bond.dst,
-    };
     let mut matches = UniqueMatches::new();
-    for_each_target_bond(target, |left_atom, right_atom, bond_label| {
-        collect_two_atom_mapping(
-            &mut matches,
-            query,
-            target,
-            recursive_cache,
-            query_mapping,
-            TwoAtomTargetMapping {
-                left: left_atom,
-                right: right_atom,
-                bond: bond_label,
-            },
-            initial_mapping,
-        );
-        collect_two_atom_mapping(
-            &mut matches,
-            query,
-            target,
-            recursive_cache,
-            query_mapping,
-            TwoAtomTargetMapping {
-                left: right_atom,
-                right: left_atom,
-                bond: bond_label,
-            },
-            initial_mapping,
-        );
+    for_each_two_atom_mapping(query, target, recursive_cache, initial_mapping, |mapping| {
+        let ordered = current_query_order_mapping(mapping);
+        matches
+            .entry(canonical_match_key(&ordered))
+            .and_modify(|existing| {
+                if ordered < *existing {
+                    existing.clone_from(&ordered);
+                }
+            })
+            .or_insert(ordered);
         false
     });
     matches
@@ -2364,15 +2609,30 @@ fn two_atom_query_match_count(
     recursive_cache: &mut RecursiveMatchCache,
     initial_mapping: InitialAtomMapping,
 ) -> usize {
+    let mut matches = MatchKeys::new();
+    for_each_two_atom_mapping(query, target, recursive_cache, initial_mapping, |mapping| {
+        matches.push(current_canonical_match_key(mapping));
+        false
+    });
+    matches.sort_unstable();
+    matches.dedup();
+    matches.len()
+}
+
+fn for_each_two_atom_mapping(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    recursive_cache: &mut RecursiveMatchCache,
+    initial_mapping: InitialAtomMapping,
+    mut visit: impl FnMut(&[Option<usize>]) -> bool,
+) -> bool {
     let bond = &query.query.bonds()[0];
     let query_mapping = TwoAtomQueryMapping {
         left: bond.src,
         right: bond.dst,
     };
-    let mut matches = MatchKeys::new();
     for_each_target_bond(target, |left_atom, right_atom, bond_label| {
-        collect_two_atom_match_key(
-            &mut matches,
+        visit_two_atom_mapping(
             query,
             target,
             recursive_cache,
@@ -2383,9 +2643,8 @@ fn two_atom_query_match_count(
                 bond: bond_label,
             },
             initial_mapping,
-        );
-        collect_two_atom_match_key(
-            &mut matches,
+            &mut visit,
+        ) || visit_two_atom_mapping(
             query,
             target,
             recursive_cache,
@@ -2396,12 +2655,9 @@ fn two_atom_query_match_count(
                 bond: bond_label,
             },
             initial_mapping,
-        );
-        false
-    });
-    matches.sort_unstable();
-    matches.dedup();
-    matches.len()
+            &mut visit,
+        )
+    })
 }
 
 fn three_atom_query_matches(
@@ -2775,6 +3031,25 @@ fn for_each_target_bond(
     false
 }
 
+fn visit_two_atom_mapping(
+    query: &CompiledQuery,
+    target: &PreparedTarget,
+    recursive_cache: &mut RecursiveMatchCache,
+    query_mapping: TwoAtomQueryMapping,
+    target_mapping: TwoAtomTargetMapping,
+    initial_mapping: InitialAtomMapping,
+    visit: &mut impl FnMut(&[Option<usize>]) -> bool,
+) -> bool {
+    mapping_matches_two_atom_query(
+        query,
+        target,
+        recursive_cache,
+        query_mapping,
+        target_mapping,
+        initial_mapping,
+    ) && visit(&two_atom_query_order_mapping(query_mapping, target_mapping))
+}
+
 fn mapping_matches_two_atom_query(
     query: &CompiledQuery,
     target: &PreparedTarget,
@@ -2831,64 +3106,14 @@ fn mapping_matches_two_atom_query(
     )
 }
 
-fn collect_two_atom_mapping(
-    matches: &mut UniqueMatches,
-    query: &CompiledQuery,
-    target: &PreparedTarget,
-    recursive_cache: &mut RecursiveMatchCache,
+const fn two_atom_query_order_mapping(
     query_mapping: TwoAtomQueryMapping,
     target_mapping: TwoAtomTargetMapping,
-    initial_mapping: InitialAtomMapping,
-) {
-    if mapping_matches_two_atom_query(
-        query,
-        target,
-        recursive_cache,
-        query_mapping,
-        target_mapping,
-        initial_mapping,
-    ) {
-        let mapping = if query_mapping.left == 0 {
-            Box::<[usize]>::from([target_mapping.left, target_mapping.right])
-        } else {
-            Box::<[usize]>::from([target_mapping.right, target_mapping.left])
-        };
-        matches
-            .entry(two_atom_canonical_key(
-                target_mapping.left,
-                target_mapping.right,
-            ))
-            .and_modify(|existing| {
-                if mapping < *existing {
-                    existing.clone_from(&mapping);
-                }
-            })
-            .or_insert(mapping);
-    }
-}
-
-fn collect_two_atom_match_key(
-    matches: &mut MatchKeys,
-    query: &CompiledQuery,
-    target: &PreparedTarget,
-    recursive_cache: &mut RecursiveMatchCache,
-    query_mapping: TwoAtomQueryMapping,
-    target_mapping: TwoAtomTargetMapping,
-    initial_mapping: InitialAtomMapping,
-) {
-    if mapping_matches_two_atom_query(
-        query,
-        target,
-        recursive_cache,
-        query_mapping,
-        target_mapping,
-        initial_mapping,
-    ) {
-        matches.push(two_atom_canonical_key(
-            target_mapping.left,
-            target_mapping.right,
-        ));
-    }
+) -> [Option<usize>; 2] {
+    let mut mapping = [None; 2];
+    mapping[query_mapping.left] = Some(target_mapping.left);
+    mapping[query_mapping.right] = Some(target_mapping.right);
+    mapping
 }
 
 fn build_query_neighbors(
@@ -3927,31 +4152,20 @@ fn search_mapping_candidate(
     matched
 }
 
-fn collect_mappings(
+fn for_each_mapping(
     query: &QueryMol,
     target: &PreparedTarget,
     context: &mut SearchContext<'_, NoMatchLimit>,
     mapped_count: usize,
-    matches: &mut UniqueMatches,
-) {
+    visit: &mut impl FnMut(&[Option<usize>]) -> bool,
+) -> bool {
     if mapped_count == query.atom_count() {
-        if compiled_query_stereo_constraints_match(
+        return compiled_query_stereo_constraints_match(
             context.compiled_query,
             target,
             context.query_to_target,
             context.atom_stereo_cache,
-        ) {
-            let mapping = current_query_order_mapping(context.query_to_target);
-            matches
-                .entry(canonical_match_key(&mapping))
-                .and_modify(|existing| {
-                    if mapping < *existing {
-                        existing.clone_from(&mapping);
-                    }
-                })
-                .or_insert(mapping);
-        }
-        return;
+        ) && visit(context.query_to_target);
     }
 
     let next_query_atom = select_next_query_atom_for_target(context);
@@ -3979,60 +4193,14 @@ fn collect_mappings(
 
         context.query_to_target[next_query_atom] = Some(target_atom);
         context.mark_target_atom_used(target_atom);
-        collect_mappings(query, target, context, mapped_count + 1, matches);
+        let stop = for_each_mapping(query, target, context, mapped_count + 1, visit);
         context.unmark_target_atom_used(target_atom);
         context.query_to_target[next_query_atom] = None;
-    }
-}
-
-fn collect_match_keys(
-    query: &QueryMol,
-    target: &PreparedTarget,
-    context: &mut SearchContext<'_, NoMatchLimit>,
-    mapped_count: usize,
-    matches: &mut MatchKeys,
-) {
-    if mapped_count == query.atom_count() {
-        if compiled_query_stereo_constraints_match(
-            context.compiled_query,
-            target,
-            context.query_to_target,
-            context.atom_stereo_cache,
-        ) {
-            matches.push(current_canonical_match_key(context.query_to_target));
+        if stop {
+            return true;
         }
-        return;
     }
-
-    let next_query_atom = select_next_query_atom_for_target(context);
-    for target_atom in candidate_target_atoms(next_query_atom, target, context) {
-        if context.compiled_query.has_component_constraints
-            && !component_constraints_match(
-                next_query_atom,
-                target_atom,
-                query,
-                target,
-                context.query_to_target,
-            )
-        {
-            continue;
-        }
-        if !compiled_query_atom_matches(
-            context.compiled_query,
-            target,
-            context.recursive_cache,
-            next_query_atom,
-            target_atom,
-        ) {
-            continue;
-        }
-
-        context.query_to_target[next_query_atom] = Some(target_atom);
-        context.mark_target_atom_used(target_atom);
-        collect_match_keys(query, target, context, mapped_count + 1, matches);
-        context.unmark_target_atom_used(target_atom);
-        context.query_to_target[next_query_atom] = None;
-    }
+    false
 }
 
 fn current_query_order_mapping(query_to_target: &[Option<usize>]) -> Box<[usize]> {
@@ -4047,14 +4215,6 @@ fn canonical_match_key(mapping: &[usize]) -> Box<[usize]> {
     let mut canonical = mapping.to_vec();
     canonical.sort_unstable();
     canonical.into_boxed_slice()
-}
-
-fn two_atom_canonical_key(left: usize, right: usize) -> Box<[usize]> {
-    if left < right {
-        Box::<[usize]>::from([left, right])
-    } else {
-        Box::<[usize]>::from([right, left])
-    }
 }
 
 fn three_atom_canonical_key(first: usize, second: usize, third: usize) -> Box<[usize]> {
@@ -4980,6 +5140,13 @@ mod tests {
         QueryMol::from_str(smarts).unwrap().matches(smiles).unwrap()
     }
 
+    fn assert_coverage_close(actual: f64, expected: f64) {
+        assert!(
+            (actual - expected).abs() <= 1e-12,
+            "coverage {actual} != expected {expected}"
+        );
+    }
+
     #[test]
     fn rejects_empty_target() {
         let query = QueryMol::from_str("C").unwrap();
@@ -5142,6 +5309,47 @@ mod tests {
                 alloc::boxed::Box::<[usize]>::from([1, 2]),
             ]
         );
+    }
+
+    #[test]
+    fn match_outcome_reports_combined_atom_and_bond_coverage() {
+        let ring = QueryMol::from_str("c1ccccc1").unwrap();
+        let outcome = ring.match_outcome("Cc1ccccc1").unwrap();
+        assert!(outcome.matched);
+        assert_coverage_close(outcome.coverage, 12.0 / 14.0);
+
+        let atom_only = QueryMol::from_str("[#6]").unwrap();
+        let outcome = atom_only.match_outcome("c1ccccc1").unwrap();
+        assert!(outcome.matched);
+        assert_coverage_close(outcome.coverage, 6.0 / 12.0);
+
+        let no_match = QueryMol::from_str("[#7]")
+            .unwrap()
+            .match_outcome("CC")
+            .unwrap();
+        assert!(!no_match.matched);
+        assert_coverage_close(no_match.coverage, 0.0);
+    }
+
+    #[test]
+    fn match_outcome_unions_coverage_across_full_embeddings() {
+        let query = CompiledQuery::new(QueryMol::from_str("CC").unwrap()).unwrap();
+        let target = PreparedTarget::new(Smiles::from_str("CCC").unwrap());
+        let mut scratch = MatchScratch::new();
+
+        let outcome = query.match_outcome_with_scratch(&target, &mut scratch);
+        assert!(outcome.matched);
+        assert_coverage_close(outcome.coverage, 1.0);
+    }
+
+    #[test]
+    fn match_outcome_counts_bonds_from_all_valid_embeddings() {
+        let query = CompiledQuery::new(QueryMol::from_str("CCC").unwrap()).unwrap();
+        let target = PreparedTarget::new(Smiles::from_str("C1CC1").unwrap());
+
+        let outcome = query.match_outcome(&target);
+        assert!(outcome.matched);
+        assert_coverage_close(outcome.coverage, 1.0);
     }
 
     #[test]

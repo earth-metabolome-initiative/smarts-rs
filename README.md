@@ -28,6 +28,10 @@ assert!(!query.matches("CCCC").unwrap());
 let compiled = CompiledQuery::new(query).unwrap();
 let ethanol = PreparedTarget::new(Smiles::from_str("CCO").unwrap());
 assert!(compiled.matches(&ethanol));
+
+let outcome = compiled.match_outcome(&ethanol);
+assert!(outcome.matched);
+assert_eq!(outcome.coverage, 3.0 / 5.0);
 ```
 
 ## Matching Safety Fuse

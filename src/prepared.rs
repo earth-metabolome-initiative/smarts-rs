@@ -339,6 +339,18 @@ impl PreparedTarget {
         self.target.nodes().len()
     }
 
+    /// Returns the number of effective bonds in the prepared target.
+    #[inline]
+    #[must_use]
+    pub fn bond_count(&self) -> usize {
+        self.effective_neighbors
+            .values
+            .iter()
+            .map(|neighbors| neighbors.len())
+            .sum::<usize>()
+            / 2
+    }
+
     /// Returns the parsed atom for the provided atom id.
     #[inline]
     #[must_use]
