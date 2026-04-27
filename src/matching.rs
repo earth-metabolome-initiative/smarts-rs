@@ -1669,7 +1669,10 @@ fn compile_complete_bracket_predicates(
 ) -> Option<alloc::vec::Vec<AtomFastPredicate>> {
     match tree {
         BracketExprTree::Primitive(primitive) => compile_complete_primitive_predicates(primitive),
-        BracketExprTree::Not(_) | BracketExprTree::Or(_) => None,
+        BracketExprTree::Not(_) => {
+            compile_complete_bracket_predicates(double_negated_bracket_tree(tree)?)
+        }
+        BracketExprTree::Or(_) => None,
         BracketExprTree::HighAnd(items) | BracketExprTree::LowAnd(items) => {
             let mut predicates = alloc::vec::Vec::new();
             for item in items {
@@ -1779,13 +1782,28 @@ fn collect_required_bracket_predicates(
                 predicates.extend(required);
             }
         }
+        BracketExprTree::Not(_) => {
+            if let Some(inner) = double_negated_bracket_tree(tree) {
+                collect_required_bracket_predicates(inner, predicates);
+            }
+        }
         BracketExprTree::HighAnd(items) | BracketExprTree::LowAnd(items) => {
             for item in items {
                 collect_required_bracket_predicates(item, predicates);
             }
         }
-        BracketExprTree::Not(_) | BracketExprTree::Or(_) => {}
+        BracketExprTree::Or(_) => {}
     }
+}
+
+fn double_negated_bracket_tree(tree: &BracketExprTree) -> Option<&BracketExprTree> {
+    let BracketExprTree::Not(inner) = tree else {
+        return None;
+    };
+    let BracketExprTree::Not(grandchild) = inner.as_ref() else {
+        return None;
+    };
+    Some(grandchild)
 }
 
 fn compile_bond_matchers(
@@ -1933,7 +1951,9 @@ fn atom_expr_order_score(expr: &AtomExpr) -> usize {
 fn bracket_expr_order_score(tree: &BracketExprTree) -> usize {
     match tree {
         BracketExprTree::Primitive(primitive) => atom_primitive_order_score(primitive),
-        BracketExprTree::Not(_) => 0,
+        BracketExprTree::Not(_) => double_negated_bracket_tree(tree)
+            .map(bracket_expr_order_score)
+            .unwrap_or_default(),
         BracketExprTree::Or(items) => items
             .iter()
             .map(bracket_expr_order_score)
@@ -2471,7 +2491,7 @@ fn query_matches_with_mapping_state<L: MatchLimiter>(
         }
     }
 
-    if mapped_count == 0 && query.has_component_constraints && component_search_supported(query) {
+    if mapped_count == 0 && should_use_disconnected_component_search(query) {
         return disconnected_component_search_matches(query, target, &mut context);
     }
 
@@ -2535,6 +2555,37 @@ fn component_search_supported(query: &CompiledQuery) -> bool {
             .component_plan
             .iter()
             .all(ComponentPlanEntry::supports_component_search)
+}
+
+fn should_use_disconnected_component_search(query: &CompiledQuery) -> bool {
+    if !component_search_supported(query) {
+        return false;
+    }
+    query.has_component_constraints || has_small_ungrouped_component_tail(query)
+}
+
+fn has_small_ungrouped_component_tail(query: &CompiledQuery) -> bool {
+    const MAX_UNGROUPED_MULTI_ATOM_COMPONENT: usize = 4;
+
+    if query.has_stereo_constraints {
+        return false;
+    }
+
+    let mut has_multi_atom_component = false;
+    for entry in &query.component_plan {
+        if entry.group.is_some() {
+            return false;
+        }
+        if entry.atom_count <= 1 {
+            continue;
+        }
+        if entry.atom_count > MAX_UNGROUPED_MULTI_ATOM_COMPONENT {
+            return false;
+        }
+        has_multi_atom_component = true;
+    }
+
+    has_multi_atom_component
 }
 
 fn with_fresh_bound_search_context<R>(
@@ -5221,10 +5272,13 @@ fn bracket_tree_needs_target_scan_for_ordering(tree: &BracketExprTree) -> bool {
     match tree {
         BracketExprTree::Primitive(AtomPrimitive::RecursiveQuery(_)) => true,
         BracketExprTree::Primitive(_) => false,
-        BracketExprTree::Not(inner) => {
-            bracket_tree_may_filter_without_fast_anchor(inner)
-                || bracket_tree_needs_target_scan_for_ordering(inner)
-        }
+        BracketExprTree::Not(inner) => double_negated_bracket_tree(tree).map_or_else(
+            || {
+                bracket_tree_may_filter_without_fast_anchor(inner)
+                    || bracket_tree_needs_target_scan_for_ordering(inner)
+            },
+            bracket_tree_needs_target_scan_for_ordering,
+        ),
         BracketExprTree::HighAnd(items)
         | BracketExprTree::LowAnd(items)
         | BracketExprTree::Or(items) => items
@@ -5628,6 +5682,9 @@ fn bracket_tree_matches<L: MatchLimiter>(
     atom_id: usize,
     context: &mut AtomMatchContext<'_, '_, L>,
 ) -> bool {
+    if !context.limit.continue_search() {
+        return false;
+    }
     match tree {
         BracketExprTree::Primitive(primitive) => {
             atom_primitive_matches(primitive, query_atom_id, atom_id, context)
@@ -5928,11 +5985,12 @@ mod tests {
 
     use super::{
         component_constraints_match, component_embedding_assignment_exists, select_next_query_atom,
-        select_next_query_atom_for_target, AtomStereoCache, CompiledQuery, ComponentEmbedding,
-        ComponentEmbeddingSet, ComponentMatcher, ComponentPlanEntry, FreshSearchBuffers,
-        MatchScratch, RecursiveMatchCache, NO_MATCH_LIMIT,
+        select_next_query_atom_for_target, should_use_disconnected_component_search,
+        AtomStereoCache, CompiledQuery, ComponentEmbedding, ComponentEmbeddingSet,
+        ComponentMatcher, ComponentPlanEntry, FreshSearchBuffers, MatchScratch,
+        RecursiveMatchCache, NO_MATCH_LIMIT,
     };
-    use super::{MatchLimitResult, MatchOutcomeLimitResult};
+    use super::{AtomFastPredicate, MatchLimitResult, MatchOutcomeLimitResult};
     use crate::error::SmartsMatchError;
     use crate::prepared::PreparedTarget;
     use crate::QueryMol;
@@ -6504,6 +6562,108 @@ mod tests {
             }),
             MatchLimitResult::Complete(false)
         );
+    }
+
+    #[test]
+    fn double_negated_bracket_atoms_keep_fast_anchors() {
+        let compiled =
+            CompiledQuery::new(QueryMol::from_str("[!!#6&!!#6&!!#6&!!#6]").unwrap()).unwrap();
+        let matcher = &compiled.atom_matchers[0];
+
+        assert!(matcher.complete);
+        assert!(matcher
+            .predicates
+            .iter()
+            .any(|predicate| { matches!(predicate, AtomFastPredicate::AtomicNumber(6)) }));
+        assert!(compiled.matches(&PreparedTarget::new(Smiles::from_str("C").unwrap())));
+        assert!(!compiled.matches(&PreparedTarget::new(Smiles::from_str("O").unwrap())));
+    }
+
+    #[test]
+    fn bracket_expression_matching_polls_interrupt_limit() {
+        let mut smarts = String::from("[");
+        for index in 0..5000 {
+            if index > 0 {
+                smarts.push('&');
+            }
+            smarts.push_str("!#7");
+        }
+        smarts.push(']');
+
+        let compiled = CompiledQuery::new(QueryMol::from_str(&smarts).unwrap()).unwrap();
+        let target = PreparedTarget::new(Smiles::from_str("C").unwrap());
+        let mut scratch = MatchScratch::new();
+        let mut polls = 0usize;
+
+        assert_eq!(
+            compiled.matches_with_scratch_and_interrupt(&target, &mut scratch, || {
+                polls += 1;
+                polls > 1
+            }),
+            MatchLimitResult::Exceeded
+        );
+        assert!(polls > 1);
+    }
+
+    #[test]
+    fn small_disconnected_tail_uses_component_assignment_fuzz_artifacts() {
+        let cases = [
+            concat!(
+                "*[$([#6])&!!#6](~[!!#6&!!#6&!!#6&!!#6]~[!!#6&!!#6&!!#6&!!#6]).",
+                "[!!#6&!!#6&!!#6&!!#6].",
+                "[!!#6&!$([#6])&!!#6&!!#6].",
+                "[!!#6&!!#6&!!#6&!!#6].",
+                "[!!#6&!!#6&!!#6&!!#6]",
+            ),
+            concat!(
+                "*~[D3&!D3&!a,$([#6,#7]),c:0]([!*:0]~[!R,!!R,!!R&!!#6]).",
+                "[!!#6&!!#6&!!#6&!!#6].",
+                "[!!#6&!!#6&!!#6&!!#6].",
+                "[!!#6&!!#6&!!#6&!!#6].",
+                "[!!#6&!!#6&!!#6&!!#6]",
+            ),
+            concat!(
+                "[!!#6&!!#6&!!#6&!!#6]~[!!#6&!!#6&!!#6&!!#6].",
+                "[!!#6&!!#6&*&!!#6].",
+                "[!!#6&!!#6&!!#6,!*:0][!*:0]([!*:0][!$([#7])]).",
+                "[$([#7])].",
+                "[!!#6&!!#6&!!#6&!!#6]",
+            ),
+        ];
+        let target = PreparedTarget::new(
+            Smiles::from_str(
+                "C1CCN(C1)CCOC2=CC=C(C=C2)CC3=C(SC4=CC=CC=C43)C5=CC=C(C=C5)CCNCC6=CN=CC=C6",
+            )
+            .unwrap(),
+        );
+
+        for smarts in cases {
+            let compiled = CompiledQuery::new(QueryMol::from_str(smarts).unwrap()).unwrap();
+            let mut scratch = MatchScratch::new();
+            let mut polls = 0usize;
+
+            assert!(
+                should_use_disconnected_component_search(&compiled),
+                "{smarts}"
+            );
+            assert!(matches!(
+                compiled.matches_with_scratch_and_interrupt(&target, &mut scratch, || {
+                    polls += 1;
+                    polls > 1_000
+                }),
+                MatchLimitResult::Complete(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn large_ungrouped_wildcard_components_stay_on_general_search_path() {
+        let compiled = CompiledQuery::new(
+            QueryMol::from_str("*-***.*.*-***.*.***.***-*.****-*******").unwrap(),
+        )
+        .unwrap();
+
+        assert!(!should_use_disconnected_component_search(&compiled));
     }
 
     #[test]

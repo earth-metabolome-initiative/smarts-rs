@@ -4139,26 +4139,16 @@ fn canonical_bond_expr(expr: &BondExpr) -> BondExpr {
     match expr {
         BondExpr::Elided => BondExpr::Elided,
         BondExpr::Query(tree) => {
-            let mut normalized = tree.clone();
-            normalize_bond_tree(&mut normalized)
-                .unwrap_or_else(|_| unreachable!("parsed SMARTS expressions are never empty"));
-            let mut canonical = canonical_bond_tree(normalized);
-            canonical = simplify_bond_tree(canonical);
-            normalize_bond_tree(&mut canonical)
-                .unwrap_or_else(|_| unreachable!("parsed SMARTS expressions are never empty"));
-            let has_up = bond_tree_contains_direction(&canonical, Bond::Up);
-            let has_down = bond_tree_contains_direction(&canonical, Bond::Down);
-            if !has_up && !has_down {
+            let canonical = canonical_bond_tree_candidate(tree.clone());
+            if !bond_tree_contains_direction(tree, Bond::Up)
+                && !bond_tree_contains_direction(tree, Bond::Down)
+                && !bond_tree_contains_direction(&canonical, Bond::Up)
+                && !bond_tree_contains_direction(&canonical, Bond::Down)
+            {
                 return BondExpr::Query(canonical);
             }
-            if has_up && has_down {
-                canonical = collapse_mixed_directional_polarity(canonical);
-                canonical = simplify_bond_tree(canonical);
-                normalize_bond_tree(&mut canonical)
-                    .unwrap_or_else(|_| unreachable!("parsed SMARTS expressions are never empty"));
-            }
-            let flipped =
-                simplified_normalized_bond_tree(flip_directional_bond_tree(canonical.clone()));
+
+            let flipped = canonical_bond_tree_candidate(flip_directional_bond_tree(tree.clone()));
             let canonical_string = canonical.to_string();
             let flipped_string = flipped.to_string();
             let chosen = if flipped_string < canonical_string {
@@ -4171,11 +4161,23 @@ fn canonical_bond_expr(expr: &BondExpr) -> BondExpr {
     }
 }
 
-fn simplified_normalized_bond_tree(tree: BondExprTree) -> BondExprTree {
-    let mut simplified = simplify_bond_tree(tree);
-    normalize_bond_tree(&mut simplified)
+fn canonical_bond_tree_candidate(tree: BondExprTree) -> BondExprTree {
+    let mut normalized = tree;
+    normalize_bond_tree(&mut normalized)
         .unwrap_or_else(|_| unreachable!("parsed SMARTS expressions are never empty"));
-    simplified
+    let mut canonical = canonical_bond_tree(normalized);
+    canonical = simplify_bond_tree(canonical);
+    normalize_bond_tree(&mut canonical)
+        .unwrap_or_else(|_| unreachable!("parsed SMARTS expressions are never empty"));
+    if bond_tree_contains_direction(&canonical, Bond::Up)
+        && bond_tree_contains_direction(&canonical, Bond::Down)
+    {
+        canonical = collapse_mixed_directional_polarity(canonical);
+        canonical = simplify_bond_tree(canonical);
+        normalize_bond_tree(&mut canonical)
+            .unwrap_or_else(|_| unreachable!("parsed SMARTS expressions are never empty"));
+    }
+    canonical_bond_tree(canonical)
 }
 
 fn bond_tree_contains_direction(tree: &BondExprTree, direction: Bond) -> bool {
@@ -4187,6 +4189,19 @@ fn bond_tree_contains_direction(tree: &BondExprTree, direction: Bond) -> bool {
             items
                 .iter()
                 .any(|item| bond_tree_contains_direction(item, direction))
+        }
+    }
+}
+
+fn bond_tree_contains_negated_direction(tree: &BondExprTree) -> bool {
+    match tree {
+        BondExprTree::Primitive(_) => false,
+        BondExprTree::Not(inner) => {
+            bond_tree_contains_direction(inner, Bond::Up)
+                || bond_tree_contains_direction(inner, Bond::Down)
+        }
+        BondExprTree::HighAnd(items) | BondExprTree::Or(items) | BondExprTree::LowAnd(items) => {
+            items.iter().any(bond_tree_contains_negated_direction)
         }
     }
 }
@@ -4286,6 +4301,7 @@ fn simplify_bond_and(items: Vec<BondExprTree>, kind: BondAndKind) -> BondExprTre
         .into_iter()
         .map(simplify_bond_tree)
         .collect::<Vec<_>>();
+    flatten_bond_and_items(&mut items);
     if items.iter().any(is_false_bond_tree) || bond_and_contains_mutually_exclusive_pair(&items) {
         return false_bond_tree();
     }
@@ -4348,14 +4364,29 @@ fn simplify_bond_and(items: Vec<BondExprTree>, kind: BondAndKind) -> BondExprTre
         }
     }
     remove_implied_bond_conjunction_terms(&mut items);
-    items.sort_by_cached_key(BondExprTree::to_string);
-    items.dedup();
+    sort_and_dedup_bond_items(&mut items);
     match items.as_slice() {
         [] => BondExprTree::Primitive(BondPrimitive::Any),
         [single] => single.clone(),
         _ if !can_render_bond_and_as_high_and(&items) => BondExprTree::LowAnd(items),
         _ => BondExprTree::HighAnd(items),
     }
+}
+
+fn flatten_bond_and_items(items: &mut Vec<BondExprTree>) -> bool {
+    let mut flattened = Vec::with_capacity(items.len());
+    let mut changed = false;
+    for item in items.drain(..) {
+        match item {
+            BondExprTree::HighAnd(children) | BondExprTree::LowAnd(children) => {
+                changed = true;
+                flattened.extend(children);
+            }
+            other => flattened.push(other),
+        }
+    }
+    *items = flattened;
+    changed
 }
 
 fn simplify_bond_or(items: Vec<BondExprTree>) -> BondExprTree {
@@ -4380,6 +4411,7 @@ fn simplify_bond_or(items: Vec<BondExprTree>) -> BondExprTree {
     while relax_negated_bond_conjunction_terms(&mut items) {}
     while relax_covered_negated_bond_disjunction_terms(&mut items) {}
     while relax_conjunctive_complement_bond_disjunction_terms(&mut items) {}
+    while relax_partitioned_bond_disjunction_terms(&mut items) {}
     while remove_redundant_bond_disjunction_consensus_terms(&mut items) {}
     while relax_absorbed_bond_disjunction_conjunction_alternatives(&mut items) {}
     if let Some(factored) = factor_common_bond_disjunction_terms(&items) {
@@ -4389,8 +4421,7 @@ fn simplify_bond_or(items: Vec<BondExprTree>) -> BondExprTree {
     if let Some(distributed) = distribute_low_precedence_bond_disjunction(&items) {
         return distributed;
     }
-    items.sort_by_cached_key(BondExprTree::to_string);
-    items.dedup();
+    sort_and_dedup_bond_items(&mut items);
     match items.as_slice() {
         [] => false_bond_tree(),
         [single] => single.clone(),
@@ -4757,15 +4788,20 @@ fn factor_covered_bond_disjunction_pair(
 }
 
 fn distribute_pruned_bond_conjunction_disjunction_pair(items: &mut Vec<BondExprTree>) -> bool {
+    const MAX_DISTRIBUTED_BRANCHES: usize = 16;
+
     for left_index in 0..items.len() {
         let left_alternatives = bond_disjunction_factor_items(&items[left_index]);
-        if left_alternatives.len() != 2 {
+        if left_alternatives.len() < 2 {
             continue;
         }
 
         for right_index in (left_index + 1)..items.len() {
             let right_alternatives = bond_disjunction_factor_items(&items[right_index]);
-            if right_alternatives.len() != 2 {
+            if right_alternatives.len() < 2 {
+                continue;
+            }
+            if left_alternatives.len() * right_alternatives.len() > MAX_DISTRIBUTED_BRANCHES {
                 continue;
             }
 
@@ -4815,9 +4851,7 @@ fn pruned_bond_disjunction_product(
     }
 
     let replacement = simplify_bond_or(branches);
-    if matches!(replacement, BondExprTree::LowAnd(_))
-        || matches!(&replacement, BondExprTree::Or(items) if items.len() > 2)
-    {
+    if matches!(replacement, BondExprTree::LowAnd(_)) {
         return None;
     }
     Some(replacement)
@@ -5118,6 +5152,8 @@ fn remove_redundant_bond_conjunction_consensus_terms(items: &mut Vec<BondExprTre
 }
 
 fn distribute_bond_conjunction_term_into_disjunction(items: &mut Vec<BondExprTree>) -> bool {
+    const MAX_DISTRIBUTED_ALTERNATIVES: usize = 4;
+
     for disjunction_index in 0..items.len() {
         let BondExprTree::Or(alternatives) = &items[disjunction_index] else {
             continue;
@@ -5136,10 +5172,16 @@ fn distribute_bond_conjunction_term_into_disjunction(items: &mut Vec<BondExprTre
                 .iter()
                 .map(|alternative| bond_tree_implies(alternative, &term))
                 .collect::<Vec<_>>();
+            let partially_implied = implied_by_alternative.iter().any(|implied| *implied)
+                && !implied_by_alternative.iter().all(|implied| *implied);
+            let small_negated_directional_product = alternatives.len()
+                <= MAX_DISTRIBUTED_ALTERNATIVES
+                && (bond_tree_contains_negated_direction(&term)
+                    || alternatives
+                        .iter()
+                        .any(bond_tree_contains_negated_direction));
 
-            if !implied_by_alternative.iter().any(|implied| *implied)
-                || implied_by_alternative.iter().all(|implied| *implied)
-            {
+            if !partially_implied && !small_negated_directional_product {
                 continue;
             }
             if alternatives.iter().any(|alternative| {
@@ -5316,6 +5358,57 @@ fn relax_conjunctive_complement_bond_disjunction_terms(items: &mut [BondExprTree
     }
 
     false
+}
+
+fn relax_partitioned_bond_disjunction_terms(items: &mut [BondExprTree]) -> bool {
+    for candidate_index in 0..items.len() {
+        let (candidate_items, candidate_kind) = bond_consensus_items(&items[candidate_index]);
+        for partition_index in 0..candidate_items.len() {
+            let partition = candidate_items[partition_index].clone();
+            let residual = bond_conjunction_from_items(
+                bond_items_without_index(&candidate_items, partition_index),
+                candidate_kind,
+            );
+            if residual == items[candidate_index] {
+                continue;
+            }
+            let complement_branch = bond_conjunction_from_items(
+                vec![complement_bond_partition_term(partition), residual.clone()],
+                candidate_kind,
+            );
+
+            for cover_index in 0..items.len() {
+                let (cover_items, _) = bond_consensus_items(&items[cover_index]);
+                if cover_index == candidate_index
+                    || cover_items.len() < 2
+                    || !bond_tree_implies(&complement_branch, &items[cover_index])
+                {
+                    continue;
+                }
+
+                items[candidate_index] = residual;
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn bond_conjunction_from_items(mut items: Vec<BondExprTree>, kind: BondAndKind) -> BondExprTree {
+    match items.len() {
+        0 => BondExprTree::Primitive(BondPrimitive::Any),
+        1 => items.pop().expect("one item after len check"),
+        _ if kind == BondAndKind::Low => BondExprTree::LowAnd(items),
+        _ => BondExprTree::HighAnd(items),
+    }
+}
+
+fn complement_bond_partition_term(term: BondExprTree) -> BondExprTree {
+    match term {
+        BondExprTree::Not(inner) => *inner,
+        other => BondExprTree::Not(Box::new(other)),
+    }
 }
 
 fn split_negated_bond_conjunction_items(
@@ -5612,23 +5705,26 @@ fn factor_common_bond_disjunction_terms(items: &[BondExprTree]) -> Option<BondEx
     if items.len() < 2 {
         return None;
     }
+    if items.iter().any(bond_tree_contains_negated_direction) {
+        return None;
+    }
 
     let alternatives = items
         .iter()
         .map(|item| {
-            let (mut items, _) = bond_consensus_items(item);
+            let (mut items, kind) = bond_consensus_items(item);
             sort_and_dedup_bond_items(&mut items);
-            items
+            (items, kind)
         })
         .collect::<Vec<_>>();
-
     let common = alternatives
         .first()?
+        .0
         .iter()
         .try_fold(Vec::new(), |mut common, candidate| {
             if alternatives
                 .iter()
-                .all(|alternative| alternative.contains(candidate))
+                .all(|(alternative, _)| alternative.contains(candidate))
             {
                 common.push(candidate.clone());
             }
@@ -5639,15 +5735,15 @@ fn factor_common_bond_disjunction_terms(items: &[BondExprTree]) -> Option<BondEx
     }
 
     let mut reduced = Vec::new();
-    for alternative in alternatives {
+    for (alternative, kind) in alternatives {
         let remainder = alternative
             .into_iter()
             .filter(|item| !common.contains(item))
             .collect::<Vec<_>>();
         if remainder.is_empty() {
-            return Some(simplify_bond_and(common, BondAndKind::High));
+            return Some(simplify_bond_and(common, kind));
         }
-        reduced.push(simplify_bond_and(remainder, BondAndKind::High));
+        reduced.push(simplify_bond_and(remainder, kind));
     }
 
     let disjunction = simplify_bond_or(reduced);
@@ -5682,7 +5778,7 @@ fn bond_items_without_index(items: &[BondExprTree], excluded_index: usize) -> Ve
 }
 
 fn sort_and_dedup_bond_items(items: &mut Vec<BondExprTree>) {
-    items.sort_by_cached_key(BondExprTree::to_string);
+    items.sort();
     items.dedup();
 }
 
@@ -6131,8 +6227,7 @@ fn simple_bond_direction(expr: &BondExpr) -> Option<Bond> {
 fn simple_bond_direction_in_tree(tree: &BondExprTree) -> Option<Bond> {
     match tree {
         BondExprTree::Primitive(BondPrimitive::Bond(bond @ (Bond::Up | Bond::Down))) => Some(*bond),
-        BondExprTree::Primitive(_) | BondExprTree::Or(_) => None,
-        BondExprTree::Not(inner) => simple_bond_direction_in_tree(inner),
+        BondExprTree::Primitive(_) | BondExprTree::Not(_) | BondExprTree::Or(_) => None,
         BondExprTree::HighAnd(items) | BondExprTree::LowAnd(items) => {
             let mut direction = None;
             for item in items {
@@ -6185,8 +6280,7 @@ fn set_simple_bond_direction_in_tree(tree: &mut BondExprTree, direction: Bond) -
             *bond = direction;
             true
         }
-        BondExprTree::Primitive(_) | BondExprTree::Or(_) => false,
-        BondExprTree::Not(inner) => set_simple_bond_direction_in_tree(inner, direction),
+        BondExprTree::Primitive(_) | BondExprTree::Not(_) | BondExprTree::Or(_) => false,
         BondExprTree::HighAnd(items) | BondExprTree::LowAnd(items) => {
             let mut changed = false;
             for item in items {
@@ -7557,7 +7651,11 @@ mod tests {
 
     #[test]
     fn canonicalize_handles_directional_low_and_relabel_fuzz_artifact() {
-        for source in ["A/,:!/;!@,!/;!@,/N", "A/,!/@@,:!/;!@,:!/;!@,/N"] {
+        for source in [
+            "A/,:!/;!@,!/;!@,/N",
+            "A/,!/@@,:!/;!@,:!/;!@,/N",
+            "A:/,!@,!/@!:;@,:!@,-!:,!:/N",
+        ] {
             assert_canonical_roundtrips(source);
             assert_all_atom_permutations_converge(source);
         }
@@ -7599,6 +7697,56 @@ mod tests {
     #[test]
     fn canonicalize_handles_rotated_bond_disjunction_cover_fuzz_artifact() {
         let source = "A@@o@~~~~~~,~~~~-~/,@@/;@/@~~~~~~,~~~~-~~,~~~~-@~Ac~@@~~-///:::::/I\n";
+        assert_canonical_roundtrips(source);
+        assert_all_atom_permutations_converge(source);
+    }
+
+    #[test]
+    fn canonicalize_handles_negated_directional_ring_bundle_fuzz_artifact() {
+        let source = "A:,-!:!@,-!/,:!//;@,::,/,=!@,:!/;!@,:@,-!@,!:~!/;!@,::,-!:!@,-!/,:!/;@,::,/N";
+        assert_canonical_roundtrips(source);
+        assert_all_atom_permutations_converge(source);
+    }
+
+    #[test]
+    fn canonicalize_handles_directional_low_and_distribution_fuzz_artifact() {
+        let source = "A/@,:!@,-!:,~~~/@,:!@,-!:!:&!@!:!:&!@!/N!/;!@@,!!~~~/@,::,-!:,~~~/@,:!@,-!:!!/;!@@,!!~~~!@,-!/N!@N";
+        assert_canonical_roundtrips(source);
+        assert_all_atom_permutations_converge(source);
+    }
+
+    #[test]
+    fn canonicalize_handles_directional_low_and_product_fuzz_artifact() {
+        let source = "A/,!/@,:!/:,:!!/;!@!@,:::@,-!:~~~/@,:!@,-!:!@,-!/,:!/;!@,::,/N";
+        assert_canonical_roundtrips(source);
+        assert_all_atom_permutations_converge(source);
+    }
+
+    #[test]
+    fn canonicalize_handles_directional_low_and_term_distribution_fuzz_artifact() {
+        let source = "A/,!@,:!/;!@,:-!@,:!/;!@!/;!@,:!/::/;@@!@,:!!@@,:!!:,=!@,:!:-:!@,:!!:,-!@,:!/;!@,=!@,::,/N";
+        assert_canonical_roundtrips(source);
+        assert_all_atom_permutations_converge(source);
+    }
+
+    #[test]
+    fn canonicalize_handles_partitioned_directional_ring_fuzz_artifact() {
+        let source = "A/@,@,/,@,@,/,:!/;!!@,:!/;!:,@,/,@,@,/,:!/;!!@,!/;!!@,:!/;!@,!/N";
+        assert_canonical_roundtrips(source);
+        assert_all_atom_permutations_converge(source);
+    }
+
+    #[test]
+    fn canonicalize_handles_partitioned_directional_single_fuzz_artifact() {
+        let source =
+            "A/,!/@,-!:!@,-!/,:!/;!@,!:~!@,:!@,-!/,:!/;!@,!:~@,:@,=!:~!/;!@,:!@,-!/,:!::,/N";
+        assert_canonical_roundtrips(source);
+        assert_all_atom_permutations_converge(source);
+    }
+
+    #[test]
+    fn canonicalize_handles_partition_relaxation_cycle_fuzz_artifact() {
+        let source = "A/@,:@,!@,!:!/;/N";
         assert_canonical_roundtrips(source);
         assert_all_atom_permutations_converge(source);
     }
