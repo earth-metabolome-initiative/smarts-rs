@@ -7,7 +7,7 @@
 
 use alloc::{boxed::Box, vec, vec::Vec};
 use core::{fmt, marker::PhantomData, ops::Range};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 #[cfg(feature = "zstd")]
 use std::{
     fs::File,
@@ -15,6 +15,8 @@ use std::{
 };
 
 use epserde::{deser, prelude::Epserde, ser};
+#[cfg(feature = "rayon")]
+use rayon::prelude::*;
 
 use super::{
     atom_feature_is_unconstrained, atom_feature_satisfies_query,
@@ -34,6 +36,7 @@ use super::{
     TargetCandidateSet, TargetCorpusIndex, TargetCorpusIndexShard, TargetCorpusIndexStats,
     TargetCorpusScratch,
 };
+use crate::prepared::PreparedTarget;
 
 const FORMAT_VERSION: u32 = 1;
 const ATOM_FEATURE_WIDTH: u16 = 5;
@@ -81,6 +84,16 @@ impl PersistedShardCompression {
     pub const fn is_raw(self) -> bool {
         matches!(self, Self::None)
     }
+
+    /// Returns the conventional file extension for this shard payload.
+    #[inline]
+    #[must_use]
+    pub const fn file_extension(self) -> &'static str {
+        match self {
+            Self::None => "eps",
+            Self::Zstd { .. } => "eps.zst",
+        }
+    }
 }
 
 #[cfg(feature = "zstd")]
@@ -103,6 +116,32 @@ pub struct PersistedShardStoreStats {
     /// Number of raw epserde bytes serialized before any compression.
     pub serialized_bytes: usize,
     /// Number of bytes written to disk.
+    pub disk_bytes: u64,
+}
+
+/// Build and storage measurements for one persisted target-index shard.
+#[cfg(feature = "zstd")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PersistedTargetCorpusIndexShardBuildStats {
+    /// Number of targets included in the shard.
+    pub target_count: usize,
+    /// Runtime index feature/posting counts for this shard.
+    pub index_stats: TargetCorpusIndexStats,
+    /// Serialized and on-disk byte counts for the shard payload.
+    pub store_stats: PersistedShardStoreStats,
+}
+
+/// Result of extracting one zstd-compressed shard to raw epserde bytes.
+#[cfg(feature = "zstd")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PersistedShardExtraction {
+    /// Compressed source path.
+    pub source: PathBuf,
+    /// Raw destination path.
+    pub destination: PathBuf,
+    /// Whether this call performed decompression.
+    pub extracted: bool,
+    /// Current raw destination size in bytes.
     pub disk_bytes: u64,
 }
 
@@ -314,6 +353,343 @@ pub struct PersistedTargetCorpusIndexShard<
     path3: Path3,
     path4: Path4,
     star3: Star3,
+}
+
+/// Builder for storing one persisted target-index shard.
+#[cfg(feature = "zstd")]
+#[derive(Debug, Clone, Copy)]
+pub struct PersistedTargetCorpusIndexShardBuilder<'a> {
+    base_target_id: usize,
+    targets: &'a [PreparedTarget],
+    compression: PersistedShardCompression,
+}
+
+#[cfg(feature = "zstd")]
+impl<'a> PersistedTargetCorpusIndexShardBuilder<'a> {
+    /// Starts building a persisted shard from prepared targets.
+    #[inline]
+    #[must_use]
+    pub const fn new(targets: &'a [PreparedTarget]) -> Self {
+        Self {
+            base_target_id: 0,
+            targets,
+            compression: PersistedShardCompression::None,
+        }
+    }
+
+    /// Sets the global id of local target `0` in this shard.
+    #[inline]
+    #[must_use]
+    pub const fn base_target_id(mut self, base_target_id: usize) -> Self {
+        self.base_target_id = base_target_id;
+        self
+    }
+
+    /// Sets the storage compression mode.
+    #[inline]
+    #[must_use]
+    pub const fn compression(mut self, compression: PersistedShardCompression) -> Self {
+        self.compression = compression;
+        self
+    }
+
+    /// Builds and stores the shard at `path`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the shard cannot be serialized or written.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the shard base id, target count, or an internal posting/mask
+    /// offset exceeds the persisted format's `u64`/`u32` capacity.
+    ///
+    /// # Safety
+    ///
+    /// This writes epserde bytes. The resulting file must be treated as trusted
+    /// input when it is later deserialized.
+    pub unsafe fn store_unchecked(
+        self,
+        path: impl AsRef<Path>,
+    ) -> Result<PersistedTargetCorpusIndexShardBuildStats, PersistedShardStoreError> {
+        let index = TargetCorpusIndex::new(self.targets);
+        let index_stats = index.stats();
+        let target_count = index.len();
+        let shard = TargetCorpusIndexShard::new(self.base_target_id, index);
+        let persisted = PersistedTargetCorpusIndexShard::from_index_shard(&shard);
+        let store_stats =
+            unsafe { persisted.store_with_compression_unchecked(path, self.compression)? };
+        Ok(PersistedTargetCorpusIndexShardBuildStats {
+            target_count,
+            index_stats,
+            store_stats,
+        })
+    }
+}
+
+/// Ordered raw persisted target-index shard paths.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PersistedTargetCorpusIndexShardPaths {
+    paths: Box<[PathBuf]>,
+}
+
+impl PersistedTargetCorpusIndexShardPaths {
+    /// Builds a shard-path collection from explicit paths.
+    #[must_use]
+    pub fn from_paths<I, P>(paths: I) -> Self
+    where
+        I: IntoIterator<Item = P>,
+        P: Into<PathBuf>,
+    {
+        let mut paths = paths.into_iter().map(Into::into).collect::<Vec<_>>();
+        paths.sort();
+        Self {
+            paths: paths.into_boxed_slice(),
+        }
+    }
+
+    /// Finds raw `.eps` shard files in a directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the directory cannot be read.
+    pub fn raw_in_dir(dir: impl AsRef<Path>) -> std::io::Result<Self> {
+        Ok(Self::from_paths(shard_paths_with_suffix(dir, ".eps")?))
+    }
+
+    /// Finds zstd-compressed `.eps.zst` shard files in a directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the directory cannot be read.
+    #[cfg(feature = "zstd")]
+    pub fn zstd_in_dir(dir: impl AsRef<Path>) -> std::io::Result<Self> {
+        Ok(Self::from_paths(shard_paths_with_suffix(dir, ".eps.zst")?))
+    }
+
+    /// Returns the ordered shard paths.
+    #[inline]
+    #[must_use]
+    pub const fn paths(&self) -> &[PathBuf] {
+        &self.paths
+    }
+
+    /// Returns the number of shard paths.
+    #[inline]
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.paths.len()
+    }
+
+    /// Returns whether there are no shard paths.
+    #[inline]
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.paths.is_empty()
+    }
+
+    /// Counts candidates across all raw shard paths.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any shard cannot be memory-mapped.
+    ///
+    /// # Safety
+    ///
+    /// Raw shard files must be trusted epserde payloads produced by a
+    /// compatible version of this crate and epserde.
+    pub unsafe fn candidate_count_unchecked(
+        &self,
+        query: &QueryScreen,
+    ) -> Result<usize, Box<dyn std::error::Error + Send + Sync + 'static>> {
+        let mut count = 0usize;
+        for path in &self.paths {
+            count = count.saturating_add(unsafe { candidate_count_for_raw_shard(path, query)? });
+        }
+        Ok(count)
+    }
+
+    /// Counts candidates across all raw shard paths in parallel.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any shard cannot be memory-mapped.
+    ///
+    /// # Safety
+    ///
+    /// Raw shard files must be trusted epserde payloads produced by a
+    /// compatible version of this crate and epserde.
+    #[cfg(feature = "rayon")]
+    pub unsafe fn par_candidate_count_unchecked(
+        &self,
+        query: &QueryScreen,
+    ) -> Result<usize, Box<dyn std::error::Error + Send + Sync + 'static>> {
+        self.paths
+            .par_iter()
+            .map(|path| unsafe { candidate_count_for_raw_shard(path, query) })
+            .try_reduce(|| 0usize, |left, right| Ok(left.saturating_add(right)))
+    }
+
+    /// Collects candidates across all raw shard paths.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any shard cannot be memory-mapped.
+    ///
+    /// # Safety
+    ///
+    /// Raw shard files must be trusted epserde payloads produced by a
+    /// compatible version of this crate and epserde.
+    pub unsafe fn candidate_ids_unchecked(
+        &self,
+        query: &QueryScreen,
+    ) -> Result<Vec<usize>, Box<dyn std::error::Error + Send + Sync + 'static>> {
+        let mut out = Vec::new();
+        for path in &self.paths {
+            unsafe { candidate_ids_for_raw_shard_into(path, query, &mut out)? };
+        }
+        Ok(out)
+    }
+
+    /// Collects candidates across all raw shard paths in parallel.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any shard cannot be memory-mapped.
+    ///
+    /// # Safety
+    ///
+    /// Raw shard files must be trusted epserde payloads produced by a
+    /// compatible version of this crate and epserde.
+    #[cfg(feature = "rayon")]
+    pub unsafe fn par_candidate_ids_unchecked(
+        &self,
+        query: &QueryScreen,
+    ) -> Result<Vec<usize>, Box<dyn std::error::Error + Send + Sync + 'static>> {
+        let chunks = self
+            .paths
+            .par_iter()
+            .map(|path| unsafe { candidate_ids_for_raw_shard(path, query) })
+            .collect::<Result<Vec<_>, _>>()?;
+        let target_count = chunks.iter().map(Vec::len).sum();
+        let mut out = Vec::with_capacity(target_count);
+        for chunk in chunks {
+            out.extend(chunk);
+        }
+        Ok(out)
+    }
+
+    /// Extracts `.eps.zst` shards to adjacent raw `.eps` files when needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any shard cannot be decompressed or written.
+    #[cfg(all(feature = "zstd", feature = "rayon"))]
+    pub fn extract_zstd_if_missing_in_parallel(
+        &self,
+    ) -> Result<Vec<PersistedShardExtraction>, PersistedShardStoreError> {
+        self.paths
+            .par_iter()
+            .map(extract_zstd_shard_if_missing)
+            .collect()
+    }
+
+    /// Returns the raw `.eps` paths corresponding to these `.eps.zst` paths.
+    #[cfg(feature = "zstd")]
+    #[must_use]
+    pub fn extracted_raw_paths(&self) -> Self {
+        Self::from_paths(self.paths.iter().map(raw_path_for_zstd_shard))
+    }
+}
+
+fn shard_paths_with_suffix(dir: impl AsRef<Path>, suffix: &str) -> std::io::Result<Vec<PathBuf>> {
+    let mut paths = std::fs::read_dir(dir)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<Vec<_>, _>>()?;
+    paths.retain(|path| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(suffix))
+    });
+    paths.sort();
+    Ok(paths)
+}
+
+unsafe fn candidate_count_for_raw_shard(
+    path: impl AsRef<Path>,
+    query: &QueryScreen,
+) -> Result<usize, Box<dyn std::error::Error + Send + Sync + 'static>> {
+    let mapped =
+        unsafe { PersistedTargetCorpusIndexShard::mmap_unchecked(path, deser::Flags::empty())? };
+    let mut scratch = TargetCorpusScratch::new();
+    Ok(mapped
+        .uncase()
+        .candidate_count_with_scratch(query, &mut scratch))
+}
+
+unsafe fn candidate_ids_for_raw_shard(
+    path: impl AsRef<Path>,
+    query: &QueryScreen,
+) -> Result<Vec<usize>, Box<dyn std::error::Error + Send + Sync + 'static>> {
+    let mut out = Vec::new();
+    unsafe { candidate_ids_for_raw_shard_into(path, query, &mut out)? };
+    Ok(out)
+}
+
+unsafe fn candidate_ids_for_raw_shard_into(
+    path: impl AsRef<Path>,
+    query: &QueryScreen,
+    out: &mut Vec<usize>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
+    let mapped =
+        unsafe { PersistedTargetCorpusIndexShard::mmap_unchecked(path, deser::Flags::empty())? };
+    let mut scratch = TargetCorpusScratch::new();
+    let mut shard_ids = Vec::new();
+    mapped
+        .uncase()
+        .candidate_ids_with_scratch_into(query, &mut scratch, &mut shard_ids);
+    out.extend(shard_ids);
+    Ok(())
+}
+
+#[cfg(feature = "zstd")]
+fn extract_zstd_shard_if_missing(
+    source: impl AsRef<Path>,
+) -> Result<PersistedShardExtraction, PersistedShardStoreError> {
+    let source = source.as_ref();
+    let destination = raw_path_for_zstd_shard(source);
+    if destination.exists() {
+        return Ok(PersistedShardExtraction {
+            source: source.to_path_buf(),
+            disk_bytes: std::fs::metadata(&destination)?.len(),
+            destination,
+            extracted: false,
+        });
+    }
+
+    let input = File::open(source)?;
+    let mut decoder = zstd::stream::read::Decoder::new(input)?;
+    let mut output = BufWriter::new(File::create(&destination)?);
+    let disk_bytes = std::io::copy(&mut decoder, &mut output)?;
+    output.flush()?;
+    Ok(PersistedShardExtraction {
+        source: source.to_path_buf(),
+        destination,
+        extracted: true,
+        disk_bytes,
+    })
+}
+
+#[cfg(feature = "zstd")]
+fn raw_path_for_zstd_shard(path: impl AsRef<Path>) -> PathBuf {
+    let path = path.as_ref();
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_suffix(".zst"))
+        .map_or_else(
+            || path.with_extension("eps"),
+            |name| path.with_file_name(name),
+        )
 }
 
 impl PersistedTargetCorpusIndexShard {
@@ -3708,6 +4084,60 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
+    #[cfg(all(feature = "zstd", feature = "rayon"))]
+    #[test]
+    fn persisted_shard_paths_extract_and_query_in_parallel() {
+        let targets = persisted_candidate_targets();
+        let compressed_path = persisted_shard_temp_path().with_extension("eps.zst");
+        let raw_path = raw_path_for_zstd_shard(&compressed_path);
+        let build_stats = unsafe {
+            PersistedTargetCorpusIndexShardBuilder::new(&targets)
+                .base_target_id(17)
+                .compression(PersistedShardCompression::Zstd {
+                    level: 1,
+                    worker_threads: 0,
+                })
+                .store_unchecked(&compressed_path)
+                .unwrap()
+        };
+        assert_eq!(build_stats.target_count, targets.len());
+        assert!(build_stats.store_stats.disk_bytes > 0);
+        assert!(!raw_path.exists());
+
+        let compressed_shards =
+            PersistedTargetCorpusIndexShardPaths::from_paths([compressed_path.clone()]);
+        let extracted = compressed_shards
+            .extract_zstd_if_missing_in_parallel()
+            .unwrap();
+        assert_eq!(extracted.len(), 1);
+        assert_eq!(extracted[0].destination, raw_path);
+        assert!(extracted[0].extracted);
+
+        let extracted_again = compressed_shards
+            .extract_zstd_if_missing_in_parallel()
+            .unwrap();
+        assert!(!extracted_again[0].extracted);
+
+        let query = QueryScreen::new(&crate::QueryMol::from_str("CO").unwrap());
+        let raw_shards = compressed_shards.extracted_raw_paths();
+        let index = TargetCorpusIndex::new(&targets);
+        let shard = TargetCorpusIndexShard::new(17, index);
+        let expected = shard
+            .index()
+            .candidate_ids(&query)
+            .into_iter()
+            .map(|target_id| shard.base_target_id() + target_id)
+            .collect::<Vec<_>>();
+        let candidate_count = unsafe { raw_shards.par_candidate_count_unchecked(&query).unwrap() };
+        let candidate_ids = unsafe { raw_shards.par_candidate_ids_unchecked(&query).unwrap() };
+
+        assert_eq!(candidate_count, expected.len());
+        assert_eq!(candidate_ids, expected);
+
+        std::fs::remove_file(raw_path).unwrap();
+        std::fs::remove_file(compressed_path).unwrap();
+    }
+
     fn persisted_candidate_targets() -> Vec<PreparedTarget> {
         ["CCO", "COC", "CC(C)C", "C1CCCCC1", "CC(O)(N)Cl"]
             .into_iter()
@@ -3766,7 +4196,7 @@ mod tests {
         }
     }
 
-    fn persisted_shard_temp_path() -> std::path::PathBuf {
+    fn persisted_shard_temp_path() -> PathBuf {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
