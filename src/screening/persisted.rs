@@ -6,7 +6,13 @@
 //! structs.
 
 use alloc::{boxed::Box, vec, vec::Vec};
-use core::{marker::PhantomData, ops::Range};
+use core::{fmt, marker::PhantomData, ops::Range};
+use std::path::Path;
+#[cfg(feature = "zstd")]
+use std::{
+    fs::File,
+    io::{BufWriter, Write},
+};
 
 use epserde::{deser, prelude::Epserde, ser};
 
@@ -46,6 +52,102 @@ pub struct PersistedRequiredCountFilter<'a> {
     pub population: usize,
     /// Bitset words for targets whose count is at least the requested value.
     pub source: &'a [u64],
+}
+
+/// Compression mode used when storing persisted target-index shards.
+#[cfg(feature = "zstd")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PersistedShardCompression {
+    /// Store raw epserde bytes.
+    #[default]
+    None,
+    /// Store zstd-compressed epserde bytes.
+    ///
+    /// `worker_threads` values `0` and `1` use zstd's single-threaded encoder.
+    /// Values greater than `1` enable zstd's multithreaded encoder.
+    Zstd {
+        /// zstd compression level.
+        level: i32,
+        /// Number of compression worker threads.
+        worker_threads: u32,
+    },
+}
+
+#[cfg(feature = "zstd")]
+impl PersistedShardCompression {
+    /// Returns true when this mode stores mmap-loadable raw epserde bytes.
+    #[inline]
+    #[must_use]
+    pub const fn is_raw(self) -> bool {
+        matches!(self, Self::None)
+    }
+}
+
+#[cfg(feature = "zstd")]
+impl fmt::Display for PersistedShardCompression {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::None => f.write_str("none"),
+            Self::Zstd {
+                level,
+                worker_threads,
+            } => write!(f, "zstd(level={level}, threads={worker_threads})"),
+        }
+    }
+}
+
+/// Size information returned after storing a persisted target-index shard.
+#[cfg(feature = "zstd")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PersistedShardStoreStats {
+    /// Number of raw epserde bytes serialized before any compression.
+    pub serialized_bytes: usize,
+    /// Number of bytes written to disk.
+    pub disk_bytes: u64,
+}
+
+/// Error returned while storing a persisted target-index shard.
+#[cfg(feature = "zstd")]
+#[derive(Debug)]
+pub enum PersistedShardStoreError {
+    /// A filesystem or compression writer operation failed.
+    Io(std::io::Error),
+    /// Epserde serialization failed.
+    Serialization(ser::Error),
+}
+
+#[cfg(feature = "zstd")]
+impl fmt::Display for PersistedShardStoreError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(error) => write!(f, "{error}"),
+            Self::Serialization(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+#[cfg(feature = "zstd")]
+impl std::error::Error for PersistedShardStoreError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(error) => Some(error),
+            Self::Serialization(error) => Some(error),
+        }
+    }
+}
+
+#[cfg(feature = "zstd")]
+impl From<std::io::Error> for PersistedShardStoreError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+#[cfg(feature = "zstd")]
+impl From<ser::Error> for PersistedShardStoreError {
+    fn from(error: ser::Error) -> Self {
+        Self::Serialization(error)
+    }
 }
 
 /// Flat persisted representation of a [`CountBitsetIndex`].
@@ -270,8 +372,81 @@ impl PersistedTargetCorpusIndexShard {
     ///
     /// This wraps epserde serialization. The resulting file must be treated as
     /// trusted input when it is later deserialized.
-    pub unsafe fn store_unchecked(&self, path: impl AsRef<std::path::Path>) -> ser::Result<()> {
+    pub unsafe fn store_unchecked(&self, path: impl AsRef<Path>) -> ser::Result<()> {
         unsafe { ser::Serialize::store(self, path) }
+    }
+
+    /// Stores this shard payload with the requested compression mode.
+    ///
+    /// Raw storage writes mmap-loadable epserde bytes. zstd storage writes the
+    /// same epserde payload through a zstd encoder; compressed shards must be
+    /// decompressed before mmap-backed querying.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store error if the file cannot be created, compressed, or
+    /// serialized.
+    ///
+    /// # Safety
+    ///
+    /// This wraps epserde serialization. The resulting raw bytes, whether
+    /// compressed or not, must be treated as trusted input when they are later
+    /// deserialized.
+    #[cfg(feature = "zstd")]
+    pub unsafe fn store_with_compression_unchecked(
+        &self,
+        path: impl AsRef<Path>,
+        compression: PersistedShardCompression,
+    ) -> Result<PersistedShardStoreStats, PersistedShardStoreError> {
+        match compression {
+            PersistedShardCompression::None => {
+                unsafe { self.store_unchecked(path.as_ref())? };
+                let disk_bytes = std::fs::metadata(path.as_ref())?.len();
+                let serialized_bytes = usize::try_from(disk_bytes).unwrap_or(usize::MAX);
+                Ok(PersistedShardStoreStats {
+                    serialized_bytes,
+                    disk_bytes,
+                })
+            }
+            PersistedShardCompression::Zstd {
+                level,
+                worker_threads,
+            } => unsafe { self.store_zstd_unchecked(path, level, worker_threads) },
+        }
+    }
+
+    /// Stores this shard payload as zstd-compressed epserde bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store error if the file cannot be created, compressed, or
+    /// serialized.
+    ///
+    /// # Safety
+    ///
+    /// This wraps epserde serialization. The compressed file must be
+    /// decompressed back to trusted epserde bytes before deserialization.
+    #[cfg(feature = "zstd")]
+    pub unsafe fn store_zstd_unchecked(
+        &self,
+        path: impl AsRef<Path>,
+        level: i32,
+        worker_threads: u32,
+    ) -> Result<PersistedShardStoreStats, PersistedShardStoreError> {
+        let file = File::create(path.as_ref())?;
+        let writer = BufWriter::new(file);
+        let mut encoder = zstd::stream::write::Encoder::new(writer, level)?;
+        if worker_threads > 1 {
+            encoder.multithread(worker_threads)?;
+        }
+        let serialized_bytes = unsafe { self.serialize_into_unchecked(&mut encoder)? };
+        let mut writer = encoder.finish()?;
+        writer.flush()?;
+        let disk_bytes = std::fs::metadata(path.as_ref())?.len();
+        Ok(PersistedShardStoreStats {
+            serialized_bytes,
+            disk_bytes,
+        })
     }
 
     /// Deserializes a full owned shard payload from an epserde reader.
@@ -302,7 +477,7 @@ impl PersistedTargetCorpusIndexShard {
     /// version of this crate and epserde. Memory-mapped files must not be
     /// mutated while the returned value is alive.
     pub unsafe fn mmap_unchecked(
-        path: impl AsRef<std::path::Path>,
+        path: impl AsRef<Path>,
         flags: deser::Flags,
     ) -> Result<deser::MemCase<Self>, Box<dyn std::error::Error + Send + Sync + 'static>> {
         unsafe { <Self as deser::Deserialize>::mmap(path, flags) }
@@ -3494,6 +3669,41 @@ mod tests {
         assert_eq!(loaded.base_target_id(), 17);
         assert_eq!(loaded.target_count(), 5);
         assert_persisted_candidates_match_runtime_index(loaded, &shard);
+
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(feature = "zstd")]
+    #[test]
+    fn persisted_target_corpus_index_shard_stores_zstd_payload() {
+        let targets = persisted_candidate_targets();
+        let index = TargetCorpusIndex::new(&targets);
+        let shard = TargetCorpusIndexShard::new(17, index);
+        let persisted = PersistedTargetCorpusIndexShard::from_index_shard(&shard);
+        let path = persisted_shard_temp_path().with_extension("eps.zst");
+
+        let stats = unsafe {
+            persisted
+                .store_with_compression_unchecked(
+                    &path,
+                    PersistedShardCompression::Zstd {
+                        level: 1,
+                        worker_threads: 0,
+                    },
+                )
+                .unwrap()
+        };
+        assert!(stats.serialized_bytes > 0);
+        assert!(stats.disk_bytes > 0);
+
+        let file = File::open(&path).unwrap();
+        let mut decoder = zstd::stream::read::Decoder::new(file).unwrap();
+        let loaded = unsafe {
+            PersistedTargetCorpusIndexShard::deserialize_full_unchecked(&mut decoder).unwrap()
+        };
+
+        assert_eq!(loaded, persisted);
+        assert_persisted_candidates_match_runtime_index(&loaded, &shard);
 
         std::fs::remove_file(path).unwrap();
     }

@@ -16,6 +16,7 @@ mem_dbg = ["std", "dep:mem_dbg"]
 rayon = ["std", "dep:rayon"]
 serde = ["dep:serde"]
 std = []
+zstd = ["std", "epserde", "dep:zstd"]
 
 [lints]
 workspace = true
@@ -29,6 +30,7 @@ rayon = { version = "1.11.0", optional = true }
 serde = { version = "1.0.228", default-features = false, features = ["alloc"], optional = true }
 smiles-parser = { git = "https://github.com/earth-metabolome-initiative/smiles-parser", branch = "main", default-features = false }
 thiserror = { version = "2.0.17", default-features = false }
+zstd = { version = "0.13.3", features = ["zstdmt"], optional = true }
 
 [dev-dependencies]
 criterion = "0.8.2"
