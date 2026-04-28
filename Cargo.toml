@@ -11,7 +11,9 @@ categories = ["parser-implementations", "science"]
 
 [features]
 default = []
+epserde = ["std", "dep:epserde"]
 mem_dbg = ["std", "dep:mem_dbg"]
+rayon = ["std", "dep:rayon"]
 serde = ["dep:serde"]
 std = []
 
@@ -20,8 +22,10 @@ workspace = true
 
 [dependencies]
 elements_rs = { version = "0.2.3", default-features = false }
+epserde = { version = "0.12.6", default-features = false, features = ["derive", "mmap", "std"], optional = true }
 geometric-traits = { git = "https://github.com/earth-metabolome-initiative/geometric-traits", branch = "main", default-features = false, features = ["alloc"] }
 mem_dbg = { version = "0.4.1", optional = true }
+rayon = { version = "1.11.0", optional = true }
 serde = { version = "1.0.228", default-features = false, features = ["alloc"], optional = true }
 smiles-parser = { git = "https://github.com/earth-metabolome-initiative/smiles-parser", branch = "main", default-features = false }
 thiserror = { version = "2.0.17", default-features = false }
@@ -56,7 +60,7 @@ harness = false
 
 [workspace]
 members = ["."]
-exclude = ["fuzz", "tools/pubchem-index-benchmark"]
+exclude = ["fuzz"]
 resolver = "2"
 
 [workspace.package]
@@ -71,7 +75,7 @@ rust_2018_idioms = { level = "deny", priority = -1 }
 non_ascii_idents = "deny"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
 unreachable_pub = "deny"
-unsafe_code = "deny"
+unsafe_code = "warn"
 unsafe_op_in_unsafe_fn = "deny"
 unused_lifetimes = "deny"
 unused_qualifications = "deny"

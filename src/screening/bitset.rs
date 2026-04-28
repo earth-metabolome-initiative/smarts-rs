@@ -24,6 +24,18 @@ pub(super) struct CachedFeatureMask {
 }
 
 impl CountBitsetIndex {
+    pub(super) fn thresholds(&self) -> &[CountValue] {
+        &self.thresholds
+    }
+
+    pub(super) fn bitsets(&self) -> &[Box<[u64]>] {
+        &self.bitsets
+    }
+
+    pub(super) fn populations(&self) -> &[usize] {
+        &self.populations
+    }
+
     #[cfg(feature = "mem_dbg")]
     pub(super) fn heap_size(&self) -> usize {
         size_of_val(self.thresholds.as_ref())
@@ -36,20 +48,26 @@ impl CountBitsetIndex {
             + size_of_val(self.populations.as_ref())
     }
 
-    pub(super) fn from_counts<I>(target_count: usize, counts: I) -> Self
+    pub(super) fn from_compact_counts<I>(target_count: usize, counts: I) -> Self
     where
-        I: IntoIterator<Item = usize>,
+        I: IntoIterator<Item = u32>,
+    {
+        Self::from_nonzero_compact_counts(
+            target_count,
+            counts
+                .into_iter()
+                .enumerate()
+                .map(|(target_id, count)| (count, compact_target_id(target_id))),
+        )
+    }
+
+    pub(super) fn from_nonzero_compact_counts<I>(target_count: usize, counts: I) -> Self
+    where
+        I: IntoIterator<Item = (u32, TargetId)>,
     {
         let target_counts = counts
             .into_iter()
-            .enumerate()
-            .filter_map(|(target_id, count)| {
-                (count > 0).then_some((
-                    CountValue::try_from(count)
-                        .expect("target screen count exceeds count-index capacity"),
-                    compact_target_id(target_id),
-                ))
-            })
+            .filter(|&(count, _)| count > 0)
             .collect::<Vec<_>>();
         Self::from_nonzero_target_counts(target_count, target_counts)
     }
