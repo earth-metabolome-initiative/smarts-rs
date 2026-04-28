@@ -56,9 +56,12 @@ pub use query::{
     BracketExprTree, ComponentGroupId, ComponentId, HydrogenKind, NumericQuery, NumericRange,
     QueryAtom, QueryBond, QueryMol,
 };
+#[cfg(feature = "mem_dbg")]
+pub use screening::TargetCorpusIndexMemoryStats;
 pub use screening::{
-    QueryScreen, QueryScreenFeatureStats, TargetCandidateSet, TargetCorpusIndex,
-    TargetCorpusIndexStats, TargetCorpusScratch, TargetScreen,
+    QueryScreen, QueryScreenFeatureStats, ShardedTargetCorpusIndex, ShardedTargetCorpusIndexError,
+    TargetCandidateSet, TargetCorpusIndex, TargetCorpusIndexShard, TargetCorpusIndexStats,
+    TargetCorpusScratch, TargetScreen,
 };
 pub use smiles_parser::atom::bracketed::chirality::Chirality;
 pub use target::{AtomLabel, BondLabel, MoleculeTarget, Neighbor};

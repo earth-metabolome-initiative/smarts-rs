@@ -7,7 +7,8 @@ use smiles_parser::Smiles;
 
 use super::{
     AtomFeature, BondCountScreen, EdgeBondFeature, EdgeFeature, QueryFeatureFilter, QueryScreen,
-    TargetCorpusIndex, TargetCorpusScratch, TargetScreen,
+    ShardedTargetCorpusIndex, ShardedTargetCorpusIndexError, TargetCandidateSet, TargetCorpusIndex,
+    TargetCorpusIndexShard, TargetCorpusScratch, TargetScreen,
 };
 use crate::prepared::PreparedTarget;
 use crate::{CompiledQuery, MatchScratch};
@@ -152,6 +153,125 @@ fn corpus_index_counts_candidates_without_materializing_ids() {
         index.candidate_count_with_scratch(&query, &mut scratch),
         index.candidate_ids(&query).len()
     );
+}
+
+#[test]
+fn sharded_corpus_index_matches_monolithic_candidate_results() {
+    let prepared_targets = [
+        "CC",
+        "C.C",
+        "CCO",
+        "CC(C)(C)C",
+        "C=C",
+        "C#N",
+        "c1ccccc1",
+        "C1CCCCC1",
+        "O=C(O)c1ccccc1",
+        "CC(=O)N",
+        "ClCCl",
+        "O",
+    ]
+    .into_iter()
+    .map(|smiles| PreparedTarget::new(Smiles::from_str(smiles).unwrap()))
+    .collect::<alloc::vec::Vec<_>>();
+    let monolithic = TargetCorpusIndex::new(&prepared_targets);
+    let sharded =
+        ShardedTargetCorpusIndex::from_prepared_target_chunks(prepared_targets.chunks(3)).unwrap();
+    let queries = [
+        "C",
+        "CCC",
+        "(C).(O)",
+        "c1ccccc1",
+        "[#6;D1;H3]-[#6;D4]",
+        "[#6;D1;H2]=[#6;D1;H2]",
+        "[#8;D1;H1]",
+        "[R]",
+        "C@C",
+        "C#N",
+        "[$([#6]=[#8])]",
+    ]
+    .into_iter()
+    .map(|smarts| QueryScreen::new(&QueryMol::from_str(smarts).unwrap()))
+    .collect::<alloc::vec::Vec<_>>();
+
+    assert_eq!(sharded.len(), monolithic.len());
+    assert_eq!(sharded.shards().len(), 4);
+    assert_eq!(
+        sharded.stats().target_count,
+        monolithic.stats().target_count
+    );
+
+    let mut monolithic_scratch = TargetCorpusScratch::new();
+    let mut sharded_scratch = TargetCorpusScratch::new();
+    for query in &queries {
+        assert_eq!(
+            sharded.candidate_ids(query),
+            monolithic.candidate_ids(query)
+        );
+        assert_eq!(
+            sharded.candidate_count(query),
+            monolithic.candidate_count(query)
+        );
+
+        let mut streamed = alloc::vec::Vec::new();
+        sharded.for_each_candidate_id_with_scratch(query, &mut sharded_scratch, |target_id| {
+            streamed.push(target_id);
+        });
+        let mut expected = alloc::vec::Vec::new();
+        monolithic.candidate_ids_with_scratch_into(query, &mut monolithic_scratch, &mut expected);
+        assert_eq!(streamed, expected);
+    }
+
+    let monolithic_sets = monolithic.candidate_sets(&queries);
+    let sharded_sets = sharded.candidate_sets(&queries);
+    assert_eq!(
+        sharded_sets
+            .iter()
+            .map(TargetCandidateSet::target_ids)
+            .collect::<alloc::vec::Vec<_>>(),
+        monolithic_sets
+            .iter()
+            .map(TargetCandidateSet::target_ids)
+            .collect::<alloc::vec::Vec<_>>()
+    );
+}
+
+#[test]
+fn sharded_corpus_index_rejects_overlapping_shards() {
+    let prepared_targets = ["CC", "CO"]
+        .into_iter()
+        .map(|smiles| PreparedTarget::new(Smiles::from_str(smiles).unwrap()))
+        .collect::<alloc::vec::Vec<_>>();
+    let first = TargetCorpusIndexShard::new(0, TargetCorpusIndex::new(&prepared_targets[..1]));
+    let second = TargetCorpusIndexShard::new(0, TargetCorpusIndex::new(&prepared_targets[1..]));
+
+    assert_eq!(
+        ShardedTargetCorpusIndex::from_shards(alloc::vec![first, second]).unwrap_err(),
+        ShardedTargetCorpusIndexError::OverlappingShard {
+            shard_index: 1,
+            previous_end_target_id: 1,
+            shard_base_target_id: 0,
+        }
+    );
+}
+
+#[test]
+fn corpus_index_new_drops_retained_screens_after_building_indexes() {
+    let prepared_targets = ["CC", "CO"]
+        .into_iter()
+        .map(|smiles| PreparedTarget::new(Smiles::from_str(smiles).unwrap()))
+        .collect::<alloc::vec::Vec<_>>();
+    let compact = TargetCorpusIndex::new(&prepared_targets);
+    assert_eq!(compact.len(), 2);
+    assert!(compact.screen(0).is_none());
+
+    let screens = prepared_targets
+        .iter()
+        .map(TargetScreen::new)
+        .collect::<alloc::vec::Vec<_>>();
+    let retained = TargetCorpusIndex::from_screens(screens);
+    assert_eq!(retained.len(), 2);
+    assert!(retained.screen(0).is_some());
 }
 
 #[test]

@@ -58,11 +58,16 @@ use alloc::{boxed::Box, collections::BTreeMap, vec, vec::Vec};
 
 use crate::{AtomExpr, ComponentGroupId, QueryMol};
 use elements_rs::Element;
+#[cfg(feature = "rayon")]
+use rayon::prelude::*;
 
 use crate::{prepared::PreparedTarget, target::BondLabel};
 
 mod bitset;
 mod features;
+#[cfg(feature = "epserde")]
+#[allow(unsafe_code)]
+pub mod persisted;
 mod requirements;
 
 use bitset::{
@@ -362,15 +367,17 @@ impl TargetScreen {
     }
 }
 
-type EdgeFeatureCountIndex = BTreeMap<EdgeFeature, Vec<(usize, u16)>>;
-type Path3FeatureCountIndex = BTreeMap<Path3Feature, Vec<(usize, u16)>>;
-type Path4FeatureCountIndex = BTreeMap<Path4Feature, Vec<(usize, u16)>>;
-type Star3FeatureCountIndex = BTreeMap<Star3Feature, Vec<(usize, u16)>>;
+type TargetId = u32;
+type EdgeFeatureCountIndex = BTreeMap<EdgeFeature, Vec<(TargetId, u16)>>;
+type Path3FeatureCountIndex = BTreeMap<Path3Feature, Vec<(TargetId, u16)>>;
+type Path4FeatureCountIndex = BTreeMap<Path4Feature, Vec<(TargetId, u16)>>;
+type Star3FeatureCountIndex = BTreeMap<Star3Feature, Vec<(TargetId, u16)>>;
 type IndexedFeatureCountIndex<T> = Box<[(T, CountBitsetIndex)]>;
-type SparseFeatureCounts = Box<[(usize, u16)]>;
 type IndexedSparseFeatureCountIndex<T> = Box<[(T, SparseFeatureCounts)]>;
 type FeatureIdMask = Box<[u64]>;
 type IndexedFeatureIdMask<T> = Box<[(T, FeatureIdMask)]>;
+type CompactScreenCount = u32;
+type ScreenCountOccurrences<T> = BTreeMap<T, Vec<(CompactScreenCount, TargetId)>>;
 type IndexedEdgeSparseIndexParts = (
     IndexedSparseFeatureCountIndex<EdgeFeature>,
     EdgeFeatureMaskIndex,
@@ -443,12 +450,120 @@ struct Star3FeatureMaskIndex {
     third_atoms: IndexedFeatureIdMask<AtomFeature>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct SparseFeatureCounts {
+    singleton_targets: Box<[TargetId]>,
+    counted_targets: Box<[(TargetId, u16)]>,
+}
+
+impl SparseFeatureCounts {
+    fn from_counts(counts: Vec<(TargetId, u16)>) -> Self {
+        let mut singleton_targets = Vec::new();
+        let mut counted_targets = Vec::new();
+        for (target_id, count) in counts {
+            if count == 1 {
+                singleton_targets.push(target_id);
+            } else {
+                counted_targets.push((target_id, count));
+            }
+        }
+
+        Self {
+            singleton_targets: singleton_targets.into_boxed_slice(),
+            counted_targets: counted_targets.into_boxed_slice(),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.singleton_targets.len() + self.counted_targets.len()
+    }
+
+    #[cfg(feature = "mem_dbg")]
+    fn heap_size(&self) -> usize {
+        box_slice_heap_size(&self.singleton_targets) + box_slice_heap_size(&self.counted_targets)
+    }
+}
+
 type TargetGraphFeatures = (
     BTreeMap<EdgeFeature, usize>,
     BTreeMap<Path3Feature, usize>,
     BTreeMap<Path4Feature, usize>,
     BTreeMap<Star3Feature, usize>,
 );
+
+#[derive(Debug, Default)]
+struct TargetFeatureOccurrences {
+    edge: EdgeFeatureCountIndex,
+    path3: Path3FeatureCountIndex,
+    path4: Path4FeatureCountIndex,
+    star3: Star3FeatureCountIndex,
+}
+
+impl TargetFeatureOccurrences {
+    fn into_parts(
+        self,
+    ) -> (
+        EdgeFeatureCountIndex,
+        Path3FeatureCountIndex,
+        Path4FeatureCountIndex,
+        Star3FeatureCountIndex,
+    ) {
+        (self.edge, self.path3, self.path4, self.star3)
+    }
+}
+
+#[derive(Debug, Default)]
+struct TargetScreenOccurrences {
+    atoms: Vec<CompactScreenCount>,
+    components: Vec<CompactScreenCount>,
+    aromatic_atoms: Vec<CompactScreenCount>,
+    ring_atoms: Vec<CompactScreenCount>,
+    single_bonds: Vec<CompactScreenCount>,
+    double_bonds: Vec<CompactScreenCount>,
+    triple_bonds: Vec<CompactScreenCount>,
+    aromatic_bonds: Vec<CompactScreenCount>,
+    ring_bonds: Vec<CompactScreenCount>,
+    elements: ScreenCountOccurrences<Element>,
+    degrees: ScreenCountOccurrences<u16>,
+    total_hydrogens: ScreenCountOccurrences<u16>,
+}
+
+impl TargetScreenOccurrences {
+    fn with_target_capacity(target_count: usize) -> Self {
+        Self {
+            atoms: Vec::with_capacity(target_count),
+            components: Vec::with_capacity(target_count),
+            aromatic_atoms: Vec::with_capacity(target_count),
+            ring_atoms: Vec::with_capacity(target_count),
+            single_bonds: Vec::with_capacity(target_count),
+            double_bonds: Vec::with_capacity(target_count),
+            triple_bonds: Vec::with_capacity(target_count),
+            aromatic_bonds: Vec::with_capacity(target_count),
+            ring_bonds: Vec::with_capacity(target_count),
+            elements: ScreenCountOccurrences::new(),
+            degrees: ScreenCountOccurrences::new(),
+            total_hydrogens: ScreenCountOccurrences::new(),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct TargetIndexOccurrences {
+    screens: TargetScreenOccurrences,
+    features: TargetFeatureOccurrences,
+}
+
+impl TargetIndexOccurrences {
+    fn with_target_capacity(target_count: usize) -> Self {
+        Self {
+            screens: TargetScreenOccurrences::with_target_capacity(target_count),
+            features: TargetFeatureOccurrences::default(),
+        }
+    }
+}
+
+#[cfg(feature = "rayon")]
+const TARGET_INDEX_CHUNK_SIZE: usize = 4096;
 
 /// Reusable scratch buffers for candidate generation.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -791,6 +906,72 @@ pub struct TargetCorpusIndexStats {
     pub star3_bond_domain_count: usize,
 }
 
+/// Heap-size breakdown for a [`TargetCorpusIndex`].
+///
+/// This is available only with the `mem_dbg` feature and is intended for
+/// large-corpus experiments where a single aggregate byte count is not enough
+/// to decide which representation to improve next.
+#[cfg(feature = "mem_dbg")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TargetCorpusIndexMemoryStats {
+    /// Inline bytes occupied by the index struct itself.
+    pub struct_size: usize,
+    /// Retained target screens and their map storage.
+    pub retained_screens: usize,
+    /// Scalar count indexes such as atom, component, and bond counts.
+    pub scalar_count_indexes: usize,
+    /// Element, degree, and total-hydrogen count indexes.
+    pub atom_property_count_indexes: usize,
+    /// Edge local-feature posting lists.
+    pub edge_postings: usize,
+    /// Edge local-feature mask indexes.
+    pub edge_masks: usize,
+    /// Edge local-feature atom and bond domains.
+    pub edge_domains: usize,
+    /// Path3 local-feature posting lists.
+    pub path3_postings: usize,
+    /// Path3 local-feature mask indexes.
+    pub path3_masks: usize,
+    /// Path3 local-feature atom and bond domains.
+    pub path3_domains: usize,
+    /// Path4 local-feature posting lists.
+    pub path4_postings: usize,
+    /// Path4 local-feature mask indexes.
+    pub path4_masks: usize,
+    /// Path4 local-feature atom and bond domains.
+    pub path4_domains: usize,
+    /// Star3 local-feature posting lists.
+    pub star3_postings: usize,
+    /// Star3 local-feature mask indexes.
+    pub star3_masks: usize,
+    /// Star3 local-feature atom and bond domains.
+    pub star3_domains: usize,
+}
+
+#[cfg(feature = "mem_dbg")]
+impl TargetCorpusIndexMemoryStats {
+    /// Returns the total accounted index bytes.
+    #[must_use]
+    pub const fn total(self) -> usize {
+        self.struct_size
+            + self.retained_screens
+            + self.scalar_count_indexes
+            + self.atom_property_count_indexes
+            + self.edge_postings
+            + self.edge_masks
+            + self.edge_domains
+            + self.path3_postings
+            + self.path3_masks
+            + self.path3_domains
+            + self.path4_postings
+            + self.path4_masks
+            + self.path4_domains
+            + self.star3_postings
+            + self.star3_masks
+            + self.star3_domains
+    }
+}
+
 /// Persistent target-side index for repeated many-query screening.
 ///
 /// This is intended for workloads where the target corpus stays fixed and many
@@ -837,7 +1018,8 @@ pub struct TargetCorpusIndexStats {
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TargetCorpusIndex {
-    screens: Box<[TargetScreen]>,
+    target_count: usize,
+    retained_screens: Box<[TargetScreen]>,
     atom_count_index: CountBitsetIndex,
     component_count_index: CountBitsetIndex,
     aromatic_atom_count_index: CountBitsetIndex,
@@ -868,38 +1050,658 @@ pub struct TargetCorpusIndex {
     star3_bond_feature_domain: Box<[EdgeBondFeature]>,
 }
 
+/// One local target index shard with the base id of its first target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TargetCorpusIndexShard {
+    base_target_id: usize,
+    index: TargetCorpusIndex,
+}
+
+impl TargetCorpusIndexShard {
+    /// Builds a shard from an already constructed local index.
+    #[inline]
+    #[must_use]
+    pub const fn new(base_target_id: usize, index: TargetCorpusIndex) -> Self {
+        Self {
+            base_target_id,
+            index,
+        }
+    }
+
+    /// Returns the global id of local target `0` in this shard.
+    #[inline]
+    #[must_use]
+    pub const fn base_target_id(&self) -> usize {
+        self.base_target_id
+    }
+
+    /// Returns the local index stored by this shard.
+    #[inline]
+    #[must_use]
+    pub const fn index(&self) -> &TargetCorpusIndex {
+        &self.index
+    }
+
+    /// Returns the local index, consuming this shard.
+    #[inline]
+    #[must_use]
+    pub fn into_index(self) -> TargetCorpusIndex {
+        self.index
+    }
+
+    /// Returns the number of indexed targets in this shard.
+    #[inline]
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.index.len()
+    }
+
+    /// Returns whether this shard contains no targets.
+    #[inline]
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.index.is_empty()
+    }
+
+    const fn end_target_id(&self) -> Option<usize> {
+        self.base_target_id.checked_add(self.len())
+    }
+
+    const fn global_target_id(&self, local_target_id: usize) -> usize {
+        self.base_target_id + local_target_id
+    }
+}
+
+/// Error returned when assembling an invalid sharded target corpus index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShardedTargetCorpusIndexError {
+    /// A shard end id overflowed `usize`.
+    TargetIdOverflow {
+        /// Zero-based position of the invalid shard.
+        shard_index: usize,
+        /// Global id assigned to local target `0` in the invalid shard.
+        base_target_id: usize,
+        /// Number of local targets in the invalid shard.
+        shard_len: usize,
+    },
+    /// The sum of shard target counts overflowed `usize`.
+    TargetCountOverflow,
+    /// A shard starts before the previous shard ends.
+    OverlappingShard {
+        /// Zero-based position of the overlapping shard.
+        shard_index: usize,
+        /// First global target id after the previous shard.
+        previous_end_target_id: usize,
+        /// Global id assigned to local target `0` in the overlapping shard.
+        shard_base_target_id: usize,
+    },
+}
+
+impl core::fmt::Display for ShardedTargetCorpusIndexError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match *self {
+            Self::TargetIdOverflow {
+                shard_index,
+                base_target_id,
+                shard_len,
+            } => write!(
+                f,
+                "target id overflow in shard {shard_index}: base={base_target_id}, len={shard_len}"
+            ),
+            Self::TargetCountOverflow => f.write_str("sharded target count overflow"),
+            Self::OverlappingShard {
+                shard_index,
+                previous_end_target_id,
+                shard_base_target_id,
+            } => write!(
+                f,
+                "shard {shard_index} starts at {shard_base_target_id}, before previous shard end {previous_end_target_id}"
+            ),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for ShardedTargetCorpusIndexError {}
+
+/// Target-side index split into independently built shards.
+///
+/// Each shard contains a normal [`TargetCorpusIndex`] over local target ids.
+/// Candidate APIs return global target ids by adding each shard's
+/// [`TargetCorpusIndexShard::base_target_id`]. This lets callers build, drop,
+/// persist, and query corpus chunks independently instead of constructing one
+/// monolithic index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShardedTargetCorpusIndex {
+    shards: Box<[TargetCorpusIndexShard]>,
+    target_count: usize,
+}
+
+impl ShardedTargetCorpusIndex {
+    /// Builds a sharded index from already constructed, ordered shards.
+    ///
+    /// Shards may have gaps in global target ids, but they must be ordered by
+    /// base target id and must not overlap.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if shard target ids overflow `usize`, if total indexed
+    /// target count overflows `usize`, or if the provided shard ranges overlap.
+    pub fn from_shards(
+        shards: Vec<TargetCorpusIndexShard>,
+    ) -> Result<Self, ShardedTargetCorpusIndexError> {
+        let mut previous_end_target_id = 0usize;
+        let mut target_count = 0usize;
+        for (shard_index, shard) in shards.iter().enumerate() {
+            let Some(end_target_id) = shard.end_target_id() else {
+                return Err(ShardedTargetCorpusIndexError::TargetIdOverflow {
+                    shard_index,
+                    base_target_id: shard.base_target_id(),
+                    shard_len: shard.len(),
+                });
+            };
+            if shard.base_target_id() < previous_end_target_id {
+                return Err(ShardedTargetCorpusIndexError::OverlappingShard {
+                    shard_index,
+                    previous_end_target_id,
+                    shard_base_target_id: shard.base_target_id(),
+                });
+            }
+            target_count = target_count
+                .checked_add(shard.len())
+                .ok_or(ShardedTargetCorpusIndexError::TargetCountOverflow)?;
+            previous_end_target_id = end_target_id;
+        }
+
+        Ok(Self {
+            shards: shards.into_boxed_slice(),
+            target_count,
+        })
+    }
+
+    /// Builds contiguous shards from prepared target chunks.
+    ///
+    /// Empty chunks are skipped. Non-empty chunks receive contiguous global
+    /// target ids in iteration order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the total indexed target count overflows `usize`.
+    pub fn from_prepared_target_chunks<I, C>(
+        chunks: I,
+    ) -> Result<Self, ShardedTargetCorpusIndexError>
+    where
+        I: IntoIterator<Item = C>,
+        C: AsRef<[PreparedTarget]>,
+    {
+        let mut shards = Vec::new();
+        let mut base_target_id = 0usize;
+        for chunk in chunks {
+            let targets = chunk.as_ref();
+            if targets.is_empty() {
+                continue;
+            }
+            let index = TargetCorpusIndex::new(targets);
+            shards.push(TargetCorpusIndexShard::new(base_target_id, index));
+            base_target_id = base_target_id
+                .checked_add(targets.len())
+                .ok_or(ShardedTargetCorpusIndexError::TargetCountOverflow)?;
+        }
+
+        Self::from_shards(shards)
+    }
+
+    /// Returns the number of indexed targets across all shards.
+    #[inline]
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.target_count
+    }
+
+    /// Returns whether this sharded index contains no targets.
+    #[inline]
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.target_count == 0
+    }
+
+    /// Returns the ordered local target-index shards.
+    #[inline]
+    #[must_use]
+    pub fn shards(&self) -> &[TargetCorpusIndexShard] {
+        &self.shards
+    }
+
+    /// Returns aggregate index sizes for diagnostics and benchmark reporting.
+    ///
+    /// Feature and domain counts are summed across shards, so they measure the
+    /// sharded representation rather than a deduplicated global index.
+    #[must_use]
+    pub fn stats(&self) -> TargetCorpusIndexStats {
+        let mut stats = TargetCorpusIndexStats::default();
+        for shard in &self.shards {
+            add_target_corpus_index_stats(&mut stats, shard.index().stats());
+        }
+        stats
+    }
+
+    /// Returns heap-size accounting by major index component.
+    ///
+    /// The returned `struct_size` includes the sharded wrapper, the shard
+    /// array, and each inner [`TargetCorpusIndex`] struct.
+    #[cfg(feature = "mem_dbg")]
+    #[must_use]
+    pub fn memory_stats(&self) -> TargetCorpusIndexMemoryStats {
+        let mut stats = TargetCorpusIndexMemoryStats {
+            struct_size: size_of::<Self>() + size_of_val(self.shards.as_ref()),
+            ..TargetCorpusIndexMemoryStats::default()
+        };
+        for shard in &self.shards {
+            add_target_corpus_index_memory_stats(&mut stats, shard.index().memory_stats());
+        }
+        stats
+    }
+
+    /// Collects candidate global target ids that pass the indexed screening stage.
+    pub fn candidate_ids_into(&self, query: &QueryScreen, out: &mut Vec<usize>) {
+        let mut scratch = TargetCorpusScratch::new();
+        self.candidate_ids_with_scratch_into(query, &mut scratch, out);
+    }
+
+    /// Collects candidate global target ids using reusable scratch buffers.
+    pub fn candidate_ids_with_scratch_into<'idx>(
+        &'idx self,
+        query: &QueryScreen,
+        scratch: &mut TargetCorpusScratch<'idx>,
+        out: &mut Vec<usize>,
+    ) {
+        out.clear();
+        self.for_each_candidate_id_with_scratch(query, scratch, |target_id| {
+            out.push(target_id);
+        });
+    }
+
+    /// Counts candidate targets that pass the indexed screening stage.
+    #[must_use]
+    pub fn candidate_count(&self, query: &QueryScreen) -> usize {
+        let mut scratch = TargetCorpusScratch::new();
+        self.candidate_count_with_scratch(query, &mut scratch)
+    }
+
+    /// Counts candidate targets using reusable scratch buffers.
+    pub fn candidate_count_with_scratch<'idx>(
+        &'idx self,
+        query: &QueryScreen,
+        scratch: &mut TargetCorpusScratch<'idx>,
+    ) -> usize {
+        self.shards
+            .iter()
+            .map(|shard| shard.index().candidate_count_with_scratch(query, scratch))
+            .sum()
+    }
+
+    /// Returns candidate global target ids that pass the indexed screening stage.
+    #[must_use]
+    pub fn candidate_ids(&self, query: &QueryScreen) -> Vec<usize> {
+        let mut out = Vec::new();
+        self.candidate_ids_into(query, &mut out);
+        out
+    }
+
+    /// Builds reusable candidate sets for a batch of queries.
+    #[must_use]
+    pub fn candidate_sets(&self, queries: &[QueryScreen]) -> Vec<TargetCandidateSet> {
+        let mut scratch = TargetCorpusScratch::new();
+        self.candidate_sets_with_scratch(queries, &mut scratch)
+    }
+
+    /// Builds reusable candidate sets for a batch of queries using reusable
+    /// scratch buffers.
+    pub fn candidate_sets_with_scratch<'idx>(
+        &'idx self,
+        queries: &[QueryScreen],
+        scratch: &mut TargetCorpusScratch<'idx>,
+    ) -> Vec<TargetCandidateSet> {
+        let mut target_ids_by_query = queries.iter().map(|_| Vec::new()).collect::<Vec<_>>();
+        for shard in &self.shards {
+            let local_sets = shard.index().candidate_sets_with_scratch(queries, scratch);
+            for (target_ids, local_set) in target_ids_by_query.iter_mut().zip(local_sets) {
+                target_ids.extend(
+                    local_set
+                        .target_ids()
+                        .iter()
+                        .map(|&target_id| shard.global_target_id(target_id)),
+                );
+            }
+        }
+        target_ids_by_query
+            .into_iter()
+            .map(TargetCandidateSet::new)
+            .collect()
+    }
+
+    /// Builds a reusable candidate set for one query.
+    #[must_use]
+    pub fn candidate_set(&self, query: &QueryScreen) -> TargetCandidateSet {
+        let mut scratch = TargetCorpusScratch::new();
+        self.candidate_set_with_scratch(query, &mut scratch)
+    }
+
+    /// Builds a reusable candidate set for one query using reusable scratch buffers.
+    pub fn candidate_set_with_scratch<'idx>(
+        &'idx self,
+        query: &QueryScreen,
+        scratch: &mut TargetCorpusScratch<'idx>,
+    ) -> TargetCandidateSet {
+        let mut target_ids = Vec::new();
+        self.candidate_ids_with_scratch_into(query, scratch, &mut target_ids);
+        TargetCandidateSet::new(target_ids)
+    }
+
+    /// Streams candidate global target ids using reusable scratch buffers.
+    pub fn for_each_candidate_id_with_scratch<'idx, F>(
+        &'idx self,
+        query: &QueryScreen,
+        scratch: &mut TargetCorpusScratch<'idx>,
+        mut f: F,
+    ) where
+        F: FnMut(usize),
+    {
+        for shard in &self.shards {
+            shard
+                .index()
+                .for_each_candidate_id_with_scratch(query, scratch, |target_id| {
+                    f(shard.global_target_id(target_id));
+                });
+        }
+    }
+
+    /// Streams candidate target ids for a batch of queries using reusable
+    /// scratch buffers.
+    ///
+    /// Results are streamed shard by shard. Within each shard this has the
+    /// same query order as [`TargetCorpusIndex::for_each_candidate_id_batch_with_scratch`].
+    pub fn for_each_candidate_id_batch_with_scratch<'idx, F>(
+        &'idx self,
+        queries: &[QueryScreen],
+        scratch: &mut TargetCorpusScratch<'idx>,
+        mut f: F,
+    ) where
+        F: FnMut(usize, usize),
+    {
+        for shard in &self.shards {
+            shard.index().for_each_candidate_id_batch_with_scratch(
+                queries,
+                scratch,
+                |query_id, target_id| {
+                    f(query_id, shard.global_target_id(target_id));
+                },
+            );
+        }
+    }
+}
+
+const fn add_target_corpus_index_stats(
+    aggregate: &mut TargetCorpusIndexStats,
+    shard: TargetCorpusIndexStats,
+) {
+    aggregate.target_count += shard.target_count;
+    aggregate.edge_feature_count += shard.edge_feature_count;
+    aggregate.edge_posting_count += shard.edge_posting_count;
+    aggregate.edge_atom_domain_count += shard.edge_atom_domain_count;
+    aggregate.edge_bond_domain_count += shard.edge_bond_domain_count;
+    aggregate.path3_feature_count += shard.path3_feature_count;
+    aggregate.path3_posting_count += shard.path3_posting_count;
+    aggregate.path3_atom_domain_count += shard.path3_atom_domain_count;
+    aggregate.path3_bond_domain_count += shard.path3_bond_domain_count;
+    aggregate.path4_feature_count += shard.path4_feature_count;
+    aggregate.path4_posting_count += shard.path4_posting_count;
+    aggregate.path4_atom_domain_count += shard.path4_atom_domain_count;
+    aggregate.path4_bond_domain_count += shard.path4_bond_domain_count;
+    aggregate.star3_feature_count += shard.star3_feature_count;
+    aggregate.star3_posting_count += shard.star3_posting_count;
+    aggregate.star3_atom_domain_count += shard.star3_atom_domain_count;
+    aggregate.star3_bond_domain_count += shard.star3_bond_domain_count;
+}
+
+#[cfg(feature = "mem_dbg")]
+const fn add_target_corpus_index_memory_stats(
+    aggregate: &mut TargetCorpusIndexMemoryStats,
+    shard: TargetCorpusIndexMemoryStats,
+) {
+    aggregate.struct_size += shard.struct_size;
+    aggregate.retained_screens += shard.retained_screens;
+    aggregate.scalar_count_indexes += shard.scalar_count_indexes;
+    aggregate.atom_property_count_indexes += shard.atom_property_count_indexes;
+    aggregate.edge_postings += shard.edge_postings;
+    aggregate.edge_masks += shard.edge_masks;
+    aggregate.edge_domains += shard.edge_domains;
+    aggregate.path3_postings += shard.path3_postings;
+    aggregate.path3_masks += shard.path3_masks;
+    aggregate.path3_domains += shard.path3_domains;
+    aggregate.path4_postings += shard.path4_postings;
+    aggregate.path4_masks += shard.path4_masks;
+    aggregate.path4_domains += shard.path4_domains;
+    aggregate.star3_postings += shard.star3_postings;
+    aggregate.star3_masks += shard.star3_masks;
+    aggregate.star3_domains += shard.star3_domains;
+}
+
+#[cfg(feature = "mem_dbg")]
+impl mem_dbg::FlatType for ShardedTargetCorpusIndex {
+    type Flat = mem_dbg::False;
+}
+
+#[cfg(feature = "mem_dbg")]
+impl mem_dbg::MemSize for ShardedTargetCorpusIndex {
+    fn mem_size_rec(
+        &self,
+        _flags: mem_dbg::SizeFlags,
+        _refs: &mut mem_dbg::HashMap<usize, usize>,
+    ) -> usize {
+        self.memory_stats().total()
+    }
+}
+
+#[cfg(feature = "mem_dbg")]
+impl mem_dbg::FlatType for TargetCorpusIndex {
+    type Flat = mem_dbg::False;
+}
+
+#[cfg(feature = "mem_dbg")]
+impl mem_dbg::MemSize for TargetCorpusIndex {
+    fn mem_size_rec(
+        &self,
+        _flags: mem_dbg::SizeFlags,
+        _refs: &mut mem_dbg::HashMap<usize, usize>,
+    ) -> usize {
+        self.memory_stats().total()
+    }
+}
+
+#[cfg(feature = "mem_dbg")]
+fn count_bitset_index_heap_size(index: &CountBitsetIndex) -> usize {
+    index.heap_size()
+}
+
+#[cfg(feature = "mem_dbg")]
+fn count_feature_index_heap_size<T>(index: &[(T, CountBitsetIndex)]) -> usize {
+    size_of_val(index)
+        + index
+            .iter()
+            .map(|(_, counts)| count_bitset_index_heap_size(counts))
+            .sum::<usize>()
+}
+
+#[cfg(feature = "mem_dbg")]
+fn sparse_feature_count_index_heap_size<T>(index: &[(T, SparseFeatureCounts)]) -> usize {
+    size_of_val(index)
+        + index
+            .iter()
+            .map(|(_, counts)| counts.heap_size())
+            .sum::<usize>()
+}
+
+#[cfg(feature = "mem_dbg")]
+fn edge_feature_mask_index_heap_size(index: &EdgeFeatureMaskIndex) -> usize {
+    feature_id_mask_index_heap_size(&index.left_atoms)
+        + feature_id_mask_index_heap_size(&index.bonds)
+        + feature_id_mask_index_heap_size(&index.right_atoms)
+}
+
+#[cfg(feature = "mem_dbg")]
+fn path3_feature_mask_index_heap_size(index: &Path3FeatureMaskIndex) -> usize {
+    feature_id_mask_index_heap_size(&index.left_atoms)
+        + feature_id_mask_index_heap_size(&index.left_bonds)
+        + feature_id_mask_index_heap_size(&index.center_atoms)
+        + feature_id_mask_index_heap_size(&index.right_bonds)
+        + feature_id_mask_index_heap_size(&index.right_atoms)
+}
+
+#[cfg(feature = "mem_dbg")]
+fn path4_feature_mask_index_heap_size(index: &Path4FeatureMaskIndex) -> usize {
+    feature_id_mask_index_heap_size(&index.left_atoms)
+        + feature_id_mask_index_heap_size(&index.left_bonds)
+        + feature_id_mask_index_heap_size(&index.left_middle_atoms)
+        + feature_id_mask_index_heap_size(&index.center_bonds)
+        + feature_id_mask_index_heap_size(&index.right_middle_atoms)
+        + feature_id_mask_index_heap_size(&index.right_bonds)
+        + feature_id_mask_index_heap_size(&index.right_atoms)
+}
+
+#[cfg(feature = "mem_dbg")]
+fn star3_feature_mask_index_heap_size(index: &Star3FeatureMaskIndex) -> usize {
+    feature_id_mask_index_heap_size(&index.center_atoms)
+        + feature_id_mask_index_heap_size(&index.first_bonds)
+        + feature_id_mask_index_heap_size(&index.first_atoms)
+        + feature_id_mask_index_heap_size(&index.second_bonds)
+        + feature_id_mask_index_heap_size(&index.second_atoms)
+        + feature_id_mask_index_heap_size(&index.third_bonds)
+        + feature_id_mask_index_heap_size(&index.third_atoms)
+}
+
+#[cfg(feature = "mem_dbg")]
+fn feature_id_mask_index_heap_size<T>(index: &[(T, FeatureIdMask)]) -> usize {
+    size_of_val(index)
+        + index
+            .iter()
+            .map(|(_, mask)| box_slice_heap_size(mask))
+            .sum::<usize>()
+}
+
+#[cfg(feature = "mem_dbg")]
+const fn box_slice_heap_size<T>(slice: &[T]) -> usize {
+    size_of_val(slice)
+}
+
+#[cfg(feature = "mem_dbg")]
+fn retained_target_screens_heap_size(screens: &[TargetScreen]) -> usize {
+    size_of_val(screens)
+        + screens
+            .iter()
+            .map(target_screen_map_heap_size)
+            .sum::<usize>()
+}
+
+#[cfg(feature = "mem_dbg")]
+fn target_screen_map_heap_size(screen: &TargetScreen) -> usize {
+    btree_map_heap_estimate::<Element, usize>(screen.element_counts.len())
+        + btree_map_heap_estimate::<u16, usize>(screen.degree_counts.len())
+        + btree_map_heap_estimate::<u16, usize>(screen.total_hydrogen_counts.len())
+}
+
+#[cfg(feature = "mem_dbg")]
+const fn btree_map_heap_estimate<K, V>(len: usize) -> usize {
+    // Match mem_dbg's BTree node heuristic for retained TargetScreen maps whose
+    // Element keys cannot implement external traits in this crate.
+    const B: usize = 6;
+    const CAPACITY: usize = 2 * B - 1;
+
+    if len == 0 {
+        return 0;
+    }
+
+    let pointer_size = size_of::<usize>();
+    let header_size = 2 * size_of::<usize>();
+    let mut leaf_size = header_size;
+    leaf_size = align_up(leaf_size, align_of::<K>());
+    leaf_size += size_of::<K>() * CAPACITY;
+    leaf_size = align_up(leaf_size, align_of::<V>());
+    leaf_size += size_of::<V>() * CAPACITY;
+
+    let mut internal_size = leaf_size;
+    internal_size = align_up(internal_size, align_of::<usize>());
+    internal_size += pointer_size * (CAPACITY + 1);
+
+    if len <= CAPACITY {
+        leaf_size
+    } else {
+        let average_node_size = (leaf_size * B + internal_size) / (B + 1);
+        (len / B) * average_node_size
+    }
+}
+
+#[cfg(feature = "mem_dbg")]
+const fn align_up(size: usize, align: usize) -> usize {
+    (size + align - 1) & !(align - 1)
+}
+
 impl TargetCorpusIndex {
     /// Builds one persistent target-side index from prepared targets.
     #[must_use]
     pub fn new(targets: &[PreparedTarget]) -> Self {
-        let screens = targets.iter().map(TargetScreen::new).collect::<Vec<_>>();
+        let occurrences = build_target_index_occurrences(targets);
+
         let (
             edge_feature_count_index,
             path3_feature_count_index,
             path4_feature_count_index,
             star3_feature_count_index,
-        ) = build_target_feature_indexes(targets);
-        let mut index = Self::from_screens(screens);
-        let (edge_index, edge_feature_mask_index, edge_atom_domain, edge_bond_domain) =
-            build_edge_sparse_index(edge_feature_count_index);
+        ) = occurrences.features.into_parts();
+        let mut index =
+            Self::from_screen_occurrences(targets.len(), occurrences.screens, Box::new([]));
+
+        #[cfg(feature = "rayon")]
+        let ((edge_parts, path3_parts), (path4_parts, star3_parts)) = rayon::join(
+            || {
+                rayon::join(
+                    || build_edge_sparse_index(edge_feature_count_index),
+                    || build_path3_sparse_index(path3_feature_count_index),
+                )
+            },
+            || {
+                rayon::join(
+                    || build_path4_sparse_index(path4_feature_count_index),
+                    || build_star3_sparse_index(star3_feature_count_index),
+                )
+            },
+        );
+        #[cfg(not(feature = "rayon"))]
+        let (edge_parts, path3_parts, path4_parts, star3_parts) = (
+            build_edge_sparse_index(edge_feature_count_index),
+            build_path3_sparse_index(path3_feature_count_index),
+            build_path4_sparse_index(path4_feature_count_index),
+            build_star3_sparse_index(star3_feature_count_index),
+        );
+
+        let (edge_index, edge_feature_mask_index, edge_atom_domain, edge_bond_domain) = edge_parts;
         index.indexed_edge_feature_count_index = edge_index;
         index.edge_feature_mask_index = edge_feature_mask_index;
         index.edge_atom_feature_domain = edge_atom_domain;
         index.edge_bond_feature_domain = edge_bond_domain;
-        let (path3_index, path3_feature_mask_index, atom_domain, bond_domain) =
-            build_path3_sparse_index(path3_feature_count_index);
+        let (path3_index, path3_feature_mask_index, atom_domain, bond_domain) = path3_parts;
         index.indexed_path3_feature_count_index = path3_index;
         index.path3_feature_mask_index = path3_feature_mask_index;
         index.path3_atom_feature_domain = atom_domain;
         index.path3_bond_feature_domain = bond_domain;
         let (path4_index, path4_feature_mask_index, path4_atom_domain, path4_bond_domain) =
-            build_path4_sparse_index(path4_feature_count_index);
+            path4_parts;
         index.indexed_path4_feature_count_index = path4_index;
         index.path4_feature_mask_index = path4_feature_mask_index;
         index.path4_atom_feature_domain = path4_atom_domain;
         index.path4_bond_feature_domain = path4_bond_domain;
         let (star3_index, star3_feature_mask_index, star3_atom_domain, star3_bond_domain) =
-            build_star3_sparse_index(star3_feature_count_index);
+            star3_parts;
         index.indexed_star3_feature_count_index = star3_index;
         index.star3_feature_mask_index = star3_feature_mask_index;
         index.star3_atom_feature_domain = star3_atom_domain;
@@ -911,54 +1713,44 @@ impl TargetCorpusIndex {
     #[must_use]
     pub fn from_screens(screens: Vec<TargetScreen>) -> Self {
         let target_count = screens.len();
-        let atom_count_index = CountBitsetIndex::from_counts(
-            target_count,
-            screens.iter().map(|screen| screen.atom_count),
-        );
-        let component_count_index = CountBitsetIndex::from_counts(
-            target_count,
-            screens
-                .iter()
-                .map(|screen| screen.connected_component_count),
-        );
-        let aromatic_atom_count_index = CountBitsetIndex::from_counts(
-            target_count,
-            screens.iter().map(|screen| screen.aromatic_atom_count),
-        );
-        let ring_atom_count_index = CountBitsetIndex::from_counts(
-            target_count,
-            screens.iter().map(|screen| screen.ring_atom_count),
-        );
-        let single_bond_count_index = CountBitsetIndex::from_counts(
-            target_count,
-            screens.iter().map(|screen| screen.bond_counts.single),
-        );
-        let double_bond_count_index = CountBitsetIndex::from_counts(
-            target_count,
-            screens.iter().map(|screen| screen.bond_counts.double),
-        );
-        let triple_bond_count_index = CountBitsetIndex::from_counts(
-            target_count,
-            screens.iter().map(|screen| screen.bond_counts.triple),
-        );
-        let aromatic_bond_count_index = CountBitsetIndex::from_counts(
-            target_count,
-            screens.iter().map(|screen| screen.bond_counts.aromatic),
-        );
-        let ring_bond_count_index = CountBitsetIndex::from_counts(
-            target_count,
-            screens.iter().map(|screen| screen.bond_counts.ring),
-        );
+        let occurrences = build_screen_occurrences(&screens);
+        Self::from_screen_occurrences(target_count, occurrences, screens.into_boxed_slice())
+    }
+
+    fn from_screen_occurrences(
+        target_count: usize,
+        occurrences: TargetScreenOccurrences,
+        retained_screens: Box<[TargetScreen]>,
+    ) -> Self {
+        let atom_count_index =
+            CountBitsetIndex::from_compact_counts(target_count, occurrences.atoms);
+        let component_count_index =
+            CountBitsetIndex::from_compact_counts(target_count, occurrences.components);
+        let aromatic_atom_count_index =
+            CountBitsetIndex::from_compact_counts(target_count, occurrences.aromatic_atoms);
+        let ring_atom_count_index =
+            CountBitsetIndex::from_compact_counts(target_count, occurrences.ring_atoms);
+        let single_bond_count_index =
+            CountBitsetIndex::from_compact_counts(target_count, occurrences.single_bonds);
+        let double_bond_count_index =
+            CountBitsetIndex::from_compact_counts(target_count, occurrences.double_bonds);
+        let triple_bond_count_index =
+            CountBitsetIndex::from_compact_counts(target_count, occurrences.triple_bonds);
+        let aromatic_bond_count_index =
+            CountBitsetIndex::from_compact_counts(target_count, occurrences.aromatic_bonds);
+        let ring_bond_count_index =
+            CountBitsetIndex::from_compact_counts(target_count, occurrences.ring_bonds);
 
         let indexed_element_count_index =
-            build_screen_count_index(&screens, |screen| &screen.element_counts);
+            build_screen_count_index(target_count, occurrences.elements);
         let indexed_degree_count_index =
-            build_screen_count_index(&screens, |screen| &screen.degree_counts);
+            build_screen_count_index(target_count, occurrences.degrees);
         let indexed_total_hydrogen_count_index =
-            build_screen_count_index(&screens, |screen| &screen.total_hydrogen_counts);
+            build_screen_count_index(target_count, occurrences.total_hydrogens);
 
         Self {
-            screens: screens.into_boxed_slice(),
+            target_count,
+            retained_screens,
             atom_count_index,
             component_count_index,
             aromatic_atom_count_index,
@@ -994,28 +1786,33 @@ impl TargetCorpusIndex {
     #[inline]
     #[must_use]
     pub const fn len(&self) -> usize {
-        self.screens.len()
+        self.target_count
     }
 
     /// Returns whether the index contains no targets.
     #[inline]
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        self.screens.is_empty()
+        self.target_count == 0
     }
 
-    /// Returns the target screen for one indexed target.
+    /// Returns the retained target screen for one indexed target.
+    ///
+    /// Indexes built with [`TargetCorpusIndex::from_screens`] retain screens.
+    /// Indexes built with [`TargetCorpusIndex::new`] drop screens after
+    /// construction to avoid storing per-target summary maps at large corpus
+    /// scale.
     #[inline]
     #[must_use]
     pub fn screen(&self, target_id: usize) -> Option<&TargetScreen> {
-        self.screens.get(target_id)
+        self.retained_screens.get(target_id)
     }
 
     /// Returns aggregate index sizes for diagnostics and benchmark reporting.
     #[must_use]
     pub fn stats(&self) -> TargetCorpusIndexStats {
         TargetCorpusIndexStats {
-            target_count: self.screens.len(),
+            target_count: self.target_count,
             edge_feature_count: self.indexed_edge_feature_count_index.len(),
             edge_posting_count: sparse_posting_count(&self.indexed_edge_feature_count_index),
             edge_atom_domain_count: self.edge_atom_feature_domain.len(),
@@ -1032,6 +1829,56 @@ impl TargetCorpusIndex {
             star3_posting_count: sparse_posting_count(&self.indexed_star3_feature_count_index),
             star3_atom_domain_count: self.star3_atom_feature_domain.len(),
             star3_bond_domain_count: self.star3_bond_feature_domain.len(),
+        }
+    }
+
+    /// Returns heap-size accounting by major index component.
+    #[cfg(feature = "mem_dbg")]
+    #[must_use]
+    pub fn memory_stats(&self) -> TargetCorpusIndexMemoryStats {
+        TargetCorpusIndexMemoryStats {
+            struct_size: size_of::<Self>(),
+            retained_screens: retained_target_screens_heap_size(&self.retained_screens),
+            scalar_count_indexes: count_bitset_index_heap_size(&self.atom_count_index)
+                + count_bitset_index_heap_size(&self.component_count_index)
+                + count_bitset_index_heap_size(&self.aromatic_atom_count_index)
+                + count_bitset_index_heap_size(&self.ring_atom_count_index)
+                + count_bitset_index_heap_size(&self.single_bond_count_index)
+                + count_bitset_index_heap_size(&self.double_bond_count_index)
+                + count_bitset_index_heap_size(&self.triple_bond_count_index)
+                + count_bitset_index_heap_size(&self.aromatic_bond_count_index)
+                + count_bitset_index_heap_size(&self.ring_bond_count_index),
+            atom_property_count_indexes: count_feature_index_heap_size(
+                &self.indexed_element_count_index,
+            ) + count_feature_index_heap_size(
+                &self.indexed_degree_count_index,
+            ) + count_feature_index_heap_size(
+                &self.indexed_total_hydrogen_count_index,
+            ),
+            edge_postings: sparse_feature_count_index_heap_size(
+                &self.indexed_edge_feature_count_index,
+            ),
+            edge_masks: edge_feature_mask_index_heap_size(&self.edge_feature_mask_index),
+            edge_domains: box_slice_heap_size(&self.edge_atom_feature_domain)
+                + box_slice_heap_size(&self.edge_bond_feature_domain),
+            path3_postings: sparse_feature_count_index_heap_size(
+                &self.indexed_path3_feature_count_index,
+            ),
+            path3_masks: path3_feature_mask_index_heap_size(&self.path3_feature_mask_index),
+            path3_domains: box_slice_heap_size(&self.path3_atom_feature_domain)
+                + box_slice_heap_size(&self.path3_bond_feature_domain),
+            path4_postings: sparse_feature_count_index_heap_size(
+                &self.indexed_path4_feature_count_index,
+            ),
+            path4_masks: path4_feature_mask_index_heap_size(&self.path4_feature_mask_index),
+            path4_domains: box_slice_heap_size(&self.path4_atom_feature_domain)
+                + box_slice_heap_size(&self.path4_bond_feature_domain),
+            star3_postings: sparse_feature_count_index_heap_size(
+                &self.indexed_star3_feature_count_index,
+            ),
+            star3_masks: star3_feature_mask_index_heap_size(&self.star3_feature_mask_index),
+            star3_domains: box_slice_heap_size(&self.star3_atom_feature_domain)
+                + box_slice_heap_size(&self.star3_bond_feature_domain),
         }
     }
 
@@ -1057,10 +1904,10 @@ impl TargetCorpusIndex {
         };
         out.reserve(state.population);
         if !state.has_active_source {
-            out.extend(0..self.screens.len());
+            out.extend(0..self.target_count);
             return;
         }
-        for_each_set_bit(&scratch.candidate_mask, self.screens.len(), |target_id| {
+        for_each_set_bit(&scratch.candidate_mask, self.target_count, |target_id| {
             out.push(target_id);
         });
     }
@@ -1179,10 +2026,10 @@ impl TargetCorpusIndex {
             return;
         };
         if !state.has_active_source {
-            (0..self.screens.len()).for_each(f);
+            (0..self.target_count).for_each(f);
             return;
         }
-        for_each_set_bit(&scratch.candidate_mask, self.screens.len(), f);
+        for_each_set_bit(&scratch.candidate_mask, self.target_count, f);
     }
 
     fn populate_candidate_mask_with_scratch<'idx>(
@@ -1190,7 +2037,7 @@ impl TargetCorpusIndex {
         query: &QueryScreen,
         scratch: &mut TargetCorpusScratch<'idx>,
     ) -> Option<CandidateMaskState> {
-        if self.screens.is_empty() {
+        if self.target_count == 0 {
             return None;
         }
 
@@ -1209,12 +2056,12 @@ impl TargetCorpusIndex {
             return None;
         }
 
-        scratch.ensure_word_count(bitset_word_count(self.screens.len()));
+        scratch.ensure_word_count(bitset_word_count(self.target_count));
         let mut has_active_source = false;
         scratch
             .filters
             .sort_unstable_by_key(|filter| filter.population);
-        let mut candidate_population = self.screens.len();
+        let mut candidate_population = self.target_count;
         for &filter in &scratch.filters {
             let population = intersect_source_with_population(
                 &mut scratch.candidate_mask,
@@ -1244,7 +2091,7 @@ impl TargetCorpusIndex {
         queries: &[QueryScreen],
         scratch: &mut TargetCorpusScratch<'idx>,
     ) {
-        if self.screens.is_empty() || queries.is_empty() {
+        if self.target_count == 0 || queries.is_empty() {
             return;
         }
 
@@ -1410,7 +2257,7 @@ impl TargetCorpusIndex {
         has_active_source: bool,
         candidate_population: usize,
     ) -> Option<Vec<u64>> {
-        if !should_filter_sparse_counts(has_active_source, candidate_population, self.screens.len())
+        if !should_filter_sparse_counts(has_active_source, candidate_population, self.target_count)
         {
             return None;
         }
@@ -1429,7 +2276,7 @@ impl TargetCorpusIndex {
         scratch: &mut TargetCorpusScratch<'_>,
     ) -> usize {
         if required_count == 0 {
-            return self.screens.len();
+            return self.target_count;
         }
         if let Some(cached) = scratch
             .edge_mask_cache
@@ -1443,7 +2290,7 @@ impl TargetCorpusIndex {
         }
 
         prepare_sparse_candidate_counts(
-            self.screens.len(),
+            self.target_count,
             &mut scratch.edge_count_by_target,
             &mut scratch.edge_touched_targets,
         );
@@ -1452,7 +2299,7 @@ impl TargetCorpusIndex {
         self.accumulate_indexed_edge_matches(query_feature, scratch, active_candidate_mask);
 
         finalize_cached_sparse_candidate_mask(
-            self.screens.len(),
+            self.target_count,
             query_feature,
             required_count,
             active_candidate_mask,
@@ -1547,7 +2394,7 @@ impl TargetCorpusIndex {
         scratch: &mut TargetCorpusScratch<'_>,
     ) -> usize {
         if required_count == 0 {
-            return self.screens.len();
+            return self.target_count;
         }
         if let Some(cached) = scratch
             .path3_mask_cache
@@ -1561,7 +2408,7 @@ impl TargetCorpusIndex {
         }
 
         prepare_sparse_candidate_counts(
-            self.screens.len(),
+            self.target_count,
             &mut scratch.path3_count_by_target,
             &mut scratch.path3_touched_targets,
         );
@@ -1570,7 +2417,7 @@ impl TargetCorpusIndex {
         self.accumulate_indexed_path3_matches(query_feature, scratch, active_candidate_mask);
 
         finalize_cached_sparse_candidate_mask(
-            self.screens.len(),
+            self.target_count,
             query_feature,
             required_count,
             active_candidate_mask,
@@ -1683,7 +2530,7 @@ impl TargetCorpusIndex {
         scratch: &mut TargetCorpusScratch<'_>,
     ) -> usize {
         if required_count == 0 {
-            return self.screens.len();
+            return self.target_count;
         }
         if let Some(cached) = scratch
             .path4_mask_cache
@@ -1697,7 +2544,7 @@ impl TargetCorpusIndex {
         }
 
         prepare_sparse_candidate_counts(
-            self.screens.len(),
+            self.target_count,
             &mut scratch.path4_count_by_target,
             &mut scratch.path4_touched_targets,
         );
@@ -1706,7 +2553,7 @@ impl TargetCorpusIndex {
         self.accumulate_indexed_path4_matches(query_feature, scratch, active_candidate_mask);
 
         finalize_cached_sparse_candidate_mask(
-            self.screens.len(),
+            self.target_count,
             query_feature,
             required_count,
             active_candidate_mask,
@@ -1837,7 +2684,7 @@ impl TargetCorpusIndex {
         scratch: &mut TargetCorpusScratch<'_>,
     ) -> usize {
         if required_count == 0 {
-            return self.screens.len();
+            return self.target_count;
         }
         if let Some(cached) = scratch
             .star3_mask_cache
@@ -1851,7 +2698,7 @@ impl TargetCorpusIndex {
         }
 
         prepare_sparse_candidate_counts(
-            self.screens.len(),
+            self.target_count,
             &mut scratch.star3_count_by_target,
             &mut scratch.star3_touched_targets,
         );
@@ -1860,7 +2707,7 @@ impl TargetCorpusIndex {
         self.accumulate_indexed_star3_matches(query_feature, scratch, active_candidate_mask);
 
         finalize_cached_sparse_candidate_mask(
-            self.screens.len(),
+            self.target_count,
             query_feature,
             required_count,
             active_candidate_mask,
@@ -2020,34 +2867,146 @@ fn required_counts_may_match<T: Ord>(
     })
 }
 
-fn build_screen_count_index<T: Ord + Copy, F>(
-    screens: &[TargetScreen],
-    count_map: F,
+fn build_screen_count_index<T>(
+    target_count: usize,
+    occurrences: ScreenCountOccurrences<T>,
 ) -> IndexedFeatureCountIndex<T>
 where
-    F: Fn(&TargetScreen) -> &BTreeMap<T, usize>,
+    T: Ord,
 {
-    let mut features = Vec::new();
-    for screen in screens {
-        for feature in count_map(screen).keys().copied() {
-            if !features.contains(&feature) {
-                features.push(feature);
-            }
-        }
-    }
-    features.sort_unstable();
-    features
+    occurrences
         .into_iter()
-        .map(|feature| {
-            let counts = screens
-                .iter()
-                .map(|screen| count_map(screen).get(&feature).copied().unwrap_or_default());
-            (
-                feature,
-                CountBitsetIndex::from_counts(screens.len(), counts),
-            )
+        .map(|(feature, counts)| {
+            let index = CountBitsetIndex::from_nonzero_compact_counts(target_count, counts);
+            (feature, index)
         })
         .collect()
+}
+
+#[cfg(feature = "rayon")]
+fn build_screen_occurrences(screens: &[TargetScreen]) -> TargetScreenOccurrences {
+    let chunks = screens
+        .par_chunks(TARGET_INDEX_CHUNK_SIZE)
+        .enumerate()
+        .map(|(chunk_id, chunk)| {
+            let mut occurrences = TargetScreenOccurrences::with_target_capacity(chunk.len());
+            push_screen_occurrences(&mut occurrences, chunk_id * TARGET_INDEX_CHUNK_SIZE, chunk);
+            occurrences
+        })
+        .collect::<Vec<_>>();
+    merge_screen_occurrence_chunks(chunks)
+}
+
+#[cfg(not(feature = "rayon"))]
+fn build_screen_occurrences(screens: &[TargetScreen]) -> TargetScreenOccurrences {
+    let mut occurrences = TargetScreenOccurrences::with_target_capacity(screens.len());
+    push_screen_occurrences(&mut occurrences, 0, screens);
+    occurrences
+}
+
+fn push_screen_occurrences(
+    occurrences: &mut TargetScreenOccurrences,
+    base_target_id: usize,
+    screens: &[TargetScreen],
+) {
+    for (offset, screen) in screens.iter().enumerate() {
+        let target_id = compact_target_id(base_target_id + offset);
+        push_target_screen_occurrence(occurrences, target_id, screen);
+    }
+}
+
+fn push_target_screen_occurrence(
+    occurrences: &mut TargetScreenOccurrences,
+    target_id: TargetId,
+    screen: &TargetScreen,
+) {
+    occurrences
+        .atoms
+        .push(compact_screen_count(screen.atom_count));
+    occurrences
+        .components
+        .push(compact_screen_count(screen.connected_component_count));
+    occurrences
+        .aromatic_atoms
+        .push(compact_screen_count(screen.aromatic_atom_count));
+    occurrences
+        .ring_atoms
+        .push(compact_screen_count(screen.ring_atom_count));
+    occurrences
+        .single_bonds
+        .push(compact_screen_count(screen.bond_counts.single));
+    occurrences
+        .double_bonds
+        .push(compact_screen_count(screen.bond_counts.double));
+    occurrences
+        .triple_bonds
+        .push(compact_screen_count(screen.bond_counts.triple));
+    occurrences
+        .aromatic_bonds
+        .push(compact_screen_count(screen.bond_counts.aromatic));
+    occurrences
+        .ring_bonds
+        .push(compact_screen_count(screen.bond_counts.ring));
+
+    push_screen_count_occurrences(&mut occurrences.elements, target_id, &screen.element_counts);
+    push_screen_count_occurrences(&mut occurrences.degrees, target_id, &screen.degree_counts);
+    push_screen_count_occurrences(
+        &mut occurrences.total_hydrogens,
+        target_id,
+        &screen.total_hydrogen_counts,
+    );
+}
+
+fn push_screen_count_occurrences<T: Ord + Copy>(
+    occurrences: &mut ScreenCountOccurrences<T>,
+    target_id: TargetId,
+    counts: &BTreeMap<T, usize>,
+) {
+    for (&feature, &count) in counts {
+        occurrences
+            .entry(feature)
+            .or_default()
+            .push((compact_screen_count(count), target_id));
+    }
+}
+
+fn compact_screen_count(count: usize) -> CompactScreenCount {
+    CompactScreenCount::try_from(count).expect("target screen count exceeds count-index capacity")
+}
+
+fn merge_screen_occurrence_chunks(chunks: Vec<TargetScreenOccurrences>) -> TargetScreenOccurrences {
+    let mut merged = TargetScreenOccurrences::default();
+    for chunk in chunks {
+        merge_screen_occurrences(&mut merged, chunk);
+    }
+    merged
+}
+
+fn merge_screen_occurrences(
+    merged: &mut TargetScreenOccurrences,
+    mut chunk: TargetScreenOccurrences,
+) {
+    merged.atoms.append(&mut chunk.atoms);
+    merged.components.append(&mut chunk.components);
+    merged.aromatic_atoms.append(&mut chunk.aromatic_atoms);
+    merged.ring_atoms.append(&mut chunk.ring_atoms);
+    merged.single_bonds.append(&mut chunk.single_bonds);
+    merged.double_bonds.append(&mut chunk.double_bonds);
+    merged.triple_bonds.append(&mut chunk.triple_bonds);
+    merged.aromatic_bonds.append(&mut chunk.aromatic_bonds);
+    merged.ring_bonds.append(&mut chunk.ring_bonds);
+    merge_screen_count_index(&mut merged.elements, chunk.elements);
+    merge_screen_count_index(&mut merged.degrees, chunk.degrees);
+    merge_screen_count_index(&mut merged.total_hydrogens, chunk.total_hydrogens);
+}
+
+fn merge_screen_count_index<T: Ord>(
+    merged: &mut ScreenCountOccurrences<T>,
+    chunk: ScreenCountOccurrences<T>,
+) {
+    for (feature, mut counts) in chunk {
+        merged.entry(feature).or_default().append(&mut counts);
+    }
 }
 
 fn push_required_filter<'idx>(
@@ -2081,33 +3040,41 @@ fn collect_indexed_required_count_filters<'idx, T: Ord>(
     true
 }
 
+fn compact_target_id(target_id: usize) -> TargetId {
+    TargetId::try_from(target_id).expect("target index exceeds compact posting id capacity")
+}
+
 fn accumulate_sparse_counts(
     count_by_target: &mut [u16],
     touched_targets: &mut Vec<usize>,
-    sparse_counts: &[(usize, u16)],
+    sparse_counts: &SparseFeatureCounts,
     active_candidate_mask: Option<&[u64]>,
 ) {
-    match active_candidate_mask {
-        Some(mask) => {
-            for &(target_id, count) in sparse_counts {
-                if !bitset_contains(mask, target_id) {
-                    continue;
-                }
-                if count_by_target[target_id] == 0 {
-                    touched_targets.push(target_id);
-                }
-                count_by_target[target_id] = count_by_target[target_id].saturating_add(count);
-            }
+    for &target_id in &sparse_counts.singleton_targets {
+        if active_candidate_mask.is_some_and(|mask| !bitset_contains(mask, target_id as usize)) {
+            continue;
         }
-        None => {
-            for &(target_id, count) in sparse_counts {
-                if count_by_target[target_id] == 0 {
-                    touched_targets.push(target_id);
-                }
-                count_by_target[target_id] = count_by_target[target_id].saturating_add(count);
-            }
-        }
+        accumulate_sparse_target_count(count_by_target, touched_targets, target_id, 1);
     }
+    for &(target_id, count) in &sparse_counts.counted_targets {
+        if active_candidate_mask.is_some_and(|mask| !bitset_contains(mask, target_id as usize)) {
+            continue;
+        }
+        accumulate_sparse_target_count(count_by_target, touched_targets, target_id, count);
+    }
+}
+
+fn accumulate_sparse_target_count(
+    count_by_target: &mut [u16],
+    touched_targets: &mut Vec<usize>,
+    target_id: TargetId,
+    count: u16,
+) {
+    let target_id = target_id as usize;
+    if count_by_target[target_id] == 0 {
+        touched_targets.push(target_id);
+    }
+    count_by_target[target_id] = count_by_target[target_id].saturating_add(count);
 }
 
 fn prepare_sparse_candidate_counts(
@@ -2804,60 +3771,113 @@ fn collect_matching_bond_features(
     );
 }
 
-fn build_target_feature_indexes(
+#[cfg(feature = "rayon")]
+fn build_target_index_occurrences(targets: &[PreparedTarget]) -> TargetIndexOccurrences {
+    let chunks = targets
+        .par_chunks(TARGET_INDEX_CHUNK_SIZE)
+        .enumerate()
+        .map(|(chunk_id, chunk)| {
+            let mut occurrences = TargetIndexOccurrences::with_target_capacity(chunk.len());
+            push_target_index_occurrences(
+                &mut occurrences,
+                chunk_id * TARGET_INDEX_CHUNK_SIZE,
+                chunk,
+            );
+            occurrences
+        })
+        .collect::<Vec<_>>();
+    merge_target_index_occurrence_chunks(chunks)
+}
+
+#[cfg(not(feature = "rayon"))]
+fn build_target_index_occurrences(targets: &[PreparedTarget]) -> TargetIndexOccurrences {
+    let mut occurrences = TargetIndexOccurrences::with_target_capacity(targets.len());
+    push_target_index_occurrences(&mut occurrences, 0, targets);
+    occurrences
+}
+
+fn push_target_index_occurrences(
+    occurrences: &mut TargetIndexOccurrences,
+    base_target_id: usize,
     targets: &[PreparedTarget],
-) -> (
-    EdgeFeatureCountIndex,
-    Path3FeatureCountIndex,
-    Path4FeatureCountIndex,
-    Star3FeatureCountIndex,
 ) {
-    let mut edge_occurrences = BTreeMap::<EdgeFeature, Vec<(usize, u16)>>::new();
-    let mut path3_occurrences = BTreeMap::<Path3Feature, Vec<(usize, u16)>>::new();
-    let mut path4_occurrences = BTreeMap::<Path4Feature, Vec<(usize, u16)>>::new();
-    let mut star3_occurrences = BTreeMap::<Star3Feature, Vec<(usize, u16)>>::new();
-
-    for (target_id, target) in targets.iter().enumerate() {
-        let (edge_counts, path3_features, path4_features, star3_features) =
-            target_graph_features(target);
-        for (feature, count) in edge_counts {
-            edge_occurrences.entry(feature).or_default().push((
-                target_id,
-                u16::try_from(count).expect("target edge feature multiplicity must fit in u16"),
-            ));
-        }
-        for (feature, count) in path3_features {
-            path3_occurrences.entry(feature).or_default().push((
-                target_id,
-                u16::try_from(count).expect("target path3 feature multiplicity must fit in u16"),
-            ));
-        }
-        for (feature, count) in path4_features {
-            path4_occurrences.entry(feature).or_default().push((
-                target_id,
-                u16::try_from(count).expect("target path4 feature multiplicity must fit in u16"),
-            ));
-        }
-        for (feature, count) in star3_features {
-            star3_occurrences.entry(feature).or_default().push((
-                target_id,
-                u16::try_from(count).expect("target star3 feature multiplicity must fit in u16"),
-            ));
-        }
+    for (offset, target) in targets.iter().enumerate() {
+        let target_id = compact_target_id(base_target_id + offset);
+        let screen = TargetScreen::new(target);
+        push_target_screen_occurrence(&mut occurrences.screens, target_id, &screen);
+        let graph_features = target_graph_features(target);
+        push_target_graph_features(&mut occurrences.features, target_id, graph_features);
     }
+}
 
-    let edge_feature_count_index = edge_occurrences;
-    let path3_feature_count_index = path3_occurrences;
+fn push_target_graph_features(
+    occurrences: &mut TargetFeatureOccurrences,
+    target_id: TargetId,
+    graph_features: TargetGraphFeatures,
+) {
+    let (edge_counts, path3_features, path4_features, star3_features) = graph_features;
+    for (feature, count) in edge_counts {
+        occurrences
+            .edge
+            .entry(feature)
+            .or_default()
+            .push((target_id, compact_target_feature_count(count)));
+    }
+    for (feature, count) in path3_features {
+        occurrences
+            .path3
+            .entry(feature)
+            .or_default()
+            .push((target_id, compact_target_feature_count(count)));
+    }
+    for (feature, count) in path4_features {
+        occurrences
+            .path4
+            .entry(feature)
+            .or_default()
+            .push((target_id, compact_target_feature_count(count)));
+    }
+    for (feature, count) in star3_features {
+        occurrences
+            .star3
+            .entry(feature)
+            .or_default()
+            .push((target_id, compact_target_feature_count(count)));
+    }
+}
 
-    let path4_feature_count_index = path4_occurrences;
-    let star3_feature_count_index = star3_occurrences;
+fn compact_target_feature_count(count: usize) -> u16 {
+    u16::try_from(count).expect("target local-feature multiplicity must fit in u16")
+}
 
-    (
-        edge_feature_count_index,
-        path3_feature_count_index,
-        path4_feature_count_index,
-        star3_feature_count_index,
-    )
+fn merge_target_index_occurrence_chunks(
+    chunks: Vec<TargetIndexOccurrences>,
+) -> TargetIndexOccurrences {
+    let mut merged = TargetIndexOccurrences::default();
+    for chunk in chunks {
+        merge_screen_occurrences(&mut merged.screens, chunk.screens);
+        merge_feature_occurrences(&mut merged.features, chunk.features);
+    }
+    merged
+}
+
+fn merge_feature_occurrences(
+    merged: &mut TargetFeatureOccurrences,
+    chunk: TargetFeatureOccurrences,
+) {
+    merge_feature_count_index(&mut merged.edge, chunk.edge);
+    merge_feature_count_index(&mut merged.path3, chunk.path3);
+    merge_feature_count_index(&mut merged.path4, chunk.path4);
+    merge_feature_count_index(&mut merged.star3, chunk.star3);
+}
+
+fn merge_feature_count_index<T: Ord>(
+    merged: &mut BTreeMap<T, Vec<(TargetId, u16)>>,
+    chunk: BTreeMap<T, Vec<(TargetId, u16)>>,
+) {
+    for (feature, mut counts) in chunk {
+        merged.entry(feature).or_default().append(&mut counts);
+    }
 }
 
 fn build_feature_domains(
@@ -2883,7 +3903,7 @@ fn build_edge_sparse_index(edge_occurrences: EdgeFeatureCountIndex) -> IndexedEd
             push_unique_sorted_domain_value(&mut atom_domain, feature.left);
             push_unique_sorted_domain_value(&mut atom_domain, feature.right);
             push_unique_sorted_domain_value(&mut bond_domain, feature.bond);
-            (feature, sparse_counts.into_boxed_slice())
+            (feature, SparseFeatureCounts::from_counts(sparse_counts))
         })
         .collect::<Vec<_>>()
         .into_boxed_slice();
@@ -2927,7 +3947,7 @@ fn build_path3_sparse_index(
             push_unique_sorted_domain_value(&mut atom_domain, feature.right);
             push_unique_sorted_domain_value(&mut bond_domain, feature.left_bond);
             push_unique_sorted_domain_value(&mut bond_domain, feature.right_bond);
-            (feature, sparse_counts.into_boxed_slice())
+            (feature, SparseFeatureCounts::from_counts(sparse_counts))
         })
         .collect::<Vec<_>>()
         .into_boxed_slice();
@@ -2996,7 +4016,7 @@ fn build_path4_sparse_index(
             push_unique_sorted_domain_value(&mut bond_domain, feature.left_bond);
             push_unique_sorted_domain_value(&mut bond_domain, feature.center_bond);
             push_unique_sorted_domain_value(&mut bond_domain, feature.right_bond);
-            (feature, sparse_counts.into_boxed_slice())
+            (feature, SparseFeatureCounts::from_counts(sparse_counts))
         })
         .collect::<Vec<_>>()
         .into_boxed_slice();
@@ -3067,7 +4087,7 @@ fn build_star3_sparse_index(
                 push_unique_sorted_domain_value(&mut atom_domain, arm.atom);
                 push_unique_sorted_domain_value(&mut bond_domain, arm.bond);
             }
-            (feature, sparse_counts.into_boxed_slice())
+            (feature, SparseFeatureCounts::from_counts(sparse_counts))
         })
         .collect::<Vec<_>>()
         .into_boxed_slice();
