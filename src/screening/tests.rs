@@ -155,6 +155,25 @@ fn corpus_index_counts_candidates_without_materializing_ids() {
 }
 
 #[test]
+fn corpus_index_new_drops_retained_screens_after_building_indexes() {
+    let prepared_targets = ["CC", "CO"]
+        .into_iter()
+        .map(|smiles| PreparedTarget::new(Smiles::from_str(smiles).unwrap()))
+        .collect::<alloc::vec::Vec<_>>();
+    let compact = TargetCorpusIndex::new(&prepared_targets);
+    assert_eq!(compact.len(), 2);
+    assert!(compact.screen(0).is_none());
+
+    let screens = prepared_targets
+        .iter()
+        .map(TargetScreen::new)
+        .collect::<alloc::vec::Vec<_>>();
+    let retained = TargetCorpusIndex::from_screens(screens);
+    assert_eq!(retained.len(), 2);
+    assert!(retained.screen(0).is_some());
+}
+
+#[test]
 fn corpus_index_candidates_are_a_subset_of_pairwise_screening() {
     let prepared_targets = ["CC", "C.C", "c1ccccc1", "ClCCl", "C1CCCCC1", "C=C", "C#N"]
         .into_iter()

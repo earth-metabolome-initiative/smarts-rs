@@ -1,8 +1,12 @@
 use alloc::{boxed::Box, vec, vec::Vec};
 
+use super::{compact_target_id, TargetId};
+
+type CountValue = u32;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct CountBitsetIndex {
-    thresholds: Box<[usize]>,
+    thresholds: Box<[CountValue]>,
     bitsets: Box<[Box<[u64]>]>,
     populations: Box<[usize]>,
 }
@@ -27,14 +31,20 @@ impl CountBitsetIndex {
         let target_counts = counts
             .into_iter()
             .enumerate()
-            .filter_map(|(target_id, count)| (count > 0).then_some((count, target_id)))
+            .filter_map(|(target_id, count)| {
+                (count > 0).then_some((
+                    CountValue::try_from(count)
+                        .expect("target screen count exceeds count-index capacity"),
+                    compact_target_id(target_id),
+                ))
+            })
             .collect::<Vec<_>>();
         Self::from_nonzero_target_counts(target_count, target_counts)
     }
 
     fn from_nonzero_target_counts(
         target_count: usize,
-        mut target_counts: Vec<(usize, usize)>,
+        mut target_counts: Vec<(CountValue, TargetId)>,
     ) -> Self {
         let word_count = bitset_word_count(target_count);
         target_counts.sort_unstable_by_key(|&(count, _)| core::cmp::Reverse(count));
@@ -55,7 +65,7 @@ impl CountBitsetIndex {
         let mut populations = Vec::with_capacity(thresholds.len());
         for &threshold in &thresholds {
             while cursor < target_counts.len() && target_counts[cursor].0 >= threshold {
-                set_bit(&mut words, target_counts[cursor].1);
+                set_bit(&mut words, target_counts[cursor].1 as usize);
                 population += 1;
                 cursor += 1;
             }
@@ -74,6 +84,7 @@ impl CountBitsetIndex {
     }
 
     fn threshold_index_for_at_least(&self, required: usize) -> Option<usize> {
+        let required = CountValue::try_from(required).ok()?;
         let index = self
             .thresholds
             .partition_point(|&threshold| threshold < required);

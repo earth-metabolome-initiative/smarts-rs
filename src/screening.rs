@@ -362,12 +362,13 @@ impl TargetScreen {
     }
 }
 
-type EdgeFeatureCountIndex = BTreeMap<EdgeFeature, Vec<(usize, u16)>>;
-type Path3FeatureCountIndex = BTreeMap<Path3Feature, Vec<(usize, u16)>>;
-type Path4FeatureCountIndex = BTreeMap<Path4Feature, Vec<(usize, u16)>>;
-type Star3FeatureCountIndex = BTreeMap<Star3Feature, Vec<(usize, u16)>>;
+type TargetId = u32;
+type EdgeFeatureCountIndex = BTreeMap<EdgeFeature, Vec<(TargetId, u16)>>;
+type Path3FeatureCountIndex = BTreeMap<Path3Feature, Vec<(TargetId, u16)>>;
+type Path4FeatureCountIndex = BTreeMap<Path4Feature, Vec<(TargetId, u16)>>;
+type Star3FeatureCountIndex = BTreeMap<Star3Feature, Vec<(TargetId, u16)>>;
 type IndexedFeatureCountIndex<T> = Box<[(T, CountBitsetIndex)]>;
-type SparseFeatureCounts = Box<[(usize, u16)]>;
+type SparseFeatureCounts = Box<[(TargetId, u16)]>;
 type IndexedSparseFeatureCountIndex<T> = Box<[(T, SparseFeatureCounts)]>;
 type FeatureIdMask = Box<[u64]>;
 type IndexedFeatureIdMask<T> = Box<[(T, FeatureIdMask)]>;
@@ -837,7 +838,8 @@ pub struct TargetCorpusIndexStats {
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TargetCorpusIndex {
-    screens: Box<[TargetScreen]>,
+    target_count: usize,
+    retained_screens: Box<[TargetScreen]>,
     atom_count_index: CountBitsetIndex,
     component_count_index: CountBitsetIndex,
     aromatic_atom_count_index: CountBitsetIndex,
@@ -879,7 +881,7 @@ impl TargetCorpusIndex {
             path4_feature_count_index,
             star3_feature_count_index,
         ) = build_target_feature_indexes(targets);
-        let mut index = Self::from_screens(screens);
+        let mut index = Self::from_screens_inner(screens, false);
         let (edge_index, edge_feature_mask_index, edge_atom_domain, edge_bond_domain) =
             build_edge_sparse_index(edge_feature_count_index);
         index.indexed_edge_feature_count_index = edge_index;
@@ -910,6 +912,10 @@ impl TargetCorpusIndex {
     /// Builds one persistent target-side index from already prepared screens.
     #[must_use]
     pub fn from_screens(screens: Vec<TargetScreen>) -> Self {
+        Self::from_screens_inner(screens, true)
+    }
+
+    fn from_screens_inner(screens: Vec<TargetScreen>, retain_screens: bool) -> Self {
         let target_count = screens.len();
         let atom_count_index = CountBitsetIndex::from_counts(
             target_count,
@@ -958,7 +964,12 @@ impl TargetCorpusIndex {
             build_screen_count_index(&screens, |screen| &screen.total_hydrogen_counts);
 
         Self {
-            screens: screens.into_boxed_slice(),
+            target_count,
+            retained_screens: if retain_screens {
+                screens.into_boxed_slice()
+            } else {
+                Box::new([])
+            },
             atom_count_index,
             component_count_index,
             aromatic_atom_count_index,
@@ -994,28 +1005,33 @@ impl TargetCorpusIndex {
     #[inline]
     #[must_use]
     pub const fn len(&self) -> usize {
-        self.screens.len()
+        self.target_count
     }
 
     /// Returns whether the index contains no targets.
     #[inline]
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        self.screens.is_empty()
+        self.target_count == 0
     }
 
-    /// Returns the target screen for one indexed target.
+    /// Returns the retained target screen for one indexed target.
+    ///
+    /// Indexes built with [`TargetCorpusIndex::from_screens`] retain screens.
+    /// Indexes built with [`TargetCorpusIndex::new`] drop screens after
+    /// construction to avoid storing per-target summary maps at large corpus
+    /// scale.
     #[inline]
     #[must_use]
     pub fn screen(&self, target_id: usize) -> Option<&TargetScreen> {
-        self.screens.get(target_id)
+        self.retained_screens.get(target_id)
     }
 
     /// Returns aggregate index sizes for diagnostics and benchmark reporting.
     #[must_use]
     pub fn stats(&self) -> TargetCorpusIndexStats {
         TargetCorpusIndexStats {
-            target_count: self.screens.len(),
+            target_count: self.target_count,
             edge_feature_count: self.indexed_edge_feature_count_index.len(),
             edge_posting_count: sparse_posting_count(&self.indexed_edge_feature_count_index),
             edge_atom_domain_count: self.edge_atom_feature_domain.len(),
@@ -1057,10 +1073,10 @@ impl TargetCorpusIndex {
         };
         out.reserve(state.population);
         if !state.has_active_source {
-            out.extend(0..self.screens.len());
+            out.extend(0..self.target_count);
             return;
         }
-        for_each_set_bit(&scratch.candidate_mask, self.screens.len(), |target_id| {
+        for_each_set_bit(&scratch.candidate_mask, self.target_count, |target_id| {
             out.push(target_id);
         });
     }
@@ -1179,10 +1195,10 @@ impl TargetCorpusIndex {
             return;
         };
         if !state.has_active_source {
-            (0..self.screens.len()).for_each(f);
+            (0..self.target_count).for_each(f);
             return;
         }
-        for_each_set_bit(&scratch.candidate_mask, self.screens.len(), f);
+        for_each_set_bit(&scratch.candidate_mask, self.target_count, f);
     }
 
     fn populate_candidate_mask_with_scratch<'idx>(
@@ -1190,7 +1206,7 @@ impl TargetCorpusIndex {
         query: &QueryScreen,
         scratch: &mut TargetCorpusScratch<'idx>,
     ) -> Option<CandidateMaskState> {
-        if self.screens.is_empty() {
+        if self.target_count == 0 {
             return None;
         }
 
@@ -1209,12 +1225,12 @@ impl TargetCorpusIndex {
             return None;
         }
 
-        scratch.ensure_word_count(bitset_word_count(self.screens.len()));
+        scratch.ensure_word_count(bitset_word_count(self.target_count));
         let mut has_active_source = false;
         scratch
             .filters
             .sort_unstable_by_key(|filter| filter.population);
-        let mut candidate_population = self.screens.len();
+        let mut candidate_population = self.target_count;
         for &filter in &scratch.filters {
             let population = intersect_source_with_population(
                 &mut scratch.candidate_mask,
@@ -1244,7 +1260,7 @@ impl TargetCorpusIndex {
         queries: &[QueryScreen],
         scratch: &mut TargetCorpusScratch<'idx>,
     ) {
-        if self.screens.is_empty() || queries.is_empty() {
+        if self.target_count == 0 || queries.is_empty() {
             return;
         }
 
@@ -1410,7 +1426,7 @@ impl TargetCorpusIndex {
         has_active_source: bool,
         candidate_population: usize,
     ) -> Option<Vec<u64>> {
-        if !should_filter_sparse_counts(has_active_source, candidate_population, self.screens.len())
+        if !should_filter_sparse_counts(has_active_source, candidate_population, self.target_count)
         {
             return None;
         }
@@ -1429,7 +1445,7 @@ impl TargetCorpusIndex {
         scratch: &mut TargetCorpusScratch<'_>,
     ) -> usize {
         if required_count == 0 {
-            return self.screens.len();
+            return self.target_count;
         }
         if let Some(cached) = scratch
             .edge_mask_cache
@@ -1443,7 +1459,7 @@ impl TargetCorpusIndex {
         }
 
         prepare_sparse_candidate_counts(
-            self.screens.len(),
+            self.target_count,
             &mut scratch.edge_count_by_target,
             &mut scratch.edge_touched_targets,
         );
@@ -1452,7 +1468,7 @@ impl TargetCorpusIndex {
         self.accumulate_indexed_edge_matches(query_feature, scratch, active_candidate_mask);
 
         finalize_cached_sparse_candidate_mask(
-            self.screens.len(),
+            self.target_count,
             query_feature,
             required_count,
             active_candidate_mask,
@@ -1547,7 +1563,7 @@ impl TargetCorpusIndex {
         scratch: &mut TargetCorpusScratch<'_>,
     ) -> usize {
         if required_count == 0 {
-            return self.screens.len();
+            return self.target_count;
         }
         if let Some(cached) = scratch
             .path3_mask_cache
@@ -1561,7 +1577,7 @@ impl TargetCorpusIndex {
         }
 
         prepare_sparse_candidate_counts(
-            self.screens.len(),
+            self.target_count,
             &mut scratch.path3_count_by_target,
             &mut scratch.path3_touched_targets,
         );
@@ -1570,7 +1586,7 @@ impl TargetCorpusIndex {
         self.accumulate_indexed_path3_matches(query_feature, scratch, active_candidate_mask);
 
         finalize_cached_sparse_candidate_mask(
-            self.screens.len(),
+            self.target_count,
             query_feature,
             required_count,
             active_candidate_mask,
@@ -1683,7 +1699,7 @@ impl TargetCorpusIndex {
         scratch: &mut TargetCorpusScratch<'_>,
     ) -> usize {
         if required_count == 0 {
-            return self.screens.len();
+            return self.target_count;
         }
         if let Some(cached) = scratch
             .path4_mask_cache
@@ -1697,7 +1713,7 @@ impl TargetCorpusIndex {
         }
 
         prepare_sparse_candidate_counts(
-            self.screens.len(),
+            self.target_count,
             &mut scratch.path4_count_by_target,
             &mut scratch.path4_touched_targets,
         );
@@ -1706,7 +1722,7 @@ impl TargetCorpusIndex {
         self.accumulate_indexed_path4_matches(query_feature, scratch, active_candidate_mask);
 
         finalize_cached_sparse_candidate_mask(
-            self.screens.len(),
+            self.target_count,
             query_feature,
             required_count,
             active_candidate_mask,
@@ -1837,7 +1853,7 @@ impl TargetCorpusIndex {
         scratch: &mut TargetCorpusScratch<'_>,
     ) -> usize {
         if required_count == 0 {
-            return self.screens.len();
+            return self.target_count;
         }
         if let Some(cached) = scratch
             .star3_mask_cache
@@ -1851,7 +1867,7 @@ impl TargetCorpusIndex {
         }
 
         prepare_sparse_candidate_counts(
-            self.screens.len(),
+            self.target_count,
             &mut scratch.star3_count_by_target,
             &mut scratch.star3_touched_targets,
         );
@@ -1860,7 +1876,7 @@ impl TargetCorpusIndex {
         self.accumulate_indexed_star3_matches(query_feature, scratch, active_candidate_mask);
 
         finalize_cached_sparse_candidate_mask(
-            self.screens.len(),
+            self.target_count,
             query_feature,
             required_count,
             active_candidate_mask,
@@ -2081,15 +2097,20 @@ fn collect_indexed_required_count_filters<'idx, T: Ord>(
     true
 }
 
+fn compact_target_id(target_id: usize) -> TargetId {
+    TargetId::try_from(target_id).expect("target index exceeds compact posting id capacity")
+}
+
 fn accumulate_sparse_counts(
     count_by_target: &mut [u16],
     touched_targets: &mut Vec<usize>,
-    sparse_counts: &[(usize, u16)],
+    sparse_counts: &[(TargetId, u16)],
     active_candidate_mask: Option<&[u64]>,
 ) {
     match active_candidate_mask {
         Some(mask) => {
             for &(target_id, count) in sparse_counts {
+                let target_id = target_id as usize;
                 if !bitset_contains(mask, target_id) {
                     continue;
                 }
@@ -2101,6 +2122,7 @@ fn accumulate_sparse_counts(
         }
         None => {
             for &(target_id, count) in sparse_counts {
+                let target_id = target_id as usize;
                 if count_by_target[target_id] == 0 {
                     touched_targets.push(target_id);
                 }
@@ -2812,12 +2834,13 @@ fn build_target_feature_indexes(
     Path4FeatureCountIndex,
     Star3FeatureCountIndex,
 ) {
-    let mut edge_occurrences = BTreeMap::<EdgeFeature, Vec<(usize, u16)>>::new();
-    let mut path3_occurrences = BTreeMap::<Path3Feature, Vec<(usize, u16)>>::new();
-    let mut path4_occurrences = BTreeMap::<Path4Feature, Vec<(usize, u16)>>::new();
-    let mut star3_occurrences = BTreeMap::<Star3Feature, Vec<(usize, u16)>>::new();
+    let mut edge_occurrences = EdgeFeatureCountIndex::new();
+    let mut path3_occurrences = Path3FeatureCountIndex::new();
+    let mut path4_occurrences = Path4FeatureCountIndex::new();
+    let mut star3_occurrences = Star3FeatureCountIndex::new();
 
     for (target_id, target) in targets.iter().enumerate() {
+        let target_id = compact_target_id(target_id);
         let (edge_counts, path3_features, path4_features, star3_features) =
             target_graph_features(target);
         for (feature, count) in edge_counts {
