@@ -870,6 +870,178 @@ pub struct TargetCorpusIndex {
     star3_bond_feature_domain: Box<[EdgeBondFeature]>,
 }
 
+#[cfg(feature = "mem_dbg")]
+impl mem_dbg::FlatType for TargetCorpusIndex {
+    type Flat = mem_dbg::False;
+}
+
+#[cfg(feature = "mem_dbg")]
+impl mem_dbg::MemSize for TargetCorpusIndex {
+    fn mem_size_rec(
+        &self,
+        _flags: mem_dbg::SizeFlags,
+        _refs: &mut mem_dbg::HashMap<usize, usize>,
+    ) -> usize {
+        size_of::<Self>()
+            + retained_target_screens_heap_size(&self.retained_screens)
+            + count_bitset_index_heap_size(&self.atom_count_index)
+            + count_bitset_index_heap_size(&self.component_count_index)
+            + count_bitset_index_heap_size(&self.aromatic_atom_count_index)
+            + count_bitset_index_heap_size(&self.ring_atom_count_index)
+            + count_feature_index_heap_size(&self.indexed_element_count_index)
+            + count_feature_index_heap_size(&self.indexed_degree_count_index)
+            + count_feature_index_heap_size(&self.indexed_total_hydrogen_count_index)
+            + count_bitset_index_heap_size(&self.single_bond_count_index)
+            + count_bitset_index_heap_size(&self.double_bond_count_index)
+            + count_bitset_index_heap_size(&self.triple_bond_count_index)
+            + count_bitset_index_heap_size(&self.aromatic_bond_count_index)
+            + count_bitset_index_heap_size(&self.ring_bond_count_index)
+            + sparse_feature_count_index_heap_size(&self.indexed_edge_feature_count_index)
+            + edge_feature_mask_index_heap_size(&self.edge_feature_mask_index)
+            + box_slice_heap_size(&self.edge_atom_feature_domain)
+            + box_slice_heap_size(&self.edge_bond_feature_domain)
+            + sparse_feature_count_index_heap_size(&self.indexed_path3_feature_count_index)
+            + path3_feature_mask_index_heap_size(&self.path3_feature_mask_index)
+            + box_slice_heap_size(&self.path3_atom_feature_domain)
+            + box_slice_heap_size(&self.path3_bond_feature_domain)
+            + sparse_feature_count_index_heap_size(&self.indexed_path4_feature_count_index)
+            + path4_feature_mask_index_heap_size(&self.path4_feature_mask_index)
+            + box_slice_heap_size(&self.path4_atom_feature_domain)
+            + box_slice_heap_size(&self.path4_bond_feature_domain)
+            + sparse_feature_count_index_heap_size(&self.indexed_star3_feature_count_index)
+            + star3_feature_mask_index_heap_size(&self.star3_feature_mask_index)
+            + box_slice_heap_size(&self.star3_atom_feature_domain)
+            + box_slice_heap_size(&self.star3_bond_feature_domain)
+    }
+}
+
+#[cfg(feature = "mem_dbg")]
+fn count_bitset_index_heap_size(index: &CountBitsetIndex) -> usize {
+    index.heap_size()
+}
+
+#[cfg(feature = "mem_dbg")]
+fn count_feature_index_heap_size<T>(index: &[(T, CountBitsetIndex)]) -> usize {
+    size_of_val(index)
+        + index
+            .iter()
+            .map(|(_, counts)| count_bitset_index_heap_size(counts))
+            .sum::<usize>()
+}
+
+#[cfg(feature = "mem_dbg")]
+fn sparse_feature_count_index_heap_size<T>(index: &[(T, SparseFeatureCounts)]) -> usize {
+    size_of_val(index)
+        + index
+            .iter()
+            .map(|(_, counts)| box_slice_heap_size(counts))
+            .sum::<usize>()
+}
+
+#[cfg(feature = "mem_dbg")]
+fn edge_feature_mask_index_heap_size(index: &EdgeFeatureMaskIndex) -> usize {
+    feature_id_mask_index_heap_size(&index.left_atoms)
+        + feature_id_mask_index_heap_size(&index.bonds)
+        + feature_id_mask_index_heap_size(&index.right_atoms)
+}
+
+#[cfg(feature = "mem_dbg")]
+fn path3_feature_mask_index_heap_size(index: &Path3FeatureMaskIndex) -> usize {
+    feature_id_mask_index_heap_size(&index.left_atoms)
+        + feature_id_mask_index_heap_size(&index.left_bonds)
+        + feature_id_mask_index_heap_size(&index.center_atoms)
+        + feature_id_mask_index_heap_size(&index.right_bonds)
+        + feature_id_mask_index_heap_size(&index.right_atoms)
+}
+
+#[cfg(feature = "mem_dbg")]
+fn path4_feature_mask_index_heap_size(index: &Path4FeatureMaskIndex) -> usize {
+    feature_id_mask_index_heap_size(&index.left_atoms)
+        + feature_id_mask_index_heap_size(&index.left_bonds)
+        + feature_id_mask_index_heap_size(&index.left_middle_atoms)
+        + feature_id_mask_index_heap_size(&index.center_bonds)
+        + feature_id_mask_index_heap_size(&index.right_middle_atoms)
+        + feature_id_mask_index_heap_size(&index.right_bonds)
+        + feature_id_mask_index_heap_size(&index.right_atoms)
+}
+
+#[cfg(feature = "mem_dbg")]
+fn star3_feature_mask_index_heap_size(index: &Star3FeatureMaskIndex) -> usize {
+    feature_id_mask_index_heap_size(&index.center_atoms)
+        + feature_id_mask_index_heap_size(&index.first_bonds)
+        + feature_id_mask_index_heap_size(&index.first_atoms)
+        + feature_id_mask_index_heap_size(&index.second_bonds)
+        + feature_id_mask_index_heap_size(&index.second_atoms)
+        + feature_id_mask_index_heap_size(&index.third_bonds)
+        + feature_id_mask_index_heap_size(&index.third_atoms)
+}
+
+#[cfg(feature = "mem_dbg")]
+fn feature_id_mask_index_heap_size<T>(index: &[(T, FeatureIdMask)]) -> usize {
+    size_of_val(index)
+        + index
+            .iter()
+            .map(|(_, mask)| box_slice_heap_size(mask))
+            .sum::<usize>()
+}
+
+#[cfg(feature = "mem_dbg")]
+const fn box_slice_heap_size<T>(slice: &[T]) -> usize {
+    size_of_val(slice)
+}
+
+#[cfg(feature = "mem_dbg")]
+fn retained_target_screens_heap_size(screens: &[TargetScreen]) -> usize {
+    size_of_val(screens)
+        + screens
+            .iter()
+            .map(target_screen_map_heap_size)
+            .sum::<usize>()
+}
+
+#[cfg(feature = "mem_dbg")]
+fn target_screen_map_heap_size(screen: &TargetScreen) -> usize {
+    btree_map_heap_estimate::<Element, usize>(screen.element_counts.len())
+        + btree_map_heap_estimate::<u16, usize>(screen.degree_counts.len())
+        + btree_map_heap_estimate::<u16, usize>(screen.total_hydrogen_counts.len())
+}
+
+#[cfg(feature = "mem_dbg")]
+const fn btree_map_heap_estimate<K, V>(len: usize) -> usize {
+    // Match mem_dbg's BTree node heuristic for retained TargetScreen maps whose
+    // Element keys cannot implement external traits in this crate.
+    const B: usize = 6;
+    const CAPACITY: usize = 2 * B - 1;
+
+    if len == 0 {
+        return 0;
+    }
+
+    let pointer_size = size_of::<usize>();
+    let header_size = 2 * size_of::<usize>();
+    let mut leaf_size = header_size;
+    leaf_size = align_up(leaf_size, align_of::<K>());
+    leaf_size += size_of::<K>() * CAPACITY;
+    leaf_size = align_up(leaf_size, align_of::<V>());
+    leaf_size += size_of::<V>() * CAPACITY;
+
+    let mut internal_size = leaf_size;
+    internal_size = align_up(internal_size, align_of::<usize>());
+    internal_size += pointer_size * (CAPACITY + 1);
+
+    if len <= CAPACITY {
+        leaf_size
+    } else {
+        let average_node_size = (leaf_size * B + internal_size) / (B + 1);
+        (len / B) * average_node_size
+    }
+}
+
+#[cfg(feature = "mem_dbg")]
+const fn align_up(size: usize, align: usize) -> usize {
+    (size + align - 1) & !(align - 1)
+}
+
 impl TargetCorpusIndex {
     /// Builds one persistent target-side index from prepared targets.
     #[must_use]

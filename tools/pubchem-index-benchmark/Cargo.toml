@@ -1,0 +1,12 @@
+[package]
+name = "smarts-rs-pubchem-index-benchmark"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+mem_dbg = "0.4.1"
+smarts-rs = { path = "../..", features = ["mem_dbg"] }
+smiles-parser = { git = "https://github.com/earth-metabolome-initiative/smiles-parser", branch = "main", default-features = false, features = ["datasets"] }
+
+[workspace]

@@ -11,6 +11,7 @@ categories = ["parser-implementations", "science"]
 
 [features]
 default = []
+mem_dbg = ["std", "dep:mem_dbg"]
 serde = ["dep:serde"]
 std = []
 
@@ -20,6 +21,7 @@ workspace = true
 [dependencies]
 elements_rs = { version = "0.2.3", default-features = false }
 geometric-traits = { git = "https://github.com/earth-metabolome-initiative/geometric-traits", branch = "main", default-features = false, features = ["alloc"] }
+mem_dbg = { version = "0.4.1", optional = true }
 serde = { version = "1.0.228", default-features = false, features = ["alloc"], optional = true }
 smiles-parser = { git = "https://github.com/earth-metabolome-initiative/smiles-parser", branch = "main", default-features = false }
 thiserror = { version = "2.0.17", default-features = false }
@@ -54,7 +56,7 @@ harness = false
 
 [workspace]
 members = ["."]
-exclude = ["fuzz"]
+exclude = ["fuzz", "tools/pubchem-index-benchmark"]
 resolver = "2"
 
 [workspace.package]

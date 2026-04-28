@@ -24,6 +24,18 @@ pub(super) struct CachedFeatureMask {
 }
 
 impl CountBitsetIndex {
+    #[cfg(feature = "mem_dbg")]
+    pub(super) fn heap_size(&self) -> usize {
+        size_of_val(self.thresholds.as_ref())
+            + size_of_val(self.bitsets.as_ref())
+            + self
+                .bitsets
+                .iter()
+                .map(|bitset| size_of_val(bitset.as_ref()))
+                .sum::<usize>()
+            + size_of_val(self.populations.as_ref())
+    }
+
     pub(super) fn from_counts<I>(target_count: usize, counts: I) -> Self
     where
         I: IntoIterator<Item = usize>,
