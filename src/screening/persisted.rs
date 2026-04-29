@@ -5,12 +5,16 @@
 //! layouts here are explicit flat formats, not direct dumps of private runtime
 //! structs.
 
-use alloc::{boxed::Box, vec, vec::Vec};
-#[cfg(all(feature = "zstd", feature = "terminal-progress"))]
-use alloc::{format, string::String};
-use core::{fmt, marker::PhantomData, ops::Range};
+use alloc::{boxed::Box, format, string::String, vec, vec::Vec};
+use core::{
+    fmt,
+    marker::PhantomData,
+    ops::Range,
+    str::{self, FromStr},
+};
 #[cfg(all(feature = "zstd", feature = "terminal-progress"))]
 use std::io::IsTerminal;
+use std::io::{Error as IoError, ErrorKind};
 use std::path::{Path, PathBuf};
 #[cfg(feature = "zstd")]
 use std::{
@@ -43,7 +47,11 @@ use super::{
     TargetCandidateSet, TargetCorpusIndex, TargetCorpusIndexShard, TargetCorpusIndexStats,
     TargetCorpusScratch,
 };
-use crate::prepared::PreparedTarget;
+use crate::{
+    matching::{CompiledQuery, MatchScratch},
+    prepared::PreparedTarget,
+};
+use smiles_parser::Smiles;
 
 #[cfg(feature = "zstd")]
 use PersistedTargetCorpusIndexShardBuildEvent::{Finished, Started};
@@ -53,6 +61,8 @@ use PersistedTargetCorpusIndexShardBuildStep::{
 };
 
 const FORMAT_VERSION: u32 = 1;
+const TARGET_SMILES_SHARD_SUFFIX: &str = ".target-smiles.eps";
+const EXTERNAL_IDS_SHARD_SUFFIX: &str = ".external-ids.eps";
 const ATOM_FEATURE_WIDTH: u16 = 5;
 const BOND_FEATURE_WIDTH: u16 = 2;
 const ATOM_FEATURE_WIDTH_USIZE: usize = ATOM_FEATURE_WIDTH as usize;
@@ -143,6 +153,18 @@ pub struct PersistedTargetCorpusIndexShardBuildStats {
     pub index_stats: TargetCorpusIndexStats,
     /// Serialized and on-disk byte counts for the shard payload.
     pub store_stats: PersistedShardStoreStats,
+}
+
+/// Build and storage measurements for one queryable persisted target-index shard.
+#[cfg(feature = "zstd")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PersistedQueryableTargetCorpusIndexShardBuildStats {
+    /// Main persisted target-index shard measurements.
+    pub index: PersistedTargetCorpusIndexShardBuildStats,
+    /// Serialized and on-disk byte counts for the target SMILES sidecar.
+    pub target_smiles_store_stats: PersistedShardStoreStats,
+    /// Serialized and on-disk byte counts for the optional external-id sidecar.
+    pub external_ids_store_stats: Option<PersistedShardStoreStats>,
 }
 
 /// Major step in persisted target-index shard construction.
@@ -360,6 +382,52 @@ impl From<ser::Error> for PersistedShardStoreError {
     }
 }
 
+#[cfg(feature = "zstd")]
+fn invalid_store_input(message: impl Into<String>) -> PersistedShardStoreError {
+    IoError::new(ErrorKind::InvalidInput, message.into()).into()
+}
+
+#[cfg(feature = "zstd")]
+unsafe fn store_epserde_value_with_compression_unchecked<T>(
+    value: &T,
+    path: impl AsRef<Path>,
+    compression: PersistedShardCompression,
+) -> Result<PersistedShardStoreStats, PersistedShardStoreError>
+where
+    T: ser::Serialize,
+{
+    match compression {
+        PersistedShardCompression::None => {
+            unsafe { ser::Serialize::store(value, path.as_ref())? };
+            let disk_bytes = std::fs::metadata(path.as_ref())?.len();
+            let serialized_bytes = usize::try_from(disk_bytes).unwrap_or(usize::MAX);
+            Ok(PersistedShardStoreStats {
+                serialized_bytes,
+                disk_bytes,
+            })
+        }
+        PersistedShardCompression::Zstd {
+            level,
+            worker_threads,
+        } => {
+            let file = File::create(path.as_ref())?;
+            let writer = BufWriter::new(file);
+            let mut encoder = zstd::stream::write::Encoder::new(writer, level)?;
+            if worker_threads > 1 {
+                encoder.multithread(worker_threads)?;
+            }
+            let serialized_bytes = unsafe { ser::Serialize::serialize(value, &mut encoder)? };
+            let mut writer = encoder.finish()?;
+            writer.flush()?;
+            let disk_bytes = std::fs::metadata(path.as_ref())?.len();
+            Ok(PersistedShardStoreStats {
+                serialized_bytes,
+                disk_bytes,
+            })
+        }
+    }
+}
+
 /// Flat persisted representation of a [`CountBitsetIndex`].
 ///
 /// The runtime index stores one boxed bitset per threshold. This persisted form
@@ -526,12 +594,42 @@ pub struct PersistedTargetCorpusIndexShard<
     star3: Star3,
 }
 
+/// Persisted target SMILES payload aligned to one target-index shard.
+#[derive(Debug, Clone, PartialEq, Eq, Epserde)]
+pub struct PersistedTargetSmilesShard {
+    format_version: u32,
+    base_target_id: u64,
+    target_count: u64,
+    offsets: Box<[u64]>,
+    bytes: Box<[u8]>,
+}
+
+/// Persisted external target ids aligned to one target-index shard.
+#[derive(Debug, Clone, PartialEq, Eq, Epserde)]
+pub struct PersistedExternalIdShard {
+    format_version: u32,
+    base_target_id: u64,
+    target_count: u64,
+    external_ids: Box<[u64]>,
+}
+
+/// Exact SMARTS hit returned by persisted queryable shards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PersistedTargetHit {
+    /// Global target id within the indexed target corpus.
+    pub target_id: usize,
+    /// Optional caller-provided external target id.
+    pub external_id: Option<u64>,
+}
+
 /// Builder for storing one persisted target-index shard.
 #[cfg(feature = "zstd")]
 #[derive(Debug, Clone, Copy)]
 pub struct PersistedTargetCorpusIndexShardBuilder<'a> {
     base_target_id: usize,
     targets: &'a [PreparedTarget],
+    target_smiles: Option<&'a [String]>,
+    external_ids: Option<&'a [u64]>,
     compression: PersistedShardCompression,
 }
 
@@ -544,6 +642,8 @@ impl<'a> PersistedTargetCorpusIndexShardBuilder<'a> {
         Self {
             base_target_id: 0,
             targets,
+            target_smiles: None,
+            external_ids: None,
             compression: PersistedShardCompression::None,
         }
     }
@@ -561,6 +661,26 @@ impl<'a> PersistedTargetCorpusIndexShardBuilder<'a> {
     #[must_use]
     pub const fn compression(mut self, compression: PersistedShardCompression) -> Self {
         self.compression = compression;
+        self
+    }
+
+    /// Sets target SMILES strings for exact persisted querying.
+    ///
+    /// The slice order must match the prepared targets passed to [`Self::new`].
+    #[inline]
+    #[must_use]
+    pub const fn target_smiles(mut self, target_smiles: &'a [String]) -> Self {
+        self.target_smiles = Some(target_smiles);
+        self
+    }
+
+    /// Sets optional external target ids for exact persisted querying.
+    ///
+    /// The slice order must match the prepared targets passed to [`Self::new`].
+    #[inline]
+    #[must_use]
+    pub const fn external_ids(mut self, external_ids: &'a [u64]) -> Self {
+        self.external_ids = Some(external_ids);
         self
     }
 
@@ -660,6 +780,110 @@ impl<'a> PersistedTargetCorpusIndexShardBuilder<'a> {
         })
     }
 
+    /// Builds and stores a queryable shard at `path`.
+    ///
+    /// A queryable shard stores the normal persisted screening index plus a
+    /// target-SMILES sidecar. If external ids were provided, it also stores an
+    /// external-id sidecar aligned to the same target order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if target SMILES were not provided, if sidecar lengths
+    /// do not match `targets`, or if any payload cannot be serialized or
+    /// written.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the shard base id, target count, target SMILES byte offsets,
+    /// or an internal posting/mask offset exceeds the persisted format's
+    /// `u64`/`u32` capacity.
+    ///
+    /// # Safety
+    ///
+    /// This writes epserde bytes. The resulting files must be treated as
+    /// trusted input when they are later deserialized.
+    pub unsafe fn store_queryable_unchecked(
+        self,
+        path: impl AsRef<Path>,
+    ) -> Result<PersistedQueryableTargetCorpusIndexShardBuildStats, PersistedShardStoreError> {
+        unsafe { self.store_queryable_unchecked_with_progress(path, |_| {}) }
+    }
+
+    /// Builds and stores a queryable shard at `path`, emitting progress events
+    /// for the main target-index shard construction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if target SMILES were not provided, if sidecar lengths
+    /// do not match `targets`, or if any payload cannot be serialized or
+    /// written.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the shard base id, target count, target SMILES byte offsets,
+    /// or an internal posting/mask offset exceeds the persisted format's
+    /// `u64`/`u32` capacity.
+    ///
+    /// # Safety
+    ///
+    /// This writes epserde bytes. The resulting files must be treated as
+    /// trusted input when they are later deserialized.
+    pub unsafe fn store_queryable_unchecked_with_progress(
+        self,
+        path: impl AsRef<Path>,
+        progress: impl FnMut(PersistedTargetCorpusIndexShardBuildEvent),
+    ) -> Result<PersistedQueryableTargetCorpusIndexShardBuildStats, PersistedShardStoreError> {
+        let path = path.as_ref();
+        let target_smiles = self.target_smiles.ok_or_else(|| {
+            invalid_store_input("queryable persisted shards require target SMILES")
+        })?;
+        if target_smiles.len() != self.targets.len() {
+            return Err(invalid_store_input(format!(
+                "target SMILES count {} does not match prepared target count {}",
+                target_smiles.len(),
+                self.targets.len()
+            )));
+        }
+        if let Some(external_ids) = self.external_ids {
+            if external_ids.len() != self.targets.len() {
+                return Err(invalid_store_input(format!(
+                    "external id count {} does not match prepared target count {}",
+                    external_ids.len(),
+                    self.targets.len()
+                )));
+            }
+        }
+
+        let index = unsafe { self.store_unchecked_with_progress(path, progress)? };
+        let target_smiles_shard =
+            PersistedTargetSmilesShard::from_target_smiles(self.base_target_id, target_smiles)?;
+        let target_smiles_store_stats = unsafe {
+            target_smiles_shard.store_with_compression_unchecked(
+                persisted_target_smiles_path_for_index_shard_path(path),
+                self.compression,
+            )?
+        };
+        let external_ids_store_stats = self
+            .external_ids
+            .map(|external_ids| {
+                let external_ids_shard =
+                    PersistedExternalIdShard::from_external_ids(self.base_target_id, external_ids);
+                unsafe {
+                    external_ids_shard.store_with_compression_unchecked(
+                        persisted_external_ids_path_for_index_shard_path(path),
+                        self.compression,
+                    )
+                }
+            })
+            .transpose()?;
+
+        Ok(PersistedQueryableTargetCorpusIndexShardBuildStats {
+            index,
+            target_smiles_store_stats,
+            external_ids_store_stats,
+        })
+    }
+
     /// Builds and stores the shard at `path` with a terminal progress bar.
     ///
     /// The bar is hidden automatically when stderr is not attached to a
@@ -691,6 +915,240 @@ impl<'a> PersistedTargetCorpusIndexShardBuilder<'a> {
             unsafe { self.store_unchecked_with_progress(path, |event| progress.on_event(event))? };
         progress.finish(stats.target_count);
         Ok(stats)
+    }
+
+    /// Builds and stores a queryable shard at `path` with a terminal progress bar.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if target SMILES were not provided, if sidecar lengths
+    /// do not match `targets`, or if any payload cannot be serialized or
+    /// written.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the shard base id, target count, target SMILES byte offsets,
+    /// or an internal posting/mask offset exceeds the persisted format's
+    /// `u64`/`u32` capacity.
+    ///
+    /// # Safety
+    ///
+    /// This writes epserde bytes. The resulting files must be treated as
+    /// trusted input when they are later deserialized.
+    #[cfg(feature = "terminal-progress")]
+    pub unsafe fn store_queryable_unchecked_with_terminal_progress(
+        self,
+        path: impl AsRef<Path>,
+        shard_label: impl Into<String>,
+    ) -> Result<PersistedQueryableTargetCorpusIndexShardBuildStats, PersistedShardStoreError> {
+        let progress =
+            PersistedTargetCorpusIndexShardTerminalProgress::new(shard_label, self.targets.len());
+        let stats = unsafe {
+            self.store_queryable_unchecked_with_progress(path, |event| progress.on_event(event))?
+        };
+        progress.finish(stats.index.target_count);
+        Ok(stats)
+    }
+}
+
+impl PersistedTargetSmilesShard {
+    /// Builds a target-SMILES sidecar from shard-aligned SMILES strings.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a SMILES string contains a newline or if the byte
+    /// payload exceeds the persisted format's `u64` offset capacity.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `base_target_id` or `target_smiles.len()` exceed `u64`.
+    #[cfg(feature = "zstd")]
+    pub fn from_target_smiles(
+        base_target_id: usize,
+        target_smiles: &[String],
+    ) -> Result<Self, PersistedShardStoreError> {
+        let mut offsets = Vec::with_capacity(target_smiles.len() + 1);
+        let mut bytes = Vec::new();
+        offsets.push(0);
+        for smiles in target_smiles {
+            if smiles.contains(['\r', '\n']) {
+                return Err(invalid_store_input(
+                    "target SMILES must not contain newlines",
+                ));
+            }
+            bytes.extend_from_slice(smiles.as_bytes());
+            offsets.push(
+                u64::try_from(bytes.len())
+                    .map_err(|_| invalid_store_input("target SMILES payload is too large"))?,
+            );
+        }
+        Ok(Self {
+            format_version: FORMAT_VERSION,
+            base_target_id: u64::try_from(base_target_id)
+                .expect("target shard base id exceeds persisted target SMILES capacity"),
+            target_count: u64::try_from(target_smiles.len())
+                .expect("target shard length exceeds persisted target SMILES capacity"),
+            offsets: offsets.into_boxed_slice(),
+            bytes: bytes.into_boxed_slice(),
+        })
+    }
+
+    /// Returns the persisted target-SMILES format version.
+    #[inline]
+    #[must_use]
+    pub const fn format_version(&self) -> u32 {
+        self.format_version
+    }
+
+    /// Returns the global id of local target `0` in this sidecar.
+    #[inline]
+    #[must_use]
+    pub const fn base_target_id(&self) -> u64 {
+        self.base_target_id
+    }
+
+    /// Returns the number of target SMILES records in this sidecar.
+    #[inline]
+    #[must_use]
+    pub const fn target_count(&self) -> u64 {
+        self.target_count
+    }
+
+    /// Returns the target SMILES for a local target id.
+    #[must_use]
+    pub fn target_smiles(&self, local_target_id: usize) -> Option<&str> {
+        let start = usize::try_from(*self.offsets.get(local_target_id)?).ok()?;
+        let end = usize::try_from(*self.offsets.get(local_target_id + 1)?).ok()?;
+        (start <= end && end <= self.bytes.len())
+            .then(|| str::from_utf8(&self.bytes[start..end]).ok())
+            .flatten()
+    }
+
+    /// Stores this sidecar with the requested compression mode.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store error if the file cannot be created, compressed, or
+    /// serialized.
+    ///
+    /// # Safety
+    ///
+    /// This wraps epserde serialization. The resulting raw bytes, whether
+    /// compressed or not, must be treated as trusted input when they are later
+    /// deserialized.
+    #[cfg(feature = "zstd")]
+    pub unsafe fn store_with_compression_unchecked(
+        &self,
+        path: impl AsRef<Path>,
+        compression: PersistedShardCompression,
+    ) -> Result<PersistedShardStoreStats, PersistedShardStoreError> {
+        unsafe { store_epserde_value_with_compression_unchecked(self, path, compression) }
+    }
+
+    /// Memory-maps and epsilon-deserializes a trusted target-SMILES sidecar.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be opened, mapped, or deserialized.
+    ///
+    /// # Safety
+    ///
+    /// The file must be trusted bytes produced for this type by a compatible
+    /// version of this crate and epserde. Memory-mapped files must not be
+    /// mutated while the returned value is alive.
+    pub unsafe fn mmap_unchecked(
+        path: impl AsRef<Path>,
+        flags: deser::Flags,
+    ) -> Result<deser::MemCase<Self>, Box<dyn std::error::Error + Send + Sync + 'static>> {
+        unsafe { <Self as deser::Deserialize>::mmap(path, flags) }
+            .map_err(|error| -> Box<dyn std::error::Error + Send + Sync + 'static> { error.into() })
+    }
+}
+
+impl PersistedExternalIdShard {
+    /// Builds an external-id sidecar from shard-aligned ids.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `base_target_id` or `external_ids.len()` exceed `u64`.
+    #[cfg(feature = "zstd")]
+    #[must_use]
+    pub fn from_external_ids(base_target_id: usize, external_ids: &[u64]) -> Self {
+        Self {
+            format_version: FORMAT_VERSION,
+            base_target_id: u64::try_from(base_target_id)
+                .expect("target shard base id exceeds persisted external-id capacity"),
+            target_count: u64::try_from(external_ids.len())
+                .expect("target shard length exceeds persisted external-id capacity"),
+            external_ids: external_ids.into(),
+        }
+    }
+
+    /// Returns the persisted external-id format version.
+    #[inline]
+    #[must_use]
+    pub const fn format_version(&self) -> u32 {
+        self.format_version
+    }
+
+    /// Returns the global id of local target `0` in this sidecar.
+    #[inline]
+    #[must_use]
+    pub const fn base_target_id(&self) -> u64 {
+        self.base_target_id
+    }
+
+    /// Returns the number of external ids in this sidecar.
+    #[inline]
+    #[must_use]
+    pub const fn target_count(&self) -> u64 {
+        self.target_count
+    }
+
+    /// Returns the external id for a local target id.
+    #[must_use]
+    pub fn external_id(&self, local_target_id: usize) -> Option<u64> {
+        self.external_ids.get(local_target_id).copied()
+    }
+
+    /// Stores this sidecar with the requested compression mode.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store error if the file cannot be created, compressed, or
+    /// serialized.
+    ///
+    /// # Safety
+    ///
+    /// This wraps epserde serialization. The resulting raw bytes, whether
+    /// compressed or not, must be treated as trusted input when they are later
+    /// deserialized.
+    #[cfg(feature = "zstd")]
+    pub unsafe fn store_with_compression_unchecked(
+        &self,
+        path: impl AsRef<Path>,
+        compression: PersistedShardCompression,
+    ) -> Result<PersistedShardStoreStats, PersistedShardStoreError> {
+        unsafe { store_epserde_value_with_compression_unchecked(self, path, compression) }
+    }
+
+    /// Memory-maps and epsilon-deserializes a trusted external-id sidecar.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be opened, mapped, or deserialized.
+    ///
+    /// # Safety
+    ///
+    /// The file must be trusted bytes produced for this type by a compatible
+    /// version of this crate and epserde. Memory-mapped files must not be
+    /// mutated while the returned value is alive.
+    pub unsafe fn mmap_unchecked(
+        path: impl AsRef<Path>,
+        flags: deser::Flags,
+    ) -> Result<deser::MemCase<Self>, Box<dyn std::error::Error + Send + Sync + 'static>> {
+        unsafe { <Self as deser::Deserialize>::mmap(path, flags) }
+            .map_err(|error| -> Box<dyn std::error::Error + Send + Sync + 'static> { error.into() })
     }
 }
 
@@ -818,6 +1276,32 @@ impl PersistedTargetCorpusIndexShardPaths {
         Ok(out)
     }
 
+    /// Collects exact SMARTS hits across all raw queryable shard paths.
+    ///
+    /// This screens each persisted index shard first, then runs exact SMARTS
+    /// matching against the aligned persisted target-SMILES sidecar.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any shard or target sidecar cannot be memory-mapped,
+    /// if sidecar metadata does not match the index shard, or if a candidate
+    /// target SMILES cannot be parsed.
+    ///
+    /// # Safety
+    ///
+    /// Raw shard and sidecar files must be trusted epserde payloads produced by
+    /// a compatible version of this crate and epserde.
+    pub unsafe fn matching_hits_unchecked(
+        &self,
+        query: &CompiledQuery,
+    ) -> Result<Vec<PersistedTargetHit>, Box<dyn std::error::Error + Send + Sync + 'static>> {
+        let mut out = Vec::new();
+        for path in &self.paths {
+            out.extend(unsafe { matching_hits_for_raw_shard(path, query)? });
+        }
+        Ok(out)
+    }
+
     /// Collects candidates across all raw shard paths in parallel.
     ///
     /// # Errors
@@ -846,6 +1330,39 @@ impl PersistedTargetCorpusIndexShardPaths {
         Ok(out)
     }
 
+    /// Collects exact SMARTS hits across all raw queryable shard paths in parallel.
+    ///
+    /// This screens each persisted index shard first, then runs exact SMARTS
+    /// matching against the aligned persisted target-SMILES sidecar.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any shard or target sidecar cannot be memory-mapped,
+    /// if sidecar metadata does not match the index shard, or if a candidate
+    /// target SMILES cannot be parsed.
+    ///
+    /// # Safety
+    ///
+    /// Raw shard and sidecar files must be trusted epserde payloads produced by
+    /// a compatible version of this crate and epserde.
+    #[cfg(feature = "rayon")]
+    pub unsafe fn par_matching_hits_unchecked(
+        &self,
+        query: &CompiledQuery,
+    ) -> Result<Vec<PersistedTargetHit>, Box<dyn std::error::Error + Send + Sync + 'static>> {
+        let chunks = self
+            .paths
+            .par_iter()
+            .map(|path| unsafe { matching_hits_for_raw_shard(path, query) })
+            .collect::<Result<Vec<_>, _>>()?;
+        let target_count = chunks.iter().map(Vec::len).sum();
+        let mut out = Vec::with_capacity(target_count);
+        for chunk in chunks {
+            out.extend(chunk);
+        }
+        Ok(out)
+    }
+
     /// Extracts `.eps.zst` shards to adjacent raw `.eps` files when needed.
     ///
     /// # Errors
@@ -856,6 +1373,35 @@ impl PersistedTargetCorpusIndexShardPaths {
         &self,
     ) -> Result<Vec<PersistedShardExtraction>, PersistedShardStoreError> {
         self.paths
+            .par_iter()
+            .map(extract_zstd_shard_if_missing)
+            .collect()
+    }
+
+    /// Extracts compressed queryable shard payloads to adjacent raw files when needed.
+    ///
+    /// This extracts each index shard, its required target-SMILES sidecar, and
+    /// its optional external-id sidecar when the compressed external-id sidecar
+    /// exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any required shard or sidecar cannot be decompressed
+    /// or written.
+    #[cfg(all(feature = "zstd", feature = "rayon"))]
+    pub fn extract_queryable_zstd_if_missing_in_parallel(
+        &self,
+    ) -> Result<Vec<PersistedShardExtraction>, PersistedShardStoreError> {
+        let mut paths = Vec::with_capacity(self.paths.len().saturating_mul(3));
+        for path in &self.paths {
+            paths.push(path.clone());
+            paths.push(persisted_target_smiles_path_for_index_shard_path(path));
+            let external_ids_path = persisted_external_ids_path_for_index_shard_path(path);
+            if external_ids_path.is_file() {
+                paths.push(external_ids_path);
+            }
+        }
+        paths
             .par_iter()
             .map(extract_zstd_shard_if_missing)
             .collect()
@@ -876,10 +1422,41 @@ fn shard_paths_with_suffix(dir: impl AsRef<Path>, suffix: &str) -> std::io::Resu
     paths.retain(|path| {
         path.file_name()
             .and_then(|name| name.to_str())
-            .is_some_and(|name| name.ends_with(suffix))
+            .is_some_and(|name| {
+                name.ends_with(suffix)
+                    && !name.contains(".target-smiles.")
+                    && !name.contains(".external-ids.")
+            })
     });
     paths.sort();
     Ok(paths)
+}
+
+/// Returns the target-SMILES sidecar path for an index shard path.
+#[must_use]
+pub fn persisted_target_smiles_path_for_index_shard_path(path: impl AsRef<Path>) -> PathBuf {
+    persisted_sidecar_path_for_index_shard_path(path, TARGET_SMILES_SHARD_SUFFIX)
+}
+
+/// Returns the external-id sidecar path for an index shard path.
+#[must_use]
+pub fn persisted_external_ids_path_for_index_shard_path(path: impl AsRef<Path>) -> PathBuf {
+    persisted_sidecar_path_for_index_shard_path(path, EXTERNAL_IDS_SHARD_SUFFIX)
+}
+
+fn persisted_sidecar_path_for_index_shard_path(path: impl AsRef<Path>, suffix: &str) -> PathBuf {
+    let path = path.as_ref();
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    if let Some(stem) = file_name.strip_suffix(".eps.zst") {
+        return path.with_file_name(format!("{stem}{suffix}.zst"));
+    }
+    if let Some(stem) = file_name.strip_suffix(".eps") {
+        return path.with_file_name(format!("{stem}{suffix}"));
+    }
+    path.with_file_name(format!("{file_name}{suffix}"))
 }
 
 unsafe fn candidate_count_for_raw_shard(
@@ -917,6 +1494,123 @@ unsafe fn candidate_ids_for_raw_shard_into(
         .candidate_ids_with_scratch_into(query, &mut scratch, &mut shard_ids);
     out.extend(shard_ids);
     Ok(())
+}
+
+unsafe fn matching_hits_for_raw_shard(
+    path: impl AsRef<Path>,
+    query: &CompiledQuery,
+) -> Result<Vec<PersistedTargetHit>, Box<dyn std::error::Error + Send + Sync + 'static>> {
+    let path = path.as_ref();
+    let mapped_index =
+        unsafe { PersistedTargetCorpusIndexShard::mmap_unchecked(path, deser::Flags::empty())? };
+    let index = mapped_index.uncase();
+    let base_target_id = index
+        .base_target_id_usize()
+        .ok_or_else(|| invalid_data_error("persisted shard base target id exceeds usize"))?;
+    let target_count = index
+        .target_count_usize()
+        .ok_or_else(|| invalid_data_error("persisted shard target count exceeds usize"))?;
+    let mut scratch = TargetCorpusScratch::new();
+    let mut candidate_ids = Vec::new();
+    index.candidate_ids_with_scratch_into(
+        &QueryScreen::new(query.query()),
+        &mut scratch,
+        &mut candidate_ids,
+    );
+
+    let smiles_path = persisted_target_smiles_path_for_index_shard_path(path);
+    let mapped_smiles =
+        unsafe { PersistedTargetSmilesShard::mmap_unchecked(&smiles_path, deser::Flags::empty())? };
+    let smiles = mapped_smiles.uncase();
+    validate_query_sidecar_header(
+        "target SMILES",
+        path,
+        smiles.base_target_id(),
+        smiles.target_count(),
+        index.base_target_id(),
+        index.target_count(),
+    )?;
+
+    let external_ids_path = persisted_external_ids_path_for_index_shard_path(path);
+    let mapped_external_ids = if external_ids_path.is_file() {
+        Some(unsafe {
+            PersistedExternalIdShard::mmap_unchecked(&external_ids_path, deser::Flags::empty())?
+        })
+    } else {
+        None
+    };
+    if let Some(external_ids) = mapped_external_ids.as_ref().map(deser::MemCase::uncase) {
+        validate_query_sidecar_header(
+            "external id",
+            path,
+            external_ids.base_target_id(),
+            external_ids.target_count(),
+            index.base_target_id(),
+            index.target_count(),
+        )?;
+    }
+
+    let external_ids = mapped_external_ids.as_ref().map(deser::MemCase::uncase);
+    let mut match_scratch = MatchScratch::new();
+    let mut hits = Vec::new();
+    for target_id in candidate_ids {
+        let local_target_id = target_id.checked_sub(base_target_id).ok_or_else(|| {
+            invalid_data_error(format!(
+                "candidate target id {target_id} is below shard base target id {base_target_id}"
+            ))
+        })?;
+        if local_target_id >= target_count {
+            return Err(invalid_data_error(format!(
+                "candidate target id {target_id} is outside shard local range 0..{target_count}"
+            )));
+        }
+        let target_smiles = smiles.target_smiles(local_target_id).ok_or_else(|| {
+            invalid_data_error(format!(
+                "missing target SMILES for target id {target_id} in {}",
+                smiles_path.display()
+            ))
+        })?;
+        let target = PreparedTarget::new(Smiles::from_str(target_smiles).map_err(|error| {
+            invalid_data_error(format!(
+                "persisted target SMILES for target id {target_id} failed to parse: {error}"
+            ))
+        })?);
+        if query.matches_with_scratch(&target, &mut match_scratch) {
+            hits.push(PersistedTargetHit {
+                target_id,
+                external_id: external_ids.and_then(|ids| ids.external_id(local_target_id)),
+            });
+        }
+    }
+    Ok(hits)
+}
+
+fn validate_query_sidecar_header(
+    sidecar_name: &str,
+    index_path: &Path,
+    sidecar_base_target_id: u64,
+    sidecar_target_count: u64,
+    index_base_target_id: u64,
+    index_target_count: u64,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
+    if sidecar_base_target_id == index_base_target_id && sidecar_target_count == index_target_count
+    {
+        return Ok(());
+    }
+    Err(invalid_data_error(format!(
+        "{sidecar_name} sidecar metadata does not match index shard {}: sidecar base={}, len={}; index base={}, len={}",
+        index_path.display(),
+        sidecar_base_target_id,
+        sidecar_target_count,
+        index_base_target_id,
+        index_target_count
+    )))
+}
+
+fn invalid_data_error(
+    message: impl Into<String>,
+) -> Box<dyn std::error::Error + Send + Sync + 'static> {
+    Box::new(IoError::new(ErrorKind::InvalidData, message.into()))
 }
 
 #[cfg(feature = "zstd")]
@@ -4401,6 +5095,51 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
+    #[cfg(feature = "zstd")]
+    #[test]
+    fn persisted_queryable_shard_returns_exact_hits_and_external_ids() {
+        let target_smiles = ["CCO", "CC=O", "COC"]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>();
+        let targets = target_smiles
+            .iter()
+            .map(|smiles| PreparedTarget::new(Smiles::from_str(smiles).unwrap()))
+            .collect::<Vec<_>>();
+        let external_ids = [101_u64, 102, 103];
+        let path = persisted_shard_temp_path();
+
+        let stats = unsafe {
+            PersistedTargetCorpusIndexShardBuilder::new(&targets)
+                .base_target_id(17)
+                .target_smiles(&target_smiles)
+                .external_ids(&external_ids)
+                .store_queryable_unchecked(&path)
+                .unwrap()
+        };
+        assert_eq!(stats.index.target_count, targets.len());
+        assert!(stats.target_smiles_store_stats.disk_bytes > 0);
+        assert!(stats.external_ids_store_stats.is_some());
+
+        let query = CompiledQuery::new(crate::QueryMol::from_str("[#6]=[#8]").unwrap()).unwrap();
+        let hits = unsafe {
+            PersistedTargetCorpusIndexShardPaths::from_paths([path.clone()])
+                .matching_hits_unchecked(&query)
+                .unwrap()
+        };
+        assert_eq!(
+            hits,
+            [PersistedTargetHit {
+                target_id: 18,
+                external_id: Some(102)
+            }]
+        );
+
+        std::fs::remove_file(persisted_target_smiles_path_for_index_shard_path(&path)).unwrap();
+        std::fs::remove_file(persisted_external_ids_path_for_index_shard_path(&path)).unwrap();
+        std::fs::remove_file(path).unwrap();
+    }
+
     #[cfg(all(feature = "zstd", feature = "rayon"))]
     #[test]
     fn persisted_shard_paths_extract_and_query_in_parallel() {
@@ -4453,6 +5192,82 @@ mod tests {
 
         std::fs::remove_file(raw_path).unwrap();
         std::fs::remove_file(compressed_path).unwrap();
+    }
+
+    #[cfg(all(feature = "zstd", feature = "rayon"))]
+    #[test]
+    fn persisted_queryable_shard_paths_extract_and_match_in_parallel() {
+        let target_smiles = ["CCO", "CC=O", "COC"]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>();
+        let targets = target_smiles
+            .iter()
+            .map(|smiles| PreparedTarget::new(Smiles::from_str(smiles).unwrap()))
+            .collect::<Vec<_>>();
+        let external_ids = [101_u64, 102, 103];
+        let compressed_path = persisted_shard_temp_path().with_extension("eps.zst");
+        let raw_path = raw_path_for_zstd_shard(&compressed_path);
+        let compressed_smiles_path =
+            persisted_target_smiles_path_for_index_shard_path(&compressed_path);
+        let raw_smiles_path = persisted_target_smiles_path_for_index_shard_path(&raw_path);
+        let compressed_external_ids_path =
+            persisted_external_ids_path_for_index_shard_path(&compressed_path);
+        let raw_external_ids_path = persisted_external_ids_path_for_index_shard_path(&raw_path);
+
+        unsafe {
+            PersistedTargetCorpusIndexShardBuilder::new(&targets)
+                .base_target_id(17)
+                .target_smiles(&target_smiles)
+                .external_ids(&external_ids)
+                .compression(PersistedShardCompression::Zstd {
+                    level: 1,
+                    worker_threads: 0,
+                })
+                .store_queryable_unchecked(&compressed_path)
+                .unwrap()
+        };
+        assert!(compressed_smiles_path.is_file());
+        assert!(compressed_external_ids_path.is_file());
+        assert!(!raw_path.exists());
+        assert!(!raw_smiles_path.exists());
+        assert!(!raw_external_ids_path.exists());
+
+        let compressed_shards =
+            PersistedTargetCorpusIndexShardPaths::from_paths([compressed_path.clone()]);
+        let extracted = compressed_shards
+            .extract_queryable_zstd_if_missing_in_parallel()
+            .unwrap();
+        assert_eq!(extracted.len(), 3);
+        assert!(raw_path.is_file());
+        assert!(raw_smiles_path.is_file());
+        assert!(raw_external_ids_path.is_file());
+
+        let query = CompiledQuery::new(crate::QueryMol::from_str("[#6]=[#8]").unwrap()).unwrap();
+        let hits = unsafe {
+            compressed_shards
+                .extracted_raw_paths()
+                .par_matching_hits_unchecked(&query)
+                .unwrap()
+        };
+        assert_eq!(
+            hits,
+            [PersistedTargetHit {
+                target_id: 18,
+                external_id: Some(102)
+            }]
+        );
+
+        for path in [
+            raw_path,
+            raw_smiles_path,
+            raw_external_ids_path,
+            compressed_path,
+            compressed_smiles_path,
+            compressed_external_ids_path,
+        ] {
+            std::fs::remove_file(path).unwrap();
+        }
     }
 
     fn persisted_candidate_targets() -> Vec<PreparedTarget> {
