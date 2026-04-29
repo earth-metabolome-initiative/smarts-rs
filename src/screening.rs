@@ -56,7 +56,10 @@
 
 use alloc::{boxed::Box, collections::BTreeMap, vec, vec::Vec};
 
-use crate::{AtomExpr, ComponentGroupId, QueryMol};
+use crate::{
+    matching::{CompiledQuery, MatchScratch},
+    AtomExpr, ComponentGroupId, QueryMol,
+};
 use elements_rs::Element;
 #[cfg(feature = "rayon")]
 use rayon::prelude::*;
@@ -1348,6 +1351,89 @@ impl ShardedTargetCorpusIndex {
         out
     }
 
+    /// Collects exact matching global target ids after indexed screening.
+    ///
+    /// `targets` must be indexed by the same global target ids used to build
+    /// the shards.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `targets` does not cover every global target id in the
+    /// sharded index.
+    #[must_use]
+    pub fn matching_target_ids(
+        &self,
+        query: &CompiledQuery,
+        targets: &[PreparedTarget],
+    ) -> Vec<usize> {
+        let mut out = Vec::new();
+        self.matching_target_ids_into(query, targets, &mut out);
+        out
+    }
+
+    /// Collects exact matching global target ids into `out`.
+    ///
+    /// `targets` must be indexed by the same global target ids used to build
+    /// the shards.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `targets` does not cover every global target id in the
+    /// sharded index.
+    pub fn matching_target_ids_into(
+        &self,
+        query: &CompiledQuery,
+        targets: &[PreparedTarget],
+        out: &mut Vec<usize>,
+    ) {
+        let mut corpus_scratch = TargetCorpusScratch::new();
+        let mut match_scratch = MatchScratch::new();
+        self.matching_target_ids_with_scratch_into(
+            query,
+            targets,
+            &mut corpus_scratch,
+            &mut match_scratch,
+            out,
+        );
+    }
+
+    /// Collects exact matching global target ids using reusable scratch buffers.
+    ///
+    /// `targets` must be indexed by the same global target ids used to build
+    /// the shards.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `targets` does not cover every global target id in the
+    /// sharded index.
+    pub fn matching_target_ids_with_scratch_into<'idx>(
+        &'idx self,
+        query: &CompiledQuery,
+        targets: &[PreparedTarget],
+        corpus_scratch: &mut TargetCorpusScratch<'idx>,
+        match_scratch: &mut MatchScratch,
+        out: &mut Vec<usize>,
+    ) {
+        let required_targets = self
+            .shards
+            .last()
+            .and_then(TargetCorpusIndexShard::end_target_id)
+            .unwrap_or(0);
+        assert!(
+            targets.len() >= required_targets,
+            "target slice length {} is smaller than required global target range {required_targets}",
+            targets.len()
+        );
+
+        out.clear();
+        let screen = QueryScreen::new(query.query());
+        self.for_each_candidate_id_with_scratch(&screen, corpus_scratch, |target_id| {
+            if query.matches_with_scratch(&targets[target_id], match_scratch) {
+                out.push(target_id);
+            }
+        });
+    }
+
     /// Builds reusable candidate sets for a batch of queries.
     #[must_use]
     pub fn candidate_sets(&self, queries: &[QueryScreen]) -> Vec<TargetCandidateSet> {
@@ -1938,6 +2024,72 @@ impl TargetCorpusIndex {
         let mut out = Vec::new();
         self.candidate_ids_into(query, &mut out);
         out
+    }
+
+    /// Collects exact matching target ids after indexed screening.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `targets` length differs from the indexed target count.
+    #[must_use]
+    pub fn matching_target_ids(
+        &self,
+        query: &CompiledQuery,
+        targets: &[PreparedTarget],
+    ) -> Vec<usize> {
+        let mut out = Vec::new();
+        self.matching_target_ids_into(query, targets, &mut out);
+        out
+    }
+
+    /// Collects exact matching target ids into `out`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `targets` length differs from the indexed target count.
+    pub fn matching_target_ids_into(
+        &self,
+        query: &CompiledQuery,
+        targets: &[PreparedTarget],
+        out: &mut Vec<usize>,
+    ) {
+        let mut corpus_scratch = TargetCorpusScratch::new();
+        let mut match_scratch = MatchScratch::new();
+        self.matching_target_ids_with_scratch_into(
+            query,
+            targets,
+            &mut corpus_scratch,
+            &mut match_scratch,
+            out,
+        );
+    }
+
+    /// Collects exact matching target ids using reusable scratch buffers.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `targets` length differs from the indexed target count.
+    pub fn matching_target_ids_with_scratch_into<'idx>(
+        &'idx self,
+        query: &CompiledQuery,
+        targets: &[PreparedTarget],
+        corpus_scratch: &mut TargetCorpusScratch<'idx>,
+        match_scratch: &mut MatchScratch,
+        out: &mut Vec<usize>,
+    ) {
+        assert_eq!(
+            targets.len(),
+            self.target_count,
+            "target slice length must match indexed target count"
+        );
+
+        out.clear();
+        let screen = QueryScreen::new(query.query());
+        self.for_each_candidate_id_with_scratch(&screen, corpus_scratch, |target_id| {
+            if query.matches_with_scratch(&targets[target_id], match_scratch) {
+                out.push(target_id);
+            }
+        });
     }
 
     /// Builds reusable candidate sets for a batch of queries.

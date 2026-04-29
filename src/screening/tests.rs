@@ -338,10 +338,7 @@ fn indexed_execution_matches_naive_exact_matrix() {
         .into_iter()
         .map(|smarts| {
             let query = QueryMol::from_str(smarts).unwrap();
-            (
-                CompiledQuery::new(query.clone()).unwrap(),
-                QueryScreen::new(&query),
-            )
+            CompiledQuery::new(query).unwrap()
         })
         .collect::<alloc::vec::Vec<_>>();
     let targets = target_cases
@@ -352,7 +349,7 @@ fn indexed_execution_matches_naive_exact_matrix() {
 
     let mut match_scratch = MatchScratch::new();
     let mut naive = alloc::vec::Vec::new();
-    for (query_id, (query, _)) in queries.iter().enumerate() {
+    for (query_id, query) in queries.iter().enumerate() {
         for (target_id, target) in targets.iter().enumerate() {
             if query.matches_with_scratch(target, &mut match_scratch) {
                 naive.push((query_id, target_id));
@@ -363,16 +360,58 @@ fn indexed_execution_matches_naive_exact_matrix() {
     let mut index_scratch = TargetCorpusScratch::new();
     let mut match_scratch = MatchScratch::new();
     let mut indexed = alloc::vec::Vec::new();
-    for (query_id, (query, screen)) in queries.iter().enumerate() {
-        let candidate_set = index.candidate_set_with_scratch(screen, &mut index_scratch);
-        for &target_id in candidate_set.target_ids() {
-            if query.matches_with_scratch(&targets[target_id], &mut match_scratch) {
-                indexed.push((query_id, target_id));
-            }
-        }
+    for (query_id, query) in queries.iter().enumerate() {
+        let mut matches = alloc::vec::Vec::new();
+        index.matching_target_ids_with_scratch_into(
+            query,
+            &targets,
+            &mut index_scratch,
+            &mut match_scratch,
+            &mut matches,
+        );
+        indexed.extend(matches.into_iter().map(|target_id| (query_id, target_id)));
     }
 
     assert_eq!(indexed, naive);
+}
+
+#[test]
+fn sharded_indexed_execution_matches_naive_exact_matrix() {
+    let target_cases = [
+        "CC",
+        "C.C",
+        "CCO",
+        "CC(C)(C)C",
+        "C=C",
+        "C#N",
+        "c1ccccc1",
+        "C1CCCCC1",
+        "O=C(O)c1ccccc1",
+        "CC(=O)N",
+        "ClCCl",
+        "O",
+    ];
+    let targets = target_cases
+        .into_iter()
+        .map(|smiles| PreparedTarget::new(Smiles::from_str(smiles).unwrap()))
+        .collect::<alloc::vec::Vec<_>>();
+    let index = ShardedTargetCorpusIndex::from_prepared_target_chunks(targets.chunks(4)).unwrap();
+
+    for smarts in ["C", "CCC", "(C).(O)", "c1ccccc1", "C#N", "[$([#6]=[#8])]"] {
+        let query = CompiledQuery::new(QueryMol::from_str(smarts).unwrap()).unwrap();
+        let mut match_scratch = MatchScratch::new();
+        let expected = targets
+            .iter()
+            .enumerate()
+            .filter_map(|(target_id, target)| {
+                query
+                    .matches_with_scratch(target, &mut match_scratch)
+                    .then_some(target_id)
+            })
+            .collect::<alloc::vec::Vec<_>>();
+
+        assert_eq!(index.matching_target_ids(&query, &targets), expected);
+    }
 }
 
 #[test]

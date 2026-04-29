@@ -6,10 +6,10 @@
 //! structs.
 
 use alloc::{boxed::Box, vec, vec::Vec};
-#[cfg(all(feature = "zstd", feature = "indicatif"))]
+#[cfg(all(feature = "zstd", feature = "terminal-progress"))]
 use alloc::{format, string::String};
 use core::{fmt, marker::PhantomData, ops::Range};
-#[cfg(all(feature = "zstd", feature = "indicatif"))]
+#[cfg(all(feature = "zstd", feature = "terminal-progress"))]
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 #[cfg(feature = "zstd")]
@@ -20,7 +20,7 @@ use std::{
 };
 
 use epserde::{deser, prelude::Epserde, ser};
-#[cfg(all(feature = "zstd", feature = "indicatif"))]
+#[cfg(all(feature = "zstd", feature = "terminal-progress"))]
 use indicatif::{ProgressBar, ProgressStyle};
 #[cfg(feature = "rayon")]
 use rayon::prelude::*;
@@ -226,23 +226,23 @@ impl PersistedTargetCorpusIndexShardBuildEvent {
     }
 }
 
-#[cfg(all(feature = "zstd", feature = "indicatif"))]
+#[cfg(all(feature = "zstd", feature = "terminal-progress"))]
 const SHARD_BUILD_PROGRESS_TEMPLATE: &str =
     "{spinner:.green} shard {prefix:.bold} [{bar:32.cyan/blue}] {pos}/{len} {msg} {elapsed_precise}";
 
-/// `indicatif` progress renderer for persisted target-index shard construction.
-#[cfg(all(feature = "zstd", feature = "indicatif"))]
+/// Terminal progress renderer for persisted target-index shard construction.
+#[cfg(all(feature = "zstd", feature = "terminal-progress"))]
 #[derive(Debug, Clone)]
-pub struct PersistedTargetCorpusIndexShardIndicatifProgress {
+pub struct PersistedTargetCorpusIndexShardTerminalProgress {
     progress_bar: Option<ProgressBar>,
 }
 
-#[cfg(all(feature = "zstd", feature = "indicatif"))]
-impl PersistedTargetCorpusIndexShardIndicatifProgress {
+#[cfg(all(feature = "zstd", feature = "terminal-progress"))]
+impl PersistedTargetCorpusIndexShardTerminalProgress {
     /// Creates an enabled progress bar for one shard.
     ///
     /// The bar is hidden automatically when stderr is not attached to a
-    /// terminal, matching `indicatif`'s usual non-interactive behavior.
+    /// terminal, matching the backend's usual non-interactive behavior.
     #[must_use]
     pub fn new(shard_label: impl Into<String>, target_count: usize) -> Self {
         Self::with_enabled(true, shard_label, target_count)
@@ -660,7 +660,7 @@ impl<'a> PersistedTargetCorpusIndexShardBuilder<'a> {
         })
     }
 
-    /// Builds and stores the shard at `path` with an `indicatif` progress bar.
+    /// Builds and stores the shard at `path` with a terminal progress bar.
     ///
     /// The bar is hidden automatically when stderr is not attached to a
     /// terminal. Use `shard_label` for a compact label such as a zero-padded
@@ -679,14 +679,14 @@ impl<'a> PersistedTargetCorpusIndexShardBuilder<'a> {
     ///
     /// This writes epserde bytes. The resulting file must be treated as trusted
     /// input when it is later deserialized.
-    #[cfg(feature = "indicatif")]
-    pub unsafe fn store_unchecked_with_indicatif_progress(
+    #[cfg(feature = "terminal-progress")]
+    pub unsafe fn store_unchecked_with_terminal_progress(
         self,
         path: impl AsRef<Path>,
         shard_label: impl Into<String>,
     ) -> Result<PersistedTargetCorpusIndexShardBuildStats, PersistedShardStoreError> {
         let progress =
-            PersistedTargetCorpusIndexShardIndicatifProgress::new(shard_label, self.targets.len());
+            PersistedTargetCorpusIndexShardTerminalProgress::new(shard_label, self.targets.len());
         let stats =
             unsafe { self.store_unchecked_with_progress(path, |event| progress.on_event(event))? };
         progress.finish(stats.target_count);
@@ -4383,16 +4383,16 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
-    #[cfg(all(feature = "zstd", feature = "indicatif"))]
+    #[cfg(all(feature = "zstd", feature = "terminal-progress"))]
     #[test]
-    fn persisted_target_corpus_index_shard_builder_can_render_indicatif_progress() {
+    fn persisted_target_corpus_index_shard_builder_can_render_terminal_progress() {
         let targets = persisted_candidate_targets();
         let path = persisted_shard_temp_path();
 
         let stats = unsafe {
             PersistedTargetCorpusIndexShardBuilder::new(&targets)
                 .base_target_id(17)
-                .store_unchecked_with_indicatif_progress(&path, "test-shard")
+                .store_unchecked_with_terminal_progress(&path, "test-shard")
                 .unwrap()
         };
 
