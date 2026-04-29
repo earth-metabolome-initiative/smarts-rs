@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::{
     fs::File,
     io::{BufWriter, Write},
+    time::{Duration, Instant},
 };
 
 use epserde::{deser, prelude::Epserde, ser};
@@ -37,6 +38,13 @@ use super::{
     TargetCorpusScratch,
 };
 use crate::prepared::PreparedTarget;
+
+#[cfg(feature = "zstd")]
+use PersistedTargetCorpusIndexShardBuildEvent::{Finished, Started};
+#[cfg(feature = "zstd")]
+use PersistedTargetCorpusIndexShardBuildStep::{
+    BuildPersistedLayout, BuildRuntimeIndex, StorePayload,
+};
 
 const FORMAT_VERSION: u32 = 1;
 const ATOM_FEATURE_WIDTH: u16 = 5;
@@ -129,6 +137,87 @@ pub struct PersistedTargetCorpusIndexShardBuildStats {
     pub index_stats: TargetCorpusIndexStats,
     /// Serialized and on-disk byte counts for the shard payload.
     pub store_stats: PersistedShardStoreStats,
+}
+
+/// Major step in persisted target-index shard construction.
+#[cfg(feature = "zstd")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PersistedTargetCorpusIndexShardBuildStep {
+    /// Build the runtime [`TargetCorpusIndex`] from prepared targets.
+    BuildRuntimeIndex,
+    /// Convert the runtime index into its persisted epserde layout.
+    BuildPersistedLayout,
+    /// Serialize and optionally compress the persisted shard payload.
+    StorePayload,
+}
+
+#[cfg(feature = "zstd")]
+impl PersistedTargetCorpusIndexShardBuildStep {
+    /// Returns a short human-readable label for the step.
+    #[inline]
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::BuildRuntimeIndex => "build runtime target index",
+            Self::BuildPersistedLayout => "build persisted shard layout",
+            Self::StorePayload => "store shard payload",
+        }
+    }
+}
+
+/// Progress event emitted while building one persisted target-index shard.
+#[cfg(feature = "zstd")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PersistedTargetCorpusIndexShardBuildEvent {
+    /// A shard-build step started.
+    Started {
+        /// Step that started.
+        step: PersistedTargetCorpusIndexShardBuildStep,
+        /// Number of targets in the shard being built.
+        target_count: usize,
+    },
+    /// A shard-build step finished.
+    Finished {
+        /// Step that finished.
+        step: PersistedTargetCorpusIndexShardBuildStep,
+        /// Number of targets in the shard being built.
+        target_count: usize,
+        /// Wall-clock time spent in this step.
+        elapsed: Duration,
+    },
+}
+
+#[cfg(feature = "zstd")]
+impl PersistedTargetCorpusIndexShardBuildEvent {
+    /// Returns the step associated with this event.
+    #[inline]
+    #[must_use]
+    pub const fn step(self) -> PersistedTargetCorpusIndexShardBuildStep {
+        match self {
+            Self::Started { step, .. } | Self::Finished { step, .. } => step,
+        }
+    }
+
+    /// Returns the number of targets in the shard being built.
+    #[inline]
+    #[must_use]
+    pub const fn target_count(self) -> usize {
+        match self {
+            Self::Started { target_count, .. } | Self::Finished { target_count, .. } => {
+                target_count
+            }
+        }
+    }
+
+    /// Returns elapsed time for finished steps.
+    #[inline]
+    #[must_use]
+    pub const fn elapsed(self) -> Option<Duration> {
+        match self {
+            Self::Started { .. } => None,
+            Self::Finished { elapsed, .. } => Some(elapsed),
+        }
+    }
 }
 
 /// Result of extracting one zstd-compressed shard to raw epserde bytes.
@@ -412,13 +501,76 @@ impl<'a> PersistedTargetCorpusIndexShardBuilder<'a> {
         self,
         path: impl AsRef<Path>,
     ) -> Result<PersistedTargetCorpusIndexShardBuildStats, PersistedShardStoreError> {
+        unsafe { self.store_unchecked_with_progress(path, |_| {}) }
+    }
+
+    /// Builds and stores the shard at `path`, emitting coarse progress events.
+    ///
+    /// The callback is intentionally generic: terminal tools can render
+    /// progress bars, while library users can collect timings without pulling
+    /// in a UI dependency.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the shard cannot be serialized or written.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the shard base id, target count, or an internal posting/mask
+    /// offset exceeds the persisted format's `u64`/`u32` capacity.
+    ///
+    /// # Safety
+    ///
+    /// This writes epserde bytes. The resulting file must be treated as trusted
+    /// input when it is later deserialized.
+    pub unsafe fn store_unchecked_with_progress(
+        self,
+        path: impl AsRef<Path>,
+        mut progress: impl FnMut(PersistedTargetCorpusIndexShardBuildEvent),
+    ) -> Result<PersistedTargetCorpusIndexShardBuildStats, PersistedShardStoreError> {
+        let target_count = self.targets.len();
+
+        progress(Started {
+            step: BuildRuntimeIndex,
+            target_count,
+        });
+        let started = Instant::now();
         let index = TargetCorpusIndex::new(self.targets);
+        progress(Finished {
+            step: BuildRuntimeIndex,
+            target_count,
+            elapsed: started.elapsed(),
+        });
+
         let index_stats = index.stats();
         let target_count = index.len();
+
+        progress(Started {
+            step: BuildPersistedLayout,
+            target_count,
+        });
+        let started = Instant::now();
         let shard = TargetCorpusIndexShard::new(self.base_target_id, index);
         let persisted = PersistedTargetCorpusIndexShard::from_index_shard(&shard);
+        progress(Finished {
+            step: BuildPersistedLayout,
+            target_count,
+            elapsed: started.elapsed(),
+        });
+
+        progress(Started {
+            step: StorePayload,
+            target_count,
+        });
+        let started = Instant::now();
         let store_stats =
             unsafe { persisted.store_with_compression_unchecked(path, self.compression)? };
+        progress(Finished {
+            step: StorePayload,
+            target_count,
+            elapsed: started.elapsed(),
+        });
+
         Ok(PersistedTargetCorpusIndexShardBuildStats {
             target_count,
             index_stats,
@@ -4080,6 +4232,38 @@ mod tests {
 
         assert_eq!(loaded, persisted);
         assert_persisted_candidates_match_runtime_index(&loaded, &shard);
+
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(feature = "zstd")]
+    #[test]
+    fn persisted_target_corpus_index_shard_builder_reports_progress() {
+        let targets = persisted_candidate_targets();
+        let path = persisted_shard_temp_path();
+        let mut events = Vec::new();
+
+        let stats = unsafe {
+            PersistedTargetCorpusIndexShardBuilder::new(&targets)
+                .base_target_id(17)
+                .store_unchecked_with_progress(&path, |event| {
+                    events.push((event.step(), event.elapsed().is_some()));
+                })
+                .unwrap()
+        };
+
+        assert_eq!(stats.target_count, targets.len());
+        assert_eq!(
+            events,
+            [
+                (BuildRuntimeIndex, false),
+                (BuildRuntimeIndex, true),
+                (BuildPersistedLayout, false),
+                (BuildPersistedLayout, true),
+                (StorePayload, false),
+                (StorePayload, true),
+            ]
+        );
 
         std::fs::remove_file(path).unwrap();
     }
