@@ -54,7 +54,12 @@
 //! assert_eq!(indexed_hits, vec![2]);
 //! ```
 
-use alloc::{boxed::Box, collections::BTreeMap, vec, vec::Vec};
+use alloc::{
+    boxed::Box,
+    collections::{BTreeMap, BTreeSet},
+    vec,
+    vec::Vec,
+};
 
 use crate::{
     matching::{CompiledQuery, MatchScratch},
@@ -172,9 +177,24 @@ impl QueryScreen {
     /// Builds a conservative screen summary from one parsed SMARTS query.
     #[must_use]
     pub fn new(query: &QueryMol) -> Self {
+        let source_query = query;
+        let canonical_query = query.canonicalize();
+        let query = &canonical_query;
         let atom_requirements = collect_query_atom_requirements(query);
-        let (incident_bonds, required_bond_counts) = collect_query_bond_requirements(query);
-        let feature_counts = collect_query_feature_counts(query, &incident_bonds);
+        let topology_requirements = collect_query_topology_requirements(query);
+        let bond_requirements = collect_query_bond_requirements(query);
+        let mut ring_atom_ids = atom_requirements.ring_atom_ids;
+        ring_atom_ids.extend(topology_requirements.ring_atom_ids);
+        let mut ring_bond_ids = bond_requirements.ring_bond_ids;
+        ring_bond_ids.extend(topology_requirements.ring_bond_ids);
+        let mut required_bond_counts = bond_requirements.counts;
+        required_bond_counts.ring = ring_bond_ids.len();
+        let feature_counts = collect_query_feature_counts(
+            query,
+            &bond_requirements.incident_bonds,
+            &ring_atom_ids,
+            &ring_bond_ids,
+        );
         let required_edge_feature_counts = feature_counts.edge.into_iter().collect::<Vec<_>>();
         let required_path3_feature_counts = feature_counts.path3.into_iter().collect::<Vec<_>>();
         let required_path4_feature_counts = feature_counts.path4.into_iter().collect::<Vec<_>>();
@@ -187,13 +207,13 @@ impl QueryScreen {
         );
 
         Self {
-            min_atom_count: query.atom_count(),
-            min_target_component_count: grouped_component_count(query.component_groups()),
+            min_atom_count: source_query.atom_count(),
+            min_target_component_count: grouped_component_count(source_query.component_groups()),
             required_element_counts: atom_requirements.element_counts,
             required_degree_counts: atom_requirements.degree_counts,
             required_total_hydrogen_counts: atom_requirements.total_hydrogen_counts,
             min_aromatic_atom_count: atom_requirements.min_aromatic_count,
-            min_ring_atom_count: atom_requirements.min_ring_count,
+            min_ring_atom_count: ring_atom_ids.len(),
             required_bond_counts,
             required_edge_features: required_edge_feature_counts
                 .iter()
@@ -4499,7 +4519,20 @@ struct QueryAtomRequirements {
     degree_counts: BTreeMap<u16, usize>,
     total_hydrogen_counts: BTreeMap<u16, usize>,
     min_aromatic_count: usize,
-    min_ring_count: usize,
+    ring_atom_ids: BTreeSet<usize>,
+}
+
+#[derive(Debug, Default)]
+struct QueryBondRequirements {
+    incident_bonds: Vec<Vec<usize>>,
+    counts: BondCountScreen,
+    ring_bond_ids: BTreeSet<usize>,
+}
+
+#[derive(Debug, Default)]
+struct QueryTopologyRequirements {
+    ring_atom_ids: BTreeSet<usize>,
+    ring_bond_ids: BTreeSet<usize>,
 }
 
 #[derive(Debug, Default)]
@@ -4521,7 +4554,7 @@ fn collect_query_atom_requirements(query: &QueryMol) -> QueryAtomRequirements {
             requirements.min_aromatic_count += 1;
         }
         if atom_requirement.requires_ring {
-            requirements.min_ring_count += 1;
+            requirements.ring_atom_ids.insert(atom.id);
         }
 
         let count_requirement = forced_atom_count_requirement(&atom.expr);
@@ -4538,9 +4571,22 @@ fn collect_query_atom_requirements(query: &QueryMol) -> QueryAtomRequirements {
     requirements
 }
 
-fn collect_query_bond_requirements(query: &QueryMol) -> (Vec<Vec<usize>>, BondCountScreen) {
+fn collect_query_topology_requirements(query: &QueryMol) -> QueryTopologyRequirements {
+    let mut requirements = QueryTopologyRequirements::default();
+    for bond in query.bonds() {
+        if query.is_cycle_edge(bond.id) {
+            requirements.ring_bond_ids.insert(bond.id);
+            requirements.ring_atom_ids.insert(bond.src);
+            requirements.ring_atom_ids.insert(bond.dst);
+        }
+    }
+    requirements
+}
+
+fn collect_query_bond_requirements(query: &QueryMol) -> QueryBondRequirements {
     let mut incident_bonds = vec![Vec::new(); query.atom_count()];
     let mut required_bond_counts = BondCountScreen::default();
+    let mut ring_bond_ids = BTreeSet::new();
 
     for bond in query.bonds() {
         let requirement = forced_bond_requirement(&bond.expr);
@@ -4548,11 +4594,16 @@ fn collect_query_bond_requirements(query: &QueryMol) -> (Vec<Vec<usize>>, BondCo
         incident_bonds[bond.dst].push(bond.id);
         count_required_bond_kind(&mut required_bond_counts, requirement.kind);
         if requirement.requires_ring {
-            required_bond_counts.ring += 1;
+            ring_bond_ids.insert(bond.id);
         }
     }
 
-    (incident_bonds, required_bond_counts)
+    required_bond_counts.ring = ring_bond_ids.len();
+    QueryBondRequirements {
+        incident_bonds,
+        counts: required_bond_counts,
+        ring_bond_ids,
+    }
 }
 
 const fn count_required_bond_kind(counts: &mut BondCountScreen, kind: Option<RequiredBondKind>) {
@@ -4568,22 +4619,37 @@ const fn count_required_bond_kind(counts: &mut BondCountScreen, kind: Option<Req
 fn collect_query_feature_counts(
     query: &QueryMol,
     incident_bonds: &[Vec<usize>],
+    ring_atom_ids: &BTreeSet<usize>,
+    ring_bond_ids: &BTreeSet<usize>,
 ) -> QueryFeatureCounts {
     let mut counts = QueryFeatureCounts::default();
-    count_query_edge_features(query, &mut counts.edge);
+    count_query_edge_features(query, ring_atom_ids, ring_bond_ids, &mut counts.edge);
     count_query_path3_and_star3_features(
         query,
         incident_bonds,
+        ring_atom_ids,
+        ring_bond_ids,
         &mut counts.path3,
         &mut counts.star3,
     );
-    count_query_path4_features(query, incident_bonds, &mut counts.path4);
+    count_query_path4_features(
+        query,
+        incident_bonds,
+        ring_atom_ids,
+        ring_bond_ids,
+        &mut counts.path4,
+    );
     counts
 }
 
-fn count_query_edge_features(query: &QueryMol, counts: &mut BTreeMap<EdgeFeature, u16>) {
+fn count_query_edge_features(
+    query: &QueryMol,
+    ring_atom_ids: &BTreeSet<usize>,
+    ring_bond_ids: &BTreeSet<usize>,
+    counts: &mut BTreeMap<EdgeFeature, u16>,
+) {
     for bond in query.bonds() {
-        if let Some(feature) = query_edge_feature(query, bond.id) {
+        if let Some(feature) = query_edge_feature(query, bond.id, ring_atom_ids, ring_bond_ids) {
             *counts.entry(feature).or_insert(0) += 1;
         }
     }
@@ -4592,15 +4658,22 @@ fn count_query_edge_features(query: &QueryMol, counts: &mut BTreeMap<EdgeFeature
 fn count_query_path3_and_star3_features(
     query: &QueryMol,
     incident_bonds: &[Vec<usize>],
+    ring_atom_ids: &BTreeSet<usize>,
+    ring_bond_ids: &BTreeSet<usize>,
     path3_counts: &mut BTreeMap<Path3Feature, u16>,
     star3_counts: &mut BTreeMap<Star3Feature, u16>,
 ) {
     for (center_id, bonds) in incident_bonds.iter().enumerate() {
         for left_idx in 0..bonds.len() {
             for right_idx in left_idx + 1..bonds.len() {
-                if let Some(feature) =
-                    query_path3_feature(query, center_id, bonds[left_idx], bonds[right_idx])
-                {
+                if let Some(feature) = query_path3_feature(
+                    query,
+                    center_id,
+                    bonds[left_idx],
+                    bonds[right_idx],
+                    ring_atom_ids,
+                    ring_bond_ids,
+                ) {
                     *path3_counts.entry(feature).or_insert(0) += 1;
                 }
             }
@@ -4614,6 +4687,8 @@ fn count_query_path3_and_star3_features(
                         bonds[first_idx],
                         bonds[second_idx],
                         bonds[third_idx],
+                        ring_atom_ids,
+                        ring_bond_ids,
                     ) {
                         *star3_counts.entry(feature).or_insert(0) += 1;
                     }
@@ -4626,6 +4701,8 @@ fn count_query_path3_and_star3_features(
 fn count_query_path4_features(
     query: &QueryMol,
     incident_bonds: &[Vec<usize>],
+    ring_atom_ids: &BTreeSet<usize>,
+    ring_bond_ids: &BTreeSet<usize>,
     counts: &mut BTreeMap<Path4Feature, u16>,
 ) {
     for center_bond in query.bonds() {
@@ -4637,9 +4714,14 @@ fn count_query_path4_features(
                 if right_bond_id == center_bond.id {
                     continue;
                 }
-                if let Some(feature) =
-                    query_path4_feature(query, left_bond_id, center_bond.id, right_bond_id)
-                {
+                if let Some(feature) = query_path4_feature(
+                    query,
+                    left_bond_id,
+                    center_bond.id,
+                    right_bond_id,
+                    ring_atom_ids,
+                    ring_bond_ids,
+                ) {
                     *counts.entry(feature).or_insert(0) += 1;
                 }
             }
@@ -4647,20 +4729,32 @@ fn count_query_path4_features(
     }
 }
 
-fn query_atom_feature(query: &QueryMol, atom_id: usize) -> Option<AtomFeature> {
-    Some(query_local_atom_feature(&query.atom(atom_id)?.expr))
+fn query_atom_feature(
+    query: &QueryMol,
+    atom_id: usize,
+    ring_atom_ids: &BTreeSet<usize>,
+) -> Option<AtomFeature> {
+    Some(query_local_atom_feature(
+        &query.atom(atom_id)?.expr,
+        ring_atom_ids.contains(&atom_id),
+    ))
 }
 
-fn query_edge_feature(query: &QueryMol, bond_id: usize) -> Option<EdgeFeature> {
+fn query_edge_feature(
+    query: &QueryMol,
+    bond_id: usize,
+    ring_atom_ids: &BTreeSet<usize>,
+    ring_bond_ids: &BTreeSet<usize>,
+) -> Option<EdgeFeature> {
     let bond = query.bond(bond_id)?;
-    let left = query_atom_feature(query, bond.src)?;
-    let right = query_atom_feature(query, bond.dst)?;
+    let left = query_atom_feature(query, bond.src, ring_atom_ids)?;
+    let right = query_atom_feature(query, bond.dst, ring_atom_ids)?;
     let requirement = forced_bond_requirement(&bond.expr);
     let feature = EdgeFeature::new(
         left,
         EdgeBondFeature {
             kind: requirement.kind,
-            requires_ring: requirement.requires_ring,
+            requires_ring: requirement.requires_ring || ring_bond_ids.contains(&bond_id),
         },
         right,
     );
@@ -4672,8 +4766,13 @@ fn query_path3_feature(
     center_id: usize,
     left_bond_id: usize,
     right_bond_id: usize,
+    ring_atom_ids: &BTreeSet<usize>,
+    ring_bond_ids: &BTreeSet<usize>,
 ) -> Option<Path3Feature> {
-    let center = query_path3_atom_feature(&query.atom(center_id)?.expr);
+    let center = query_path3_atom_feature(
+        &query.atom(center_id)?.expr,
+        ring_atom_ids.contains(&center_id),
+    );
     let left_bond = query.bond(left_bond_id)?;
     let right_bond = query.bond(right_bond_id)?;
     let left_neighbor = other_query_atom(left_bond, center_id)?;
@@ -4681,20 +4780,26 @@ fn query_path3_feature(
     if left_neighbor == right_neighbor {
         return None;
     }
-    let left = query_path3_atom_feature(&query.atom(left_neighbor)?.expr);
-    let right = query_path3_atom_feature(&query.atom(right_neighbor)?.expr);
+    let left = query_path3_atom_feature(
+        &query.atom(left_neighbor)?.expr,
+        ring_atom_ids.contains(&left_neighbor),
+    );
+    let right = query_path3_atom_feature(
+        &query.atom(right_neighbor)?.expr,
+        ring_atom_ids.contains(&right_neighbor),
+    );
     let left_bond = forced_bond_requirement(&left_bond.expr);
     let right_bond = forced_bond_requirement(&right_bond.expr);
     let feature = Path3Feature::new(
         left,
         EdgeBondFeature {
             kind: left_bond.kind,
-            requires_ring: false,
+            requires_ring: left_bond.requires_ring || ring_bond_ids.contains(&left_bond_id),
         },
         center,
         EdgeBondFeature {
             kind: right_bond.kind,
-            requires_ring: false,
+            requires_ring: right_bond.requires_ring || ring_bond_ids.contains(&right_bond_id),
         },
         right,
     );
@@ -4706,6 +4811,8 @@ fn query_path4_feature(
     left_bond_id: usize,
     center_bond_id: usize,
     right_bond_id: usize,
+    ring_atom_ids: &BTreeSet<usize>,
+    ring_bond_ids: &BTreeSet<usize>,
 ) -> Option<Path4Feature> {
     let left_bond = query.bond(left_bond_id)?;
     let center_bond = query.bond(center_bond_id)?;
@@ -4735,22 +4842,30 @@ fn query_path4_feature(
     let right_requirement = forced_bond_requirement(&right_bond.expr);
 
     let feature = Path4Feature::new(
-        query_path4_atom_feature(&query.atom(left)?.expr),
+        query_path4_atom_feature(&query.atom(left)?.expr, ring_atom_ids.contains(&left)),
         EdgeBondFeature {
             kind: left_requirement.kind,
-            requires_ring: false,
+            requires_ring: left_requirement.requires_ring || ring_bond_ids.contains(&left_bond_id),
         },
-        query_path4_atom_feature(&query.atom(shared_atom)?.expr),
+        query_path4_atom_feature(
+            &query.atom(shared_atom)?.expr,
+            ring_atom_ids.contains(&shared_atom),
+        ),
         EdgeBondFeature {
             kind: center_requirement.kind,
-            requires_ring: false,
+            requires_ring: center_requirement.requires_ring
+                || ring_bond_ids.contains(&center_bond_id),
         },
-        query_path4_atom_feature(&query.atom(other_center)?.expr),
+        query_path4_atom_feature(
+            &query.atom(other_center)?.expr,
+            ring_atom_ids.contains(&other_center),
+        ),
         EdgeBondFeature {
             kind: right_requirement.kind,
-            requires_ring: false,
+            requires_ring: right_requirement.requires_ring
+                || ring_bond_ids.contains(&right_bond_id),
         },
-        query_path4_atom_feature(&query.atom(right)?.expr),
+        query_path4_atom_feature(&query.atom(right)?.expr, ring_atom_ids.contains(&right)),
     );
     path4_feature_is_informative(feature).then_some(feature)
 }
@@ -4761,8 +4876,13 @@ fn query_star3_feature(
     first_bond_id: usize,
     second_bond_id: usize,
     third_bond_id: usize,
+    ring_atom_ids: &BTreeSet<usize>,
+    ring_bond_ids: &BTreeSet<usize>,
 ) -> Option<Star3Feature> {
-    let center = query_star3_atom_feature(&query.atom(center_id)?.expr);
+    let center = query_star3_atom_feature(
+        &query.atom(center_id)?.expr,
+        ring_atom_ids.contains(&center_id),
+    );
     let first_bond = query.bond(first_bond_id)?;
     let second_bond = query.bond(second_bond_id)?;
     let third_bond = query.bond(third_bond_id)?;
@@ -4784,23 +4904,35 @@ fn query_star3_feature(
             Star3Arm {
                 bond: EdgeBondFeature {
                     kind: first_requirement.kind,
-                    requires_ring: false,
+                    requires_ring: first_requirement.requires_ring
+                        || ring_bond_ids.contains(&first_bond_id),
                 },
-                atom: query_star3_atom_feature(&query.atom(first_neighbor)?.expr),
+                atom: query_star3_atom_feature(
+                    &query.atom(first_neighbor)?.expr,
+                    ring_atom_ids.contains(&first_neighbor),
+                ),
             },
             Star3Arm {
                 bond: EdgeBondFeature {
                     kind: second_requirement.kind,
-                    requires_ring: false,
+                    requires_ring: second_requirement.requires_ring
+                        || ring_bond_ids.contains(&second_bond_id),
                 },
-                atom: query_star3_atom_feature(&query.atom(second_neighbor)?.expr),
+                atom: query_star3_atom_feature(
+                    &query.atom(second_neighbor)?.expr,
+                    ring_atom_ids.contains(&second_neighbor),
+                ),
             },
             Star3Arm {
                 bond: EdgeBondFeature {
                     kind: third_requirement.kind,
-                    requires_ring: false,
+                    requires_ring: third_requirement.requires_ring
+                        || ring_bond_ids.contains(&third_bond_id),
                 },
-                atom: query_star3_atom_feature(&query.atom(third_neighbor)?.expr),
+                atom: query_star3_atom_feature(
+                    &query.atom(third_neighbor)?.expr,
+                    ring_atom_ids.contains(&third_neighbor),
+                ),
             },
         ],
     );
@@ -4897,19 +5029,19 @@ fn target_atom_feature(target: &PreparedTarget, atom_id: usize) -> Option<AtomFe
     })
 }
 
-fn query_path3_atom_feature(expr: &AtomExpr) -> AtomFeature {
-    query_local_atom_feature(expr)
+fn query_path3_atom_feature(expr: &AtomExpr, requires_topological_ring: bool) -> AtomFeature {
+    query_local_atom_feature(expr, requires_topological_ring)
 }
 
-fn query_path4_atom_feature(expr: &AtomExpr) -> AtomFeature {
-    query_local_atom_feature(expr)
+fn query_path4_atom_feature(expr: &AtomExpr, requires_topological_ring: bool) -> AtomFeature {
+    query_local_atom_feature(expr, requires_topological_ring)
 }
 
-fn query_star3_atom_feature(expr: &AtomExpr) -> AtomFeature {
-    query_local_atom_feature(expr)
+fn query_star3_atom_feature(expr: &AtomExpr, requires_topological_ring: bool) -> AtomFeature {
+    query_local_atom_feature(expr, requires_topological_ring)
 }
 
-fn query_local_atom_feature(expr: &AtomExpr) -> AtomFeature {
+fn query_local_atom_feature(expr: &AtomExpr, requires_topological_ring: bool) -> AtomFeature {
     let requirement = exact_atom_requirement(expr);
     let count_requirement = forced_atom_count_requirement(expr);
     let (degree, total_hydrogens) = if requirement.element.is_some() {
@@ -4920,7 +5052,7 @@ fn query_local_atom_feature(expr: &AtomExpr) -> AtomFeature {
     AtomFeature {
         element: requirement.element,
         aromatic: requirement.aromatic,
-        requires_ring: requirement.requires_ring,
+        requires_ring: requirement.requires_ring || requires_topological_ring,
         degree,
         total_hydrogens,
     }

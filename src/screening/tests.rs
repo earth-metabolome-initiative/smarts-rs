@@ -34,6 +34,12 @@ fn query_screen_extracts_conservative_lower_bounds() {
     assert_eq!(screen.min_aromatic_atom_count, 2);
     assert_eq!(screen.min_ring_atom_count, 1);
     assert_eq!(screen.required_bond_counts, BondCountScreen::default());
+
+    let recursive_hydroxyl = QueryScreen::new(&QueryMol::from_str("[#8&$([O&H1&X2])]").unwrap());
+    assert_eq!(
+        recursive_hydroxyl.required_total_hydrogen_counts.get(&1),
+        Some(&1)
+    );
 }
 
 #[test]
@@ -42,11 +48,14 @@ fn query_screen_extracts_conservative_bond_bounds() {
     let triple = QueryScreen::new(&QueryMol::from_str("C#N").unwrap());
     let aromatic = QueryScreen::new(&QueryMol::from_str("c:c").unwrap());
     let ring = QueryScreen::new(&QueryMol::from_str("C@C").unwrap());
+    let topological_ring = QueryScreen::new(&QueryMol::from_str("C1CCCCC1").unwrap());
 
     assert_eq!(double.required_bond_counts.double, 1);
     assert_eq!(triple.required_bond_counts.triple, 1);
     assert_eq!(aromatic.required_bond_counts.aromatic, 1);
     assert_eq!(ring.required_bond_counts.ring, 1);
+    assert_eq!(topological_ring.required_bond_counts.ring, 6);
+    assert_eq!(topological_ring.min_ring_atom_count, 6);
 }
 
 #[test]
@@ -88,6 +97,7 @@ fn screen_rejects_missing_atoms_elements_aromaticity_ring_membership_and_bond_ty
     let element_query = QueryScreen::new(&QueryMol::from_str("[Cl]").unwrap());
     let double_bond_query = QueryScreen::new(&QueryMol::from_str("C=C").unwrap());
     let ring_bond_query = QueryScreen::new(&QueryMol::from_str("C@C").unwrap());
+    let topological_ring_query = QueryScreen::new(&QueryMol::from_str("C1CCCCC1").unwrap());
 
     let small_target = TargetScreen::new(&PreparedTarget::new(Smiles::from_str("CC").unwrap()));
     let aliphatic_target = TargetScreen::new(&PreparedTarget::new(Smiles::from_str("CC").unwrap()));
@@ -95,6 +105,8 @@ fn screen_rejects_missing_atoms_elements_aromaticity_ring_membership_and_bond_ty
     let oxygen_target = TargetScreen::new(&PreparedTarget::new(Smiles::from_str("O").unwrap()));
     let single_bond_target =
         TargetScreen::new(&PreparedTarget::new(Smiles::from_str("CC").unwrap()));
+    let cyclohexane_target =
+        TargetScreen::new(&PreparedTarget::new(Smiles::from_str("C1CCCCC1").unwrap()));
 
     assert!(!atom_count_query.may_match(&small_target));
     assert!(!aromatic_query.may_match(&aliphatic_target));
@@ -102,6 +114,8 @@ fn screen_rejects_missing_atoms_elements_aromaticity_ring_membership_and_bond_ty
     assert!(!element_query.may_match(&oxygen_target));
     assert!(!double_bond_query.may_match(&single_bond_target));
     assert!(!ring_bond_query.may_match(&single_bond_target));
+    assert!(!topological_ring_query.may_match(&acyclic_target));
+    assert!(topological_ring_query.may_match(&cyclohexane_target));
 }
 
 #[test]
