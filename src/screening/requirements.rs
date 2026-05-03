@@ -25,6 +25,9 @@ pub(super) struct ExactAtomRequirement {
 pub(super) struct AtomCountRequirement {
     pub(super) degree: Option<u16>,
     pub(super) total_hydrogens: Option<u16>,
+    pub(super) ring_membership: Option<u16>,
+    pub(super) ring_size: Option<u16>,
+    pub(super) ring_connectivity: Option<u16>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -145,10 +148,37 @@ fn forced_primitive_count_requirement(primitive: &AtomPrimitive) -> AtomCountReq
         AtomPrimitive::Degree(expected) => AtomCountRequirement {
             degree: exact_count_query_value(*expected, 1),
             total_hydrogens: None,
+            ring_membership: None,
+            ring_size: None,
+            ring_connectivity: None,
         },
         AtomPrimitive::Hydrogen(HydrogenKind::Total, expected) => AtomCountRequirement {
             degree: None,
             total_hydrogens: exact_count_query_value(*expected, 1),
+            ring_membership: None,
+            ring_size: None,
+            ring_connectivity: None,
+        },
+        AtomPrimitive::RingMembership(expected) => AtomCountRequirement {
+            degree: None,
+            total_hydrogens: None,
+            ring_membership: exact_ring_query_value(*expected),
+            ring_size: None,
+            ring_connectivity: None,
+        },
+        AtomPrimitive::RingSize(expected) => AtomCountRequirement {
+            degree: None,
+            total_hydrogens: None,
+            ring_membership: None,
+            ring_size: exact_ring_query_value(*expected),
+            ring_connectivity: None,
+        },
+        AtomPrimitive::RingConnectivity(expected) => AtomCountRequirement {
+            degree: None,
+            total_hydrogens: None,
+            ring_membership: None,
+            ring_size: None,
+            ring_connectivity: exact_ring_query_value(*expected),
         },
         _ => AtomCountRequirement::default(),
     }
@@ -251,7 +281,7 @@ fn forced_bond_primitive_requirement(primitive: BondPrimitive) -> BondRequiremen
             kind: Some(RequiredBondKind::Triple),
             requires_ring: false,
         },
-        BondPrimitive::Bond(Bond::Aromatic) => BondRequirement {
+        BondPrimitive::Aromatic => BondRequirement {
             kind: Some(RequiredBondKind::Aromatic),
             requires_ring: false,
         },
@@ -279,6 +309,13 @@ const fn exact_count_query_value(query: Option<NumericQuery>, omitted_default: u
     }
 }
 
+const fn exact_ring_query_value(query: Option<NumericQuery>) -> Option<u16> {
+    match query {
+        Some(NumericQuery::Exact(value)) => Some(value),
+        None | Some(NumericQuery::Range(_)) => None,
+    }
+}
+
 fn merge_and_requirement(left: AtomRequirement, right: &BracketExprTree) -> AtomRequirement {
     let right = forced_bracket_requirement(right);
     AtomRequirement {
@@ -301,6 +338,12 @@ fn merge_and_count_requirement(
     AtomCountRequirement {
         degree: merge_exact_count_requirement(left.degree, right.degree),
         total_hydrogens: merge_exact_count_requirement(left.total_hydrogens, right.total_hydrogens),
+        ring_membership: merge_exact_count_requirement(left.ring_membership, right.ring_membership),
+        ring_size: merge_exact_count_requirement(left.ring_size, right.ring_size),
+        ring_connectivity: merge_exact_count_requirement(
+            left.ring_connectivity,
+            right.ring_connectivity,
+        ),
     }
 }
 
@@ -343,6 +386,15 @@ const fn intersect_or_count_requirement(
         total_hydrogens: intersect_exact_count_requirement(
             left.total_hydrogens,
             right.total_hydrogens,
+        ),
+        ring_membership: intersect_exact_count_requirement(
+            left.ring_membership,
+            right.ring_membership,
+        ),
+        ring_size: intersect_exact_count_requirement(left.ring_size, right.ring_size),
+        ring_connectivity: intersect_exact_count_requirement(
+            left.ring_connectivity,
+            right.ring_connectivity,
         ),
     }
 }

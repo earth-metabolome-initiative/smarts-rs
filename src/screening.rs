@@ -63,11 +63,13 @@ use alloc::{
 
 use crate::{
     matching::{CompiledQuery, MatchScratch},
-    AtomExpr, ComponentGroupId, QueryMol,
+    AtomExpr, AtomPrimitive, BondExpr, BondExprTree, BondPrimitive, BracketExprTree,
+    ComponentGroupId, QueryMol,
 };
 use elements_rs::Element;
 #[cfg(feature = "rayon")]
 use rayon::prelude::*;
+use smiles_parser::bond::Bond;
 
 use crate::{prepared::PreparedTarget, target::BondLabel};
 
@@ -111,6 +113,10 @@ pub struct QueryScreenFeatureStats {
     pub path4_feature_masks: usize,
     /// Number of required star3 signature/multiplicity masks.
     pub star3_feature_masks: usize,
+    /// Number of positive recursive SMARTS alternative groups.
+    pub alternative_screen_groups: usize,
+    /// Total number of alternative screens across recursive SMARTS groups.
+    pub alternative_screens: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -133,6 +139,25 @@ enum QueryFeatureFilter {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct BondKindPair {
+    first: RequiredBondKind,
+    second: RequiredBondKind,
+}
+
+impl BondKindPair {
+    fn new(first: RequiredBondKind, second: RequiredBondKind) -> Self {
+        if second < first {
+            Self {
+                first: second,
+                second: first,
+            }
+        } else {
+            Self { first, second }
+        }
+    }
+}
+
 /// Conservative summary of one compiled SMARTS query.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryScreen {
@@ -143,16 +168,29 @@ pub struct QueryScreen {
     min_target_component_count: usize,
     /// Lower bounds for exact element occurrences the target must contain.
     required_element_counts: BTreeMap<Element, usize>,
+    /// Lower bounds for exact ring-member element occurrences.
+    required_ring_element_counts: BTreeMap<Element, usize>,
+    /// Lower bounds for exact aromatic element occurrences.
+    required_aromatic_element_counts: BTreeMap<Element, usize>,
     /// Lower bounds for exact SMARTS `D` topological degree occurrences.
     required_degree_counts: BTreeMap<u16, usize>,
     /// Lower bounds for exact SMARTS `H` total-hydrogen occurrences.
     required_total_hydrogen_counts: BTreeMap<u16, usize>,
+    /// Lower bounds for exact SMARTS `R` ring-membership occurrences.
+    required_ring_membership_counts: BTreeMap<u16, usize>,
+    /// Lower bounds for exact SMARTS `r` smallest-ring-size occurrences.
+    required_ring_size_counts: BTreeMap<u16, usize>,
+    /// Lower bounds for exact SMARTS `x` ring-connectivity occurrences.
+    required_ring_connectivity_counts: BTreeMap<u16, usize>,
     /// Minimum number of aromatic atoms required by the query.
     min_aromatic_atom_count: usize,
     /// Minimum number of ring-member atoms required by the query.
     min_ring_atom_count: usize,
     /// Lower bounds for required bond categories.
     required_bond_counts: BondCountScreen,
+    /// Lower bounds for pairwise disjunctive bond-kind categories such as
+    /// SMARTS `-,=` and `:,=`.
+    required_bond_pair_counts: BTreeMap<BondKindPair, usize>,
     /// Required exact local edge signatures.
     required_edge_features: Box<[EdgeFeature]>,
     /// Required exact local edge signature multiplicities.
@@ -169,6 +207,9 @@ pub struct QueryScreen {
     required_star3_features: Box<[Star3Feature]>,
     /// Required exact 3-neighbor star signature multiplicities.
     required_star3_feature_counts: Box<[(Star3Feature, u16)]>,
+    /// Positive recursive SMARTS alternatives that must satisfy at least one
+    /// screen within each group.
+    alternative_screen_groups: Box<[Box<[Self]>]>,
     /// Planned local-signature filter order.
     planned_feature_filters: Box<[QueryFeatureFilter]>,
 }
@@ -206,15 +247,21 @@ impl QueryScreen {
             &required_star3_feature_counts,
         );
 
-        Self {
+        let mut screen = Self {
             min_atom_count: source_query.atom_count(),
             min_target_component_count: grouped_component_count(source_query.component_groups()),
             required_element_counts: atom_requirements.element_counts,
+            required_ring_element_counts: collect_query_ring_element_counts(query, &ring_atom_ids),
+            required_aromatic_element_counts: atom_requirements.aromatic_element_counts,
             required_degree_counts: atom_requirements.degree_counts,
             required_total_hydrogen_counts: atom_requirements.total_hydrogen_counts,
+            required_ring_membership_counts: atom_requirements.ring_membership_counts,
+            required_ring_size_counts: atom_requirements.ring_size_counts,
+            required_ring_connectivity_counts: atom_requirements.ring_connectivity_counts,
             min_aromatic_atom_count: atom_requirements.min_aromatic_count,
             min_ring_atom_count: ring_atom_ids.len(),
             required_bond_counts,
+            required_bond_pair_counts: bond_requirements.pair_counts,
             required_edge_features: required_edge_feature_counts
                 .iter()
                 .map(|(feature, _)| *feature)
@@ -235,8 +282,14 @@ impl QueryScreen {
                 .map(|(feature, _)| *feature)
                 .collect(),
             required_star3_feature_counts: required_star3_feature_counts.into_boxed_slice(),
+            alternative_screen_groups: collect_recursive_alternative_screen_groups(query)
+                .into_boxed_slice(),
             planned_feature_filters,
+        };
+        if let Some(recursive_requirements) = collect_recursive_screen_requirements(query) {
+            screen.merge_and(&recursive_requirements);
         }
+        screen
     }
 
     /// Returns diagnostic counts for graph-signature requirements.
@@ -254,6 +307,12 @@ impl QueryScreen {
             path3_feature_masks: self.required_path3_feature_counts.len(),
             path4_feature_masks: self.required_path4_feature_counts.len(),
             star3_feature_masks: self.required_star3_feature_counts.len(),
+            alternative_screen_groups: self.alternative_screen_groups.len(),
+            alternative_screens: self
+                .alternative_screen_groups
+                .iter()
+                .map(|group| group.len())
+                .sum(),
         }
     }
 
@@ -280,6 +339,9 @@ impl QueryScreen {
         {
             return false;
         }
+        if !bond_pair_counts_may_match(&self.required_bond_pair_counts, target.bond_counts) {
+            return false;
+        }
         self.required_element_counts
             .iter()
             .all(|(element, required)| {
@@ -295,7 +357,441 @@ impl QueryScreen {
                 &self.required_total_hydrogen_counts,
                 &target.total_hydrogen_counts,
             )
+            && required_count_slice_may_match(
+                &self.required_ring_element_counts,
+                &target.ring_element_counts,
+            )
+            && required_count_slice_may_match(
+                &self.required_aromatic_element_counts,
+                &target.aromatic_element_counts,
+            )
+            && required_count_slice_may_match(
+                &self.required_ring_membership_counts,
+                &target.ring_membership_counts,
+            )
+            && required_count_slice_may_match(
+                &self.required_ring_size_counts,
+                &target.ring_size_counts,
+            )
+            && required_count_slice_may_match(
+                &self.required_ring_connectivity_counts,
+                &target.ring_connectivity_counts,
+            )
+            && alternative_screen_groups_may_match(&self.alternative_screen_groups, target)
     }
+
+    fn merge_and(&mut self, other: &Self) {
+        self.min_atom_count = self.min_atom_count.max(other.min_atom_count);
+        self.min_target_component_count = self
+            .min_target_component_count
+            .max(other.min_target_component_count);
+        self.min_aromatic_atom_count = self
+            .min_aromatic_atom_count
+            .max(other.min_aromatic_atom_count);
+        self.min_ring_atom_count = self.min_ring_atom_count.max(other.min_ring_atom_count);
+        self.required_bond_counts =
+            max_bond_counts(self.required_bond_counts, other.required_bond_counts);
+        merge_count_maps_max(
+            &mut self.required_bond_pair_counts,
+            &other.required_bond_pair_counts,
+        );
+        merge_count_maps_max(
+            &mut self.required_element_counts,
+            &other.required_element_counts,
+        );
+        merge_count_maps_max(
+            &mut self.required_ring_element_counts,
+            &other.required_ring_element_counts,
+        );
+        merge_count_maps_max(
+            &mut self.required_aromatic_element_counts,
+            &other.required_aromatic_element_counts,
+        );
+        merge_count_maps_max(
+            &mut self.required_degree_counts,
+            &other.required_degree_counts,
+        );
+        merge_count_maps_max(
+            &mut self.required_total_hydrogen_counts,
+            &other.required_total_hydrogen_counts,
+        );
+        merge_count_maps_max(
+            &mut self.required_ring_membership_counts,
+            &other.required_ring_membership_counts,
+        );
+        merge_count_maps_max(
+            &mut self.required_ring_size_counts,
+            &other.required_ring_size_counts,
+        );
+        merge_count_maps_max(
+            &mut self.required_ring_connectivity_counts,
+            &other.required_ring_connectivity_counts,
+        );
+        let edge = merge_feature_count_maps_max(
+            feature_count_map(&self.required_edge_feature_counts),
+            feature_count_map(&other.required_edge_feature_counts),
+        );
+        let path3 = merge_feature_count_maps_max(
+            feature_count_map(&self.required_path3_feature_counts),
+            feature_count_map(&other.required_path3_feature_counts),
+        );
+        let path4 = merge_feature_count_maps_max(
+            feature_count_map(&self.required_path4_feature_counts),
+            feature_count_map(&other.required_path4_feature_counts),
+        );
+        let star3 = merge_feature_count_maps_max(
+            feature_count_map(&self.required_star3_feature_counts),
+            feature_count_map(&other.required_star3_feature_counts),
+        );
+        self.replace_feature_counts(edge, path3, path4, star3);
+        self.append_alternative_screen_groups(&other.alternative_screen_groups);
+    }
+
+    fn merge_or(&mut self, other: &Self) {
+        self.min_atom_count = self.min_atom_count.min(other.min_atom_count);
+        self.min_target_component_count = self
+            .min_target_component_count
+            .min(other.min_target_component_count);
+        self.min_aromatic_atom_count = self
+            .min_aromatic_atom_count
+            .min(other.min_aromatic_atom_count);
+        self.min_ring_atom_count = self.min_ring_atom_count.min(other.min_ring_atom_count);
+        self.required_bond_counts =
+            min_bond_counts(self.required_bond_counts, other.required_bond_counts);
+        intersect_count_maps_min(
+            &mut self.required_bond_pair_counts,
+            &other.required_bond_pair_counts,
+        );
+        intersect_count_maps_min(
+            &mut self.required_element_counts,
+            &other.required_element_counts,
+        );
+        intersect_count_maps_min(
+            &mut self.required_ring_element_counts,
+            &other.required_ring_element_counts,
+        );
+        intersect_count_maps_min(
+            &mut self.required_aromatic_element_counts,
+            &other.required_aromatic_element_counts,
+        );
+        intersect_count_maps_min(
+            &mut self.required_degree_counts,
+            &other.required_degree_counts,
+        );
+        intersect_count_maps_min(
+            &mut self.required_total_hydrogen_counts,
+            &other.required_total_hydrogen_counts,
+        );
+        intersect_count_maps_min(
+            &mut self.required_ring_membership_counts,
+            &other.required_ring_membership_counts,
+        );
+        intersect_count_maps_min(
+            &mut self.required_ring_size_counts,
+            &other.required_ring_size_counts,
+        );
+        intersect_count_maps_min(
+            &mut self.required_ring_connectivity_counts,
+            &other.required_ring_connectivity_counts,
+        );
+        let other_edge = feature_count_map(&other.required_edge_feature_counts);
+        let edge = intersect_feature_count_maps_min(
+            feature_count_map(&self.required_edge_feature_counts),
+            &other_edge,
+        );
+        let other_path3 = feature_count_map(&other.required_path3_feature_counts);
+        let path3 = intersect_feature_count_maps_min(
+            feature_count_map(&self.required_path3_feature_counts),
+            &other_path3,
+        );
+        let other_path4 = feature_count_map(&other.required_path4_feature_counts);
+        let path4 = intersect_feature_count_maps_min(
+            feature_count_map(&self.required_path4_feature_counts),
+            &other_path4,
+        );
+        let other_star3 = feature_count_map(&other.required_star3_feature_counts);
+        let star3 = intersect_feature_count_maps_min(
+            feature_count_map(&self.required_star3_feature_counts),
+            &other_star3,
+        );
+        self.replace_feature_counts(edge, path3, path4, star3);
+    }
+
+    fn replace_feature_counts(
+        &mut self,
+        edge: BTreeMap<EdgeFeature, u16>,
+        path3: BTreeMap<Path3Feature, u16>,
+        path4: BTreeMap<Path4Feature, u16>,
+        star3: BTreeMap<Star3Feature, u16>,
+    ) {
+        let required_edge_feature_counts = edge.into_iter().collect::<Vec<_>>();
+        let required_path3_feature_counts = path3.into_iter().collect::<Vec<_>>();
+        let required_path4_feature_counts = path4.into_iter().collect::<Vec<_>>();
+        let required_star3_feature_counts = star3.into_iter().collect::<Vec<_>>();
+        self.planned_feature_filters = plan_feature_filters(
+            &required_edge_feature_counts,
+            &required_path3_feature_counts,
+            &required_path4_feature_counts,
+            &required_star3_feature_counts,
+        );
+        self.required_edge_features = required_edge_feature_counts
+            .iter()
+            .map(|(feature, _)| *feature)
+            .collect();
+        self.required_edge_feature_counts = required_edge_feature_counts.into_boxed_slice();
+        self.required_path3_features = required_path3_feature_counts
+            .iter()
+            .map(|(feature, _)| *feature)
+            .collect();
+        self.required_path3_feature_counts = required_path3_feature_counts.into_boxed_slice();
+        self.required_path4_features = required_path4_feature_counts
+            .iter()
+            .map(|(feature, _)| *feature)
+            .collect();
+        self.required_path4_feature_counts = required_path4_feature_counts.into_boxed_slice();
+        self.required_star3_features = required_star3_feature_counts
+            .iter()
+            .map(|(feature, _)| *feature)
+            .collect();
+        self.required_star3_feature_counts = required_star3_feature_counts.into_boxed_slice();
+    }
+
+    fn append_alternative_screen_groups(&mut self, other: &[Box<[Self]>]) {
+        if other.is_empty() {
+            return;
+        }
+        let mut groups = self.alternative_screen_groups.to_vec();
+        groups.extend_from_slice(other);
+        self.alternative_screen_groups = groups.into_boxed_slice();
+    }
+}
+
+fn alternative_screen_groups_may_match(
+    groups: &[Box<[QueryScreen]>],
+    target: &TargetScreen,
+) -> bool {
+    groups
+        .iter()
+        .all(|group| group.iter().any(|screen| screen.may_match(target)))
+}
+
+fn collect_recursive_screen_requirements(query: &QueryMol) -> Option<QueryScreen> {
+    merge_and_screens(
+        query
+            .atoms()
+            .iter()
+            .filter_map(|atom| recursive_screen_from_atom_expr(&atom.expr)),
+    )
+}
+
+fn collect_recursive_alternative_screen_groups(query: &QueryMol) -> Vec<Box<[QueryScreen]>> {
+    let mut groups = Vec::new();
+    for atom in query.atoms() {
+        collect_recursive_alternative_screen_groups_from_atom_expr(&atom.expr, &mut groups);
+    }
+    groups
+}
+
+fn collect_recursive_alternative_screen_groups_from_atom_expr(
+    expr: &AtomExpr,
+    groups: &mut Vec<Box<[QueryScreen]>>,
+) {
+    match expr {
+        AtomExpr::Wildcard | AtomExpr::Bare { .. } => {}
+        AtomExpr::Bracket(bracket) => {
+            collect_recursive_alternative_screen_groups_from_bracket_tree(&bracket.tree, groups);
+        }
+    }
+}
+
+fn collect_recursive_alternative_screen_groups_from_bracket_tree(
+    tree: &BracketExprTree,
+    groups: &mut Vec<Box<[QueryScreen]>>,
+) {
+    match tree {
+        BracketExprTree::Primitive(_) | BracketExprTree::Not(_) => {}
+        BracketExprTree::HighAnd(children)
+        | BracketExprTree::LowAnd(children)
+        | BracketExprTree::Or(children) => {
+            if let BracketExprTree::Or(_) = tree {
+                if let Some(group) = direct_recursive_alternative_screen_group(children) {
+                    groups.push(group);
+                }
+            }
+            for child in children {
+                collect_recursive_alternative_screen_groups_from_bracket_tree(child, groups);
+            }
+        }
+    }
+}
+
+fn direct_recursive_alternative_screen_group(
+    children: &[BracketExprTree],
+) -> Option<Box<[QueryScreen]>> {
+    if children.len() < 2 {
+        return None;
+    }
+    let mut alternatives = Vec::with_capacity(children.len());
+    for child in children {
+        alternatives.push(QueryScreen::new(direct_recursive_query(child)?));
+    }
+    Some(alternatives.into_boxed_slice())
+}
+
+fn direct_recursive_query(tree: &BracketExprTree) -> Option<&QueryMol> {
+    match tree {
+        BracketExprTree::Primitive(AtomPrimitive::RecursiveQuery(query)) => Some(query),
+        _ => None,
+    }
+}
+
+fn recursive_screen_from_atom_expr(expr: &AtomExpr) -> Option<QueryScreen> {
+    match expr {
+        AtomExpr::Wildcard | AtomExpr::Bare { .. } => None,
+        AtomExpr::Bracket(bracket) => recursive_screen_from_bracket_tree(&bracket.tree),
+    }
+}
+
+fn recursive_screen_from_bracket_tree(tree: &BracketExprTree) -> Option<QueryScreen> {
+    match tree {
+        BracketExprTree::Primitive(AtomPrimitive::RecursiveQuery(query)) => {
+            Some(QueryScreen::new(query))
+        }
+        BracketExprTree::Primitive(_) | BracketExprTree::Not(_) => None,
+        BracketExprTree::HighAnd(children) | BracketExprTree::LowAnd(children) => {
+            merge_and_screens(
+                children
+                    .iter()
+                    .filter_map(recursive_screen_from_bracket_tree),
+            )
+        }
+        BracketExprTree::Or(children) => {
+            let mut screens = Vec::with_capacity(children.len());
+            for child in children {
+                screens.push(recursive_screen_from_bracket_tree(child)?);
+            }
+            merge_or_screens(screens)
+        }
+    }
+}
+
+fn merge_and_screens<I>(screens: I) -> Option<QueryScreen>
+where
+    I: IntoIterator<Item = QueryScreen>,
+{
+    let mut screens = screens.into_iter();
+    let mut merged = screens.next()?;
+    for screen in screens {
+        merged.merge_and(&screen);
+    }
+    Some(merged)
+}
+
+fn merge_or_screens<I>(screens: I) -> Option<QueryScreen>
+where
+    I: IntoIterator<Item = QueryScreen>,
+{
+    let mut screens = screens.into_iter();
+    let mut merged = screens.next()?;
+    for screen in screens {
+        merged.merge_or(&screen);
+    }
+    Some(merged)
+}
+
+const fn max_bond_counts(left: BondCountScreen, right: BondCountScreen) -> BondCountScreen {
+    BondCountScreen {
+        single: max_usize(left.single, right.single),
+        double: max_usize(left.double, right.double),
+        triple: max_usize(left.triple, right.triple),
+        aromatic: max_usize(left.aromatic, right.aromatic),
+        ring: max_usize(left.ring, right.ring),
+    }
+}
+
+const fn min_bond_counts(left: BondCountScreen, right: BondCountScreen) -> BondCountScreen {
+    BondCountScreen {
+        single: min_usize(left.single, right.single),
+        double: min_usize(left.double, right.double),
+        triple: min_usize(left.triple, right.triple),
+        aromatic: min_usize(left.aromatic, right.aromatic),
+        ring: min_usize(left.ring, right.ring),
+    }
+}
+
+const fn max_usize(left: usize, right: usize) -> usize {
+    if left > right {
+        left
+    } else {
+        right
+    }
+}
+
+const fn min_usize(left: usize, right: usize) -> usize {
+    if left < right {
+        left
+    } else {
+        right
+    }
+}
+
+fn merge_count_maps_max<T>(left: &mut BTreeMap<T, usize>, right: &BTreeMap<T, usize>)
+where
+    T: Copy + Ord,
+{
+    for (&key, &value) in right {
+        let entry = left.entry(key).or_default();
+        *entry = (*entry).max(value);
+    }
+}
+
+fn intersect_count_maps_min<T>(left: &mut BTreeMap<T, usize>, right: &BTreeMap<T, usize>)
+where
+    T: Ord,
+{
+    left.retain(|key, value| {
+        right.get(key).is_some_and(|right_value| {
+            *value = (*value).min(*right_value);
+            *value > 0
+        })
+    });
+}
+
+fn feature_count_map<T>(counts: &[(T, u16)]) -> BTreeMap<T, u16>
+where
+    T: Copy + Ord,
+{
+    counts.iter().copied().collect()
+}
+
+fn merge_feature_count_maps_max<T>(
+    mut left: BTreeMap<T, u16>,
+    right: BTreeMap<T, u16>,
+) -> BTreeMap<T, u16>
+where
+    T: Ord,
+{
+    for (key, value) in right {
+        let entry = left.entry(key).or_default();
+        *entry = (*entry).max(value);
+    }
+    left
+}
+
+fn intersect_feature_count_maps_min<T>(
+    mut left: BTreeMap<T, u16>,
+    right: &BTreeMap<T, u16>,
+) -> BTreeMap<T, u16>
+where
+    T: Ord,
+{
+    left.retain(|key, value| {
+        right.get(key).is_some_and(|right_value| {
+            *value = (*value).min(*right_value);
+            *value > 0
+        })
+    });
+    left
 }
 
 /// Conservative summary of one prepared target molecule.
@@ -307,10 +803,20 @@ pub struct TargetScreen {
     connected_component_count: usize,
     /// Exact element occurrence counts in the target.
     element_counts: BTreeMap<Element, usize>,
+    /// Exact ring-member element occurrence counts in the target.
+    ring_element_counts: ScreenCountSlice<Element>,
+    /// Exact aromatic element occurrence counts in the target.
+    aromatic_element_counts: ScreenCountSlice<Element>,
     /// Exact SMARTS `D` topological degree occurrence counts in the target.
     degree_counts: BTreeMap<u16, usize>,
     /// Exact SMARTS `H` total-hydrogen occurrence counts in the target.
     total_hydrogen_counts: BTreeMap<u16, usize>,
+    /// Exact SMARTS `R` ring-membership occurrence counts in the target.
+    ring_membership_counts: ScreenCountSlice<u16>,
+    /// Exact SMARTS `r` smallest-ring-size occurrence counts in the target.
+    ring_size_counts: ScreenCountSlice<u16>,
+    /// Exact SMARTS `x` ring-connectivity occurrence counts in the target.
+    ring_connectivity_counts: ScreenCountSlice<u16>,
     /// Number of aromatic atoms in the target.
     aromatic_atom_count: usize,
     /// Number of ring-member atoms in the target.
@@ -324,18 +830,23 @@ impl TargetScreen {
     #[must_use]
     pub fn new(target: &PreparedTarget) -> Self {
         let mut element_counts = BTreeMap::new();
+        let mut ring_element_counts = Vec::new();
+        let mut aromatic_element_counts = Vec::new();
         let mut degree_counts = BTreeMap::new();
         let mut total_hydrogen_counts = BTreeMap::new();
+        let mut ring_membership_counts = Vec::new();
+        let mut ring_size_counts = Vec::new();
+        let mut ring_connectivity_counts = Vec::new();
         let mut aromatic_atom_count = 0usize;
         let mut ring_atom_count = 0usize;
         let mut bond_counts = BondCountScreen::default();
         let mut max_component = None::<usize>;
 
         for atom_id in 0..target.atom_count() {
-            if let Some(element) = target
+            let element = target
                 .atom(atom_id)
-                .and_then(smiles_parser::atom::Atom::element)
-            {
+                .and_then(smiles_parser::atom::Atom::element);
+            if let Some(element) = element {
                 *element_counts.entry(element).or_insert(0) += 1;
             }
             if let Some(degree) = target.degree(atom_id) {
@@ -350,9 +861,24 @@ impl TargetScreen {
             }
             if target.is_aromatic(atom_id) {
                 aromatic_atom_count += 1;
+                if let Some(element) = element {
+                    increment_small_count(&mut aromatic_element_counts, element);
+                }
             }
             if target.is_ring_atom(atom_id) {
                 ring_atom_count += 1;
+                if let Some(element) = element {
+                    increment_small_count(&mut ring_element_counts, element);
+                }
+            }
+            if let Some(count) = target.ring_membership_count(atom_id) {
+                increment_small_count(&mut ring_membership_counts, u16::from(count));
+            }
+            if let Some(size) = target.smallest_ring_size(atom_id) {
+                increment_small_count(&mut ring_size_counts, u16::from(size));
+            }
+            if let Some(count) = target.ring_bond_count(atom_id) {
+                increment_small_count(&mut ring_connectivity_counts, u16::from(count));
             }
             if let Some(component_id) = target.connected_component(atom_id) {
                 max_component =
@@ -381,13 +907,41 @@ impl TargetScreen {
             atom_count: target.atom_count(),
             connected_component_count: max_component.map_or(0, |value| value + 1),
             element_counts,
+            ring_element_counts: into_sorted_count_slice(ring_element_counts),
+            aromatic_element_counts: into_sorted_count_slice(aromatic_element_counts),
             degree_counts,
             total_hydrogen_counts,
+            ring_membership_counts: into_sorted_count_slice(ring_membership_counts),
+            ring_size_counts: into_sorted_count_slice(ring_size_counts),
+            ring_connectivity_counts: into_sorted_count_slice(ring_connectivity_counts),
             aromatic_atom_count,
             ring_atom_count,
             bond_counts,
         }
     }
+}
+
+fn increment_small_count<T: Eq + Copy>(counts: &mut Vec<(T, usize)>, feature: T) {
+    if let Some((_, count)) = counts
+        .iter_mut()
+        .find(|(candidate, _)| *candidate == feature)
+    {
+        *count += 1;
+    } else {
+        counts.push((feature, 1));
+    }
+}
+
+fn into_sorted_count_slice<T: Ord>(mut counts: Vec<(T, usize)>) -> ScreenCountSlice<T> {
+    counts.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+    counts.into_boxed_slice()
+}
+
+fn count_slice_get<'a, T: Ord>(counts: &'a [(T, usize)], feature: &T) -> Option<&'a usize> {
+    counts
+        .binary_search_by(|(candidate, _)| candidate.cmp(feature))
+        .ok()
+        .map(|index| &counts[index].1)
 }
 
 type TargetId = u32;
@@ -400,6 +954,7 @@ type IndexedSparseFeatureCountIndex<T> = Box<[(T, SparseFeatureCounts)]>;
 type FeatureIdMask = Box<[u64]>;
 type IndexedFeatureIdMask<T> = Box<[(T, FeatureIdMask)]>;
 type CompactScreenCount = u32;
+type ScreenCountSlice<T> = Box<[(T, usize)]>;
 type ScreenCountOccurrences<T> = BTreeMap<T, Vec<(CompactScreenCount, TargetId)>>;
 type IndexedEdgeSparseIndexParts = (
     IndexedSparseFeatureCountIndex<EdgeFeature>,
@@ -547,8 +1102,38 @@ struct TargetScreenOccurrences {
     aromatic_bonds: Vec<CompactScreenCount>,
     ring_bonds: Vec<CompactScreenCount>,
     elements: ScreenCountOccurrences<Element>,
+    ring_elements: ScreenCountOccurrences<Element>,
+    aromatic_elements: ScreenCountOccurrences<Element>,
     degrees: ScreenCountOccurrences<u16>,
     total_hydrogens: ScreenCountOccurrences<u16>,
+    ring_memberships: ScreenCountOccurrences<u16>,
+    ring_sizes: ScreenCountOccurrences<u16>,
+    ring_connectivities: ScreenCountOccurrences<u16>,
+}
+
+#[derive(Debug)]
+struct ScalarScreenOccurrences {
+    atoms: Vec<CompactScreenCount>,
+    components: Vec<CompactScreenCount>,
+    aromatic_atoms: Vec<CompactScreenCount>,
+    ring_atoms: Vec<CompactScreenCount>,
+    single_bonds: Vec<CompactScreenCount>,
+    double_bonds: Vec<CompactScreenCount>,
+    triple_bonds: Vec<CompactScreenCount>,
+    aromatic_bonds: Vec<CompactScreenCount>,
+    ring_bonds: Vec<CompactScreenCount>,
+}
+
+#[derive(Debug)]
+struct AtomPropertyScreenOccurrences {
+    elements: ScreenCountOccurrences<Element>,
+    ring_elements: ScreenCountOccurrences<Element>,
+    aromatic_elements: ScreenCountOccurrences<Element>,
+    degrees: ScreenCountOccurrences<u16>,
+    total_hydrogens: ScreenCountOccurrences<u16>,
+    ring_memberships: ScreenCountOccurrences<u16>,
+    ring_sizes: ScreenCountOccurrences<u16>,
+    ring_connectivities: ScreenCountOccurrences<u16>,
 }
 
 impl TargetScreenOccurrences {
@@ -564,9 +1149,40 @@ impl TargetScreenOccurrences {
             aromatic_bonds: Vec::with_capacity(target_count),
             ring_bonds: Vec::with_capacity(target_count),
             elements: ScreenCountOccurrences::new(),
+            ring_elements: ScreenCountOccurrences::new(),
+            aromatic_elements: ScreenCountOccurrences::new(),
             degrees: ScreenCountOccurrences::new(),
             total_hydrogens: ScreenCountOccurrences::new(),
+            ring_memberships: ScreenCountOccurrences::new(),
+            ring_sizes: ScreenCountOccurrences::new(),
+            ring_connectivities: ScreenCountOccurrences::new(),
         }
+    }
+
+    fn into_parts(self) -> (ScalarScreenOccurrences, AtomPropertyScreenOccurrences) {
+        (
+            ScalarScreenOccurrences {
+                atoms: self.atoms,
+                components: self.components,
+                aromatic_atoms: self.aromatic_atoms,
+                ring_atoms: self.ring_atoms,
+                single_bonds: self.single_bonds,
+                double_bonds: self.double_bonds,
+                triple_bonds: self.triple_bonds,
+                aromatic_bonds: self.aromatic_bonds,
+                ring_bonds: self.ring_bonds,
+            },
+            AtomPropertyScreenOccurrences {
+                elements: self.elements,
+                ring_elements: self.ring_elements,
+                aromatic_elements: self.aromatic_elements,
+                degrees: self.degrees,
+                total_hydrogens: self.total_hydrogens,
+                ring_memberships: self.ring_memberships,
+                ring_sizes: self.ring_sizes,
+                ring_connectivities: self.ring_connectivities,
+            },
+        )
     }
 }
 
@@ -593,6 +1209,8 @@ const TARGET_INDEX_CHUNK_SIZE: usize = 4096;
 pub struct TargetCorpusScratch<'a> {
     candidate_mask: Vec<u64>,
     active_candidate_mask: Vec<u64>,
+    bond_pair_candidate_mask: Vec<u64>,
+    bond_pair_term_mask: Vec<u64>,
     filters: Vec<RequiredCountFilter<'a>>,
     feature_filters_to_prime: Vec<QueryFeatureFilter>,
     repeated_feature_filters: Vec<QueryFeatureFilter>,
@@ -657,6 +1275,8 @@ impl TargetCorpusScratch<'_> {
         Self {
             candidate_mask: Vec::new(),
             active_candidate_mask: Vec::new(),
+            bond_pair_candidate_mask: Vec::new(),
+            bond_pair_term_mask: Vec::new(),
             filters: Vec::new(),
             feature_filters_to_prime: Vec::new(),
             repeated_feature_filters: Vec::new(),
@@ -943,7 +1563,7 @@ pub struct TargetCorpusIndexMemoryStats {
     pub retained_screens: usize,
     /// Scalar count indexes such as atom, component, and bond counts.
     pub scalar_count_indexes: usize,
-    /// Element, degree, and total-hydrogen count indexes.
+    /// Element and atom-property count indexes.
     pub atom_property_count_indexes: usize,
     /// Edge local-feature posting lists.
     pub edge_postings: usize,
@@ -993,6 +1613,31 @@ impl TargetCorpusIndexMemoryStats {
             + self.star3_masks
             + self.star3_domains
     }
+}
+
+#[derive(Debug)]
+struct ScalarScreenCountIndexes {
+    atoms: CountBitsetIndex,
+    components: CountBitsetIndex,
+    aromatic_atoms: CountBitsetIndex,
+    ring_atoms: CountBitsetIndex,
+    single_bonds: CountBitsetIndex,
+    double_bonds: CountBitsetIndex,
+    triple_bonds: CountBitsetIndex,
+    aromatic_bonds: CountBitsetIndex,
+    ring_bonds: CountBitsetIndex,
+}
+
+#[derive(Debug)]
+struct AtomPropertyScreenCountIndexes {
+    elements: Box<[(Element, CountBitsetIndex)]>,
+    ring_elements: Box<[(Element, CountBitsetIndex)]>,
+    aromatic_elements: Box<[(Element, CountBitsetIndex)]>,
+    degrees: IndexedFeatureCountIndex<u16>,
+    total_hydrogens: IndexedFeatureCountIndex<u16>,
+    ring_memberships: IndexedFeatureCountIndex<u16>,
+    ring_sizes: IndexedFeatureCountIndex<u16>,
+    ring_connectivities: IndexedFeatureCountIndex<u16>,
 }
 
 /// Persistent target-side index for repeated many-query screening.
@@ -1048,8 +1693,13 @@ pub struct TargetCorpusIndex {
     aromatic_atom_count_index: CountBitsetIndex,
     ring_atom_count_index: CountBitsetIndex,
     indexed_element_count_index: Box<[(Element, CountBitsetIndex)]>,
+    indexed_ring_element_count_index: Box<[(Element, CountBitsetIndex)]>,
+    indexed_aromatic_element_count_index: Box<[(Element, CountBitsetIndex)]>,
     indexed_degree_count_index: IndexedFeatureCountIndex<u16>,
     indexed_total_hydrogen_count_index: IndexedFeatureCountIndex<u16>,
+    indexed_ring_membership_count_index: IndexedFeatureCountIndex<u16>,
+    indexed_ring_size_count_index: IndexedFeatureCountIndex<u16>,
+    indexed_ring_connectivity_count_index: IndexedFeatureCountIndex<u16>,
     single_bond_count_index: CountBitsetIndex,
     double_bond_count_index: CountBitsetIndex,
     triple_bond_count_index: CountBitsetIndex,
@@ -1712,8 +2362,13 @@ fn retained_target_screens_heap_size(screens: &[TargetScreen]) -> usize {
 #[cfg(feature = "mem_dbg")]
 fn target_screen_map_heap_size(screen: &TargetScreen) -> usize {
     btree_map_heap_estimate::<Element, usize>(screen.element_counts.len())
+        + box_slice_heap_size(screen.ring_element_counts.as_ref())
+        + box_slice_heap_size(screen.aromatic_element_counts.as_ref())
         + btree_map_heap_estimate::<u16, usize>(screen.degree_counts.len())
         + btree_map_heap_estimate::<u16, usize>(screen.total_hydrogen_counts.len())
+        + box_slice_heap_size(screen.ring_membership_counts.as_ref())
+        + box_slice_heap_size(screen.ring_size_counts.as_ref())
+        + box_slice_heap_size(screen.ring_connectivity_counts.as_ref())
 }
 
 #[cfg(feature = "mem_dbg")]
@@ -1828,47 +2483,29 @@ impl TargetCorpusIndex {
         occurrences: TargetScreenOccurrences,
         retained_screens: Box<[TargetScreen]>,
     ) -> Self {
-        let atom_count_index =
-            CountBitsetIndex::from_compact_counts(target_count, occurrences.atoms);
-        let component_count_index =
-            CountBitsetIndex::from_compact_counts(target_count, occurrences.components);
-        let aromatic_atom_count_index =
-            CountBitsetIndex::from_compact_counts(target_count, occurrences.aromatic_atoms);
-        let ring_atom_count_index =
-            CountBitsetIndex::from_compact_counts(target_count, occurrences.ring_atoms);
-        let single_bond_count_index =
-            CountBitsetIndex::from_compact_counts(target_count, occurrences.single_bonds);
-        let double_bond_count_index =
-            CountBitsetIndex::from_compact_counts(target_count, occurrences.double_bonds);
-        let triple_bond_count_index =
-            CountBitsetIndex::from_compact_counts(target_count, occurrences.triple_bonds);
-        let aromatic_bond_count_index =
-            CountBitsetIndex::from_compact_counts(target_count, occurrences.aromatic_bonds);
-        let ring_bond_count_index =
-            CountBitsetIndex::from_compact_counts(target_count, occurrences.ring_bonds);
-
-        let indexed_element_count_index =
-            build_screen_count_index(target_count, occurrences.elements);
-        let indexed_degree_count_index =
-            build_screen_count_index(target_count, occurrences.degrees);
-        let indexed_total_hydrogen_count_index =
-            build_screen_count_index(target_count, occurrences.total_hydrogens);
+        let (scalar_indexes, atom_property_indexes) =
+            build_screen_count_indexes(target_count, occurrences);
 
         Self {
             target_count,
             retained_screens,
-            atom_count_index,
-            component_count_index,
-            aromatic_atom_count_index,
-            ring_atom_count_index,
-            indexed_element_count_index,
-            indexed_degree_count_index,
-            indexed_total_hydrogen_count_index,
-            single_bond_count_index,
-            double_bond_count_index,
-            triple_bond_count_index,
-            aromatic_bond_count_index,
-            ring_bond_count_index,
+            atom_count_index: scalar_indexes.atoms,
+            component_count_index: scalar_indexes.components,
+            aromatic_atom_count_index: scalar_indexes.aromatic_atoms,
+            ring_atom_count_index: scalar_indexes.ring_atoms,
+            indexed_element_count_index: atom_property_indexes.elements,
+            indexed_ring_element_count_index: atom_property_indexes.ring_elements,
+            indexed_aromatic_element_count_index: atom_property_indexes.aromatic_elements,
+            indexed_degree_count_index: atom_property_indexes.degrees,
+            indexed_total_hydrogen_count_index: atom_property_indexes.total_hydrogens,
+            indexed_ring_membership_count_index: atom_property_indexes.ring_memberships,
+            indexed_ring_size_count_index: atom_property_indexes.ring_sizes,
+            indexed_ring_connectivity_count_index: atom_property_indexes.ring_connectivities,
+            single_bond_count_index: scalar_indexes.single_bonds,
+            double_bond_count_index: scalar_indexes.double_bonds,
+            triple_bond_count_index: scalar_indexes.triple_bonds,
+            aromatic_bond_count_index: scalar_indexes.aromatic_bonds,
+            ring_bond_count_index: scalar_indexes.ring_bonds,
             indexed_edge_feature_count_index: Box::new([]),
             edge_feature_mask_index: EdgeFeatureMaskIndex::default(),
             edge_atom_feature_domain: Box::new([]),
@@ -1957,9 +2594,19 @@ impl TargetCorpusIndex {
             atom_property_count_indexes: count_feature_index_heap_size(
                 &self.indexed_element_count_index,
             ) + count_feature_index_heap_size(
+                &self.indexed_ring_element_count_index,
+            ) + count_feature_index_heap_size(
+                &self.indexed_aromatic_element_count_index,
+            ) + count_feature_index_heap_size(
                 &self.indexed_degree_count_index,
             ) + count_feature_index_heap_size(
                 &self.indexed_total_hydrogen_count_index,
+            ) + count_feature_index_heap_size(
+                &self.indexed_ring_membership_count_index,
+            ) + count_feature_index_heap_size(
+                &self.indexed_ring_size_count_index,
+            ) + count_feature_index_heap_size(
+                &self.indexed_ring_connectivity_count_index,
             ),
             edge_postings: sparse_feature_count_index_heap_size(
                 &self.indexed_edge_feature_count_index,
@@ -2209,6 +2856,15 @@ impl TargetCorpusIndex {
         query: &QueryScreen,
         scratch: &mut TargetCorpusScratch<'idx>,
     ) -> Option<CandidateMaskState> {
+        self.populate_candidate_mask_with_initial_source(query, scratch, None)
+    }
+
+    fn populate_candidate_mask_with_initial_source<'idx>(
+        &'idx self,
+        query: &QueryScreen,
+        scratch: &mut TargetCorpusScratch<'idx>,
+        initial_source: Option<(&[u64], usize)>,
+    ) -> Option<CandidateMaskState> {
         if self.target_count == 0 {
             return None;
         }
@@ -2217,8 +2873,13 @@ impl TargetCorpusIndex {
         scratch.filters.clear();
         scratch.filters.reserve(
             12 + query.required_element_counts.len()
+                + query.required_ring_element_counts.len()
+                + query.required_aromatic_element_counts.len()
                 + query.required_degree_counts.len()
                 + query.required_total_hydrogen_counts.len()
+                + query.required_ring_membership_counts.len()
+                + query.required_ring_size_counts.len()
+                + query.required_ring_connectivity_counts.len()
                 + query.required_edge_feature_counts.len()
                 + query.required_path3_feature_counts.len()
                 + query.required_path4_feature_counts.len()
@@ -2230,10 +2891,19 @@ impl TargetCorpusIndex {
 
         scratch.ensure_word_count(bitset_word_count(self.target_count));
         let mut has_active_source = false;
+        let mut candidate_population = if let Some((source, source_population)) = initial_source {
+            intersect_source_with_population(
+                &mut scratch.candidate_mask,
+                &mut has_active_source,
+                source,
+                source_population,
+            )?
+        } else {
+            self.target_count
+        };
         scratch
             .filters
             .sort_unstable_by_key(|filter| filter.population);
-        let mut candidate_population = self.target_count;
         for &filter in &scratch.filters {
             let population = intersect_source_with_population(
                 &mut scratch.candidate_mask,
@@ -2243,7 +2913,23 @@ impl TargetCorpusIndex {
             )?;
             candidate_population = population;
         }
+        if !self.apply_bond_pair_count_filters(
+            query,
+            scratch,
+            &mut has_active_source,
+            &mut candidate_population,
+        ) {
+            return None;
+        }
         if !self.apply_feature_count_filters(
+            query,
+            scratch,
+            &mut has_active_source,
+            &mut candidate_population,
+        ) {
+            return None;
+        }
+        if !self.apply_alternative_screen_groups(
             query,
             scratch,
             &mut has_active_source,
@@ -2375,13 +3061,151 @@ impl TargetCorpusIndex {
     ) -> bool {
         collect_indexed_required_count_filters(
             filters,
+            &self.indexed_ring_element_count_index,
+            &query.required_ring_element_counts,
+        ) && collect_indexed_required_count_filters(
+            filters,
+            &self.indexed_aromatic_element_count_index,
+            &query.required_aromatic_element_counts,
+        ) && collect_indexed_required_count_filters(
+            filters,
             &self.indexed_degree_count_index,
             &query.required_degree_counts,
         ) && collect_indexed_required_count_filters(
             filters,
             &self.indexed_total_hydrogen_count_index,
             &query.required_total_hydrogen_counts,
+        ) && collect_indexed_required_count_filters(
+            filters,
+            &self.indexed_ring_membership_count_index,
+            &query.required_ring_membership_counts,
+        ) && collect_indexed_required_count_filters(
+            filters,
+            &self.indexed_ring_size_count_index,
+            &query.required_ring_size_counts,
+        ) && collect_indexed_required_count_filters(
+            filters,
+            &self.indexed_ring_connectivity_count_index,
+            &query.required_ring_connectivity_counts,
         )
+    }
+
+    fn apply_bond_pair_count_filters(
+        &self,
+        query: &QueryScreen,
+        scratch: &mut TargetCorpusScratch<'_>,
+        has_active_source: &mut bool,
+        candidate_population: &mut usize,
+    ) -> bool {
+        for (&pair, &required) in &query.required_bond_pair_counts {
+            let Some(pair_population) =
+                self.populate_bond_pair_count_candidate_mask(pair, required, scratch)
+            else {
+                return false;
+            };
+            let Some(population) = intersect_source_with_population(
+                &mut scratch.candidate_mask,
+                has_active_source,
+                &scratch.bond_pair_candidate_mask,
+                pair_population,
+            ) else {
+                return false;
+            };
+            *candidate_population = population;
+        }
+
+        true
+    }
+
+    fn populate_bond_pair_count_candidate_mask(
+        &self,
+        pair: BondKindPair,
+        required: usize,
+        scratch: &mut TargetCorpusScratch<'_>,
+    ) -> Option<usize> {
+        if required == 0 {
+            return Some(self.target_count);
+        }
+
+        let word_count = bitset_word_count(self.target_count);
+        ensure_zeroed_words(&mut scratch.bond_pair_candidate_mask, word_count);
+        for first_required in 0..=required {
+            let second_required = required - first_required;
+            if self.populate_bond_pair_count_term_mask(
+                pair,
+                first_required,
+                second_required,
+                scratch,
+            ) {
+                for (candidate_word, &term_word) in scratch
+                    .bond_pair_candidate_mask
+                    .iter_mut()
+                    .zip(&scratch.bond_pair_term_mask)
+                {
+                    *candidate_word |= term_word;
+                }
+            }
+        }
+
+        let population = bitset_population(&scratch.bond_pair_candidate_mask, self.target_count);
+        (population != 0).then_some(population)
+    }
+
+    fn populate_bond_pair_count_term_mask(
+        &self,
+        pair: BondKindPair,
+        first_required: usize,
+        second_required: usize,
+        scratch: &mut TargetCorpusScratch<'_>,
+    ) -> bool {
+        let word_count = bitset_word_count(self.target_count);
+        ensure_zeroed_words(&mut scratch.bond_pair_term_mask, word_count);
+        let mut has_term_source = false;
+        if first_required > 0 {
+            let Some(filter) = self.bond_kind_count_filter(pair.first, first_required) else {
+                return false;
+            };
+            if intersect_source_with_population(
+                &mut scratch.bond_pair_term_mask,
+                &mut has_term_source,
+                filter.source,
+                filter.population,
+            )
+            .is_none()
+            {
+                return false;
+            }
+        }
+        if second_required > 0 {
+            let Some(filter) = self.bond_kind_count_filter(pair.second, second_required) else {
+                return false;
+            };
+            if intersect_source_with_population(
+                &mut scratch.bond_pair_term_mask,
+                &mut has_term_source,
+                filter.source,
+                filter.population,
+            )
+            .is_none()
+            {
+                return false;
+            }
+        }
+        has_term_source
+    }
+
+    fn bond_kind_count_filter(
+        &self,
+        kind: RequiredBondKind,
+        required: usize,
+    ) -> Option<RequiredCountFilter<'_>> {
+        match kind {
+            RequiredBondKind::Single => &self.single_bond_count_index,
+            RequiredBondKind::Double => &self.double_bond_count_index,
+            RequiredBondKind::Triple => &self.triple_bond_count_index,
+            RequiredBondKind::Aromatic => &self.aromatic_bond_count_index,
+        }
+        .filter_for_at_least(required)
     }
 
     fn apply_feature_count_filters<'idx>(
@@ -2438,6 +3262,69 @@ impl TargetCorpusIndex {
         mask.clear();
         mask.extend_from_slice(&scratch.candidate_mask);
         Some(mask)
+    }
+
+    fn apply_alternative_screen_groups<'idx>(
+        &'idx self,
+        query: &QueryScreen,
+        scratch: &mut TargetCorpusScratch<'idx>,
+        has_active_source: &mut bool,
+        candidate_population: &mut usize,
+    ) -> bool {
+        for group in &query.alternative_screen_groups {
+            let group_result = {
+                let active_source = if *has_active_source {
+                    Some((scratch.candidate_mask.as_slice(), *candidate_population))
+                } else {
+                    None
+                };
+                self.alternative_screen_group_candidate_mask(group, active_source)
+            };
+            let Some((group_mask, group_population)) = group_result else {
+                return false;
+            };
+            let Some(population) = intersect_source_with_population(
+                &mut scratch.candidate_mask,
+                has_active_source,
+                &group_mask,
+                group_population,
+            ) else {
+                return false;
+            };
+            *candidate_population = population;
+        }
+        true
+    }
+
+    fn alternative_screen_group_candidate_mask(
+        &self,
+        group: &[QueryScreen],
+        active_source: Option<(&[u64], usize)>,
+    ) -> Option<(Vec<u64>, usize)> {
+        let word_count = bitset_word_count(self.target_count);
+        let mut group_mask = vec![0; word_count];
+        let mut alternative_scratch = TargetCorpusScratch::new();
+        for alternative in group {
+            let Some(state) = self.populate_candidate_mask_with_initial_source(
+                alternative,
+                &mut alternative_scratch,
+                active_source,
+            ) else {
+                continue;
+            };
+            if !state.has_active_source {
+                fill_all_target_bits(&mut group_mask, self.target_count);
+                return Some((group_mask, self.target_count));
+            }
+            for (group_word, &alternative_word) in group_mask
+                .iter_mut()
+                .zip(&alternative_scratch.candidate_mask)
+            {
+                *group_word |= alternative_word;
+            }
+        }
+        let population = bitset_population(&group_mask, self.target_count);
+        (population != 0).then_some((group_mask, population))
     }
 
     fn populate_edge_candidate_mask(
@@ -3039,6 +3926,65 @@ fn required_counts_may_match<T: Ord>(
     })
 }
 
+fn required_count_slice_may_match<T: Ord>(
+    required_counts: &BTreeMap<T, usize>,
+    target_counts: &[(T, usize)],
+) -> bool {
+    required_counts.iter().all(|(feature, required)| {
+        count_slice_get(target_counts, feature)
+            .copied()
+            .unwrap_or_default()
+            >= *required
+    })
+}
+
+fn bond_pair_counts_may_match(
+    required_counts: &BTreeMap<BondKindPair, usize>,
+    target_counts: BondCountScreen,
+) -> bool {
+    required_counts.iter().all(|(&pair, &required)| {
+        bond_kind_count(target_counts, pair.first) + bond_kind_count(target_counts, pair.second)
+            >= required
+    })
+}
+
+const fn bond_kind_count(counts: BondCountScreen, kind: RequiredBondKind) -> usize {
+    match kind {
+        RequiredBondKind::Single => counts.single,
+        RequiredBondKind::Double => counts.double,
+        RequiredBondKind::Triple => counts.triple,
+        RequiredBondKind::Aromatic => counts.aromatic,
+    }
+}
+
+fn fill_all_target_bits(words: &mut [u64], target_count: usize) {
+    words.fill(u64::MAX);
+    let trailing_bits = target_count % u64::BITS as usize;
+    if trailing_bits != 0 {
+        if let Some(last) = words.last_mut() {
+            *last = (1u64 << trailing_bits) - 1;
+        }
+    }
+}
+
+fn bitset_population(words: &[u64], target_count: usize) -> usize {
+    let full_word_count = target_count / u64::BITS as usize;
+    let full_population = words
+        .iter()
+        .take(full_word_count)
+        .map(|word| word.count_ones() as usize)
+        .sum::<usize>();
+    let trailing_bits = target_count % u64::BITS as usize;
+    if trailing_bits == 0 {
+        return full_population;
+    }
+    let trailing_mask = (1u64 << trailing_bits) - 1;
+    full_population
+        + words
+            .get(full_word_count)
+            .map_or(0, |word| (word & trailing_mask).count_ones() as usize)
+}
+
 fn build_screen_count_index<T>(
     target_count: usize,
     occurrences: ScreenCountOccurrences<T>,
@@ -3053,6 +3999,120 @@ where
             (feature, index)
         })
         .collect()
+}
+
+fn build_screen_count_indexes(
+    target_count: usize,
+    occurrences: TargetScreenOccurrences,
+) -> (ScalarScreenCountIndexes, AtomPropertyScreenCountIndexes) {
+    let (scalar_occurrences, atom_property_occurrences) = occurrences.into_parts();
+
+    #[cfg(feature = "rayon")]
+    {
+        rayon::join(
+            || build_scalar_screen_count_indexes(target_count, scalar_occurrences),
+            || build_atom_property_screen_count_indexes(target_count, atom_property_occurrences),
+        )
+    }
+
+    #[cfg(not(feature = "rayon"))]
+    {
+        (
+            build_scalar_screen_count_indexes(target_count, scalar_occurrences),
+            build_atom_property_screen_count_indexes(target_count, atom_property_occurrences),
+        )
+    }
+}
+
+fn build_scalar_screen_count_indexes(
+    target_count: usize,
+    occurrences: ScalarScreenOccurrences,
+) -> ScalarScreenCountIndexes {
+    ScalarScreenCountIndexes {
+        atoms: CountBitsetIndex::from_compact_counts(target_count, occurrences.atoms),
+        components: CountBitsetIndex::from_compact_counts(target_count, occurrences.components),
+        aromatic_atoms: CountBitsetIndex::from_compact_counts(
+            target_count,
+            occurrences.aromatic_atoms,
+        ),
+        ring_atoms: CountBitsetIndex::from_compact_counts(target_count, occurrences.ring_atoms),
+        single_bonds: CountBitsetIndex::from_compact_counts(target_count, occurrences.single_bonds),
+        double_bonds: CountBitsetIndex::from_compact_counts(target_count, occurrences.double_bonds),
+        triple_bonds: CountBitsetIndex::from_compact_counts(target_count, occurrences.triple_bonds),
+        aromatic_bonds: CountBitsetIndex::from_compact_counts(
+            target_count,
+            occurrences.aromatic_bonds,
+        ),
+        ring_bonds: CountBitsetIndex::from_compact_counts(target_count, occurrences.ring_bonds),
+    }
+}
+
+fn build_atom_property_screen_count_indexes(
+    target_count: usize,
+    occurrences: AtomPropertyScreenOccurrences,
+) -> AtomPropertyScreenCountIndexes {
+    #[cfg(feature = "rayon")]
+    {
+        let ((elements, ring_elements), (aromatic_elements, degrees)) = rayon::join(
+            || {
+                rayon::join(
+                    || build_screen_count_index(target_count, occurrences.elements),
+                    || build_screen_count_index(target_count, occurrences.ring_elements),
+                )
+            },
+            || {
+                rayon::join(
+                    || build_screen_count_index(target_count, occurrences.aromatic_elements),
+                    || build_screen_count_index(target_count, occurrences.degrees),
+                )
+            },
+        );
+        let ((total_hydrogens, ring_memberships), (ring_sizes, ring_connectivities)) = rayon::join(
+            || {
+                rayon::join(
+                    || build_screen_count_index(target_count, occurrences.total_hydrogens),
+                    || build_screen_count_index(target_count, occurrences.ring_memberships),
+                )
+            },
+            || {
+                rayon::join(
+                    || build_screen_count_index(target_count, occurrences.ring_sizes),
+                    || build_screen_count_index(target_count, occurrences.ring_connectivities),
+                )
+            },
+        );
+
+        AtomPropertyScreenCountIndexes {
+            elements,
+            ring_elements,
+            aromatic_elements,
+            degrees,
+            total_hydrogens,
+            ring_memberships,
+            ring_sizes,
+            ring_connectivities,
+        }
+    }
+
+    #[cfg(not(feature = "rayon"))]
+    {
+        AtomPropertyScreenCountIndexes {
+            elements: build_screen_count_index(target_count, occurrences.elements),
+            ring_elements: build_screen_count_index(target_count, occurrences.ring_elements),
+            aromatic_elements: build_screen_count_index(
+                target_count,
+                occurrences.aromatic_elements,
+            ),
+            degrees: build_screen_count_index(target_count, occurrences.degrees),
+            total_hydrogens: build_screen_count_index(target_count, occurrences.total_hydrogens),
+            ring_memberships: build_screen_count_index(target_count, occurrences.ring_memberships),
+            ring_sizes: build_screen_count_index(target_count, occurrences.ring_sizes),
+            ring_connectivities: build_screen_count_index(
+                target_count,
+                occurrences.ring_connectivities,
+            ),
+        }
+    }
 }
 
 #[cfg(feature = "rayon")]
@@ -3121,11 +4181,36 @@ fn push_target_screen_occurrence(
         .push(compact_screen_count(screen.bond_counts.ring));
 
     push_screen_count_occurrences(&mut occurrences.elements, target_id, &screen.element_counts);
+    push_screen_count_slice_occurrences(
+        &mut occurrences.ring_elements,
+        target_id,
+        &screen.ring_element_counts,
+    );
+    push_screen_count_slice_occurrences(
+        &mut occurrences.aromatic_elements,
+        target_id,
+        &screen.aromatic_element_counts,
+    );
     push_screen_count_occurrences(&mut occurrences.degrees, target_id, &screen.degree_counts);
     push_screen_count_occurrences(
         &mut occurrences.total_hydrogens,
         target_id,
         &screen.total_hydrogen_counts,
+    );
+    push_screen_count_slice_occurrences(
+        &mut occurrences.ring_memberships,
+        target_id,
+        &screen.ring_membership_counts,
+    );
+    push_screen_count_slice_occurrences(
+        &mut occurrences.ring_sizes,
+        target_id,
+        &screen.ring_size_counts,
+    );
+    push_screen_count_slice_occurrences(
+        &mut occurrences.ring_connectivities,
+        target_id,
+        &screen.ring_connectivity_counts,
     );
 }
 
@@ -3142,10 +4227,24 @@ fn push_screen_count_occurrences<T: Ord + Copy>(
     }
 }
 
+fn push_screen_count_slice_occurrences<T: Ord + Copy>(
+    occurrences: &mut ScreenCountOccurrences<T>,
+    target_id: TargetId,
+    counts: &[(T, usize)],
+) {
+    for &(feature, count) in counts {
+        occurrences
+            .entry(feature)
+            .or_default()
+            .push((compact_screen_count(count), target_id));
+    }
+}
+
 fn compact_screen_count(count: usize) -> CompactScreenCount {
     CompactScreenCount::try_from(count).expect("target screen count exceeds count-index capacity")
 }
 
+#[cfg(feature = "rayon")]
 fn merge_screen_occurrence_chunks(chunks: Vec<TargetScreenOccurrences>) -> TargetScreenOccurrences {
     let mut merged = TargetScreenOccurrences::default();
     for chunk in chunks {
@@ -3154,6 +4253,7 @@ fn merge_screen_occurrence_chunks(chunks: Vec<TargetScreenOccurrences>) -> Targe
     merged
 }
 
+#[cfg(feature = "rayon")]
 fn merge_screen_occurrences(
     merged: &mut TargetScreenOccurrences,
     mut chunk: TargetScreenOccurrences,
@@ -3168,10 +4268,16 @@ fn merge_screen_occurrences(
     merged.aromatic_bonds.append(&mut chunk.aromatic_bonds);
     merged.ring_bonds.append(&mut chunk.ring_bonds);
     merge_screen_count_index(&mut merged.elements, chunk.elements);
+    merge_screen_count_index(&mut merged.ring_elements, chunk.ring_elements);
+    merge_screen_count_index(&mut merged.aromatic_elements, chunk.aromatic_elements);
     merge_screen_count_index(&mut merged.degrees, chunk.degrees);
     merge_screen_count_index(&mut merged.total_hydrogens, chunk.total_hydrogens);
+    merge_screen_count_index(&mut merged.ring_memberships, chunk.ring_memberships);
+    merge_screen_count_index(&mut merged.ring_sizes, chunk.ring_sizes);
+    merge_screen_count_index(&mut merged.ring_connectivities, chunk.ring_connectivities);
 }
 
+#[cfg(feature = "rayon")]
 fn merge_screen_count_index<T: Ord>(
     merged: &mut ScreenCountOccurrences<T>,
     chunk: ScreenCountOccurrences<T>,
@@ -4022,6 +5128,7 @@ fn compact_target_feature_count(count: usize) -> u16 {
     u16::try_from(count).expect("target local-feature multiplicity must fit in u16")
 }
 
+#[cfg(feature = "rayon")]
 fn merge_target_index_occurrence_chunks(
     chunks: Vec<TargetIndexOccurrences>,
 ) -> TargetIndexOccurrences {
@@ -4033,6 +5140,7 @@ fn merge_target_index_occurrence_chunks(
     merged
 }
 
+#[cfg(feature = "rayon")]
 fn merge_feature_occurrences(
     merged: &mut TargetFeatureOccurrences,
     chunk: TargetFeatureOccurrences,
@@ -4043,6 +5151,7 @@ fn merge_feature_occurrences(
     merge_feature_count_index(&mut merged.star3, chunk.star3);
 }
 
+#[cfg(feature = "rayon")]
 fn merge_feature_count_index<T: Ord>(
     merged: &mut BTreeMap<T, Vec<(TargetId, u16)>>,
     chunk: BTreeMap<T, Vec<(TargetId, u16)>>,
@@ -4516,8 +5625,12 @@ fn grouped_component_count(component_groups: &[Option<ComponentGroupId>]) -> usi
 #[derive(Debug, Default)]
 struct QueryAtomRequirements {
     element_counts: BTreeMap<Element, usize>,
+    aromatic_element_counts: BTreeMap<Element, usize>,
     degree_counts: BTreeMap<u16, usize>,
     total_hydrogen_counts: BTreeMap<u16, usize>,
+    ring_membership_counts: BTreeMap<u16, usize>,
+    ring_size_counts: BTreeMap<u16, usize>,
+    ring_connectivity_counts: BTreeMap<u16, usize>,
     min_aromatic_count: usize,
     ring_atom_ids: BTreeSet<usize>,
 }
@@ -4526,6 +5639,7 @@ struct QueryAtomRequirements {
 struct QueryBondRequirements {
     incident_bonds: Vec<Vec<usize>>,
     counts: BondCountScreen,
+    pair_counts: BTreeMap<BondKindPair, usize>,
     ring_bond_ids: BTreeSet<usize>,
 }
 
@@ -4549,6 +5663,12 @@ fn collect_query_atom_requirements(query: &QueryMol) -> QueryAtomRequirements {
         let atom_requirement = forced_atom_requirement(&atom.expr);
         if let Some(element) = atom_requirement.element {
             *requirements.element_counts.entry(element).or_insert(0) += 1;
+            if atom_requirement.requires_aromatic {
+                *requirements
+                    .aromatic_element_counts
+                    .entry(element)
+                    .or_insert(0) += 1;
+            }
         }
         if atom_requirement.requires_aromatic {
             requirements.min_aromatic_count += 1;
@@ -4567,8 +5687,39 @@ fn collect_query_atom_requirements(query: &QueryMol) -> QueryAtomRequirements {
                 .entry(total_hydrogens)
                 .or_insert(0) += 1;
         }
+        if let Some(ring_membership) = count_requirement.ring_membership {
+            *requirements
+                .ring_membership_counts
+                .entry(ring_membership)
+                .or_insert(0) += 1;
+        }
+        if let Some(ring_size) = count_requirement.ring_size {
+            *requirements.ring_size_counts.entry(ring_size).or_insert(0) += 1;
+        }
+        if let Some(ring_connectivity) = count_requirement.ring_connectivity {
+            *requirements
+                .ring_connectivity_counts
+                .entry(ring_connectivity)
+                .or_insert(0) += 1;
+        }
     }
     requirements
+}
+
+fn collect_query_ring_element_counts(
+    query: &QueryMol,
+    ring_atom_ids: &BTreeSet<usize>,
+) -> BTreeMap<Element, usize> {
+    let mut counts = BTreeMap::new();
+    for &atom_id in ring_atom_ids {
+        if let Some(element) = query
+            .atom(atom_id)
+            .and_then(|atom| exact_atom_requirement(&atom.expr).element)
+        {
+            *counts.entry(element).or_insert(0) += 1;
+        }
+    }
+    counts
 }
 
 fn collect_query_topology_requirements(query: &QueryMol) -> QueryTopologyRequirements {
@@ -4586,6 +5737,7 @@ fn collect_query_topology_requirements(query: &QueryMol) -> QueryTopologyRequire
 fn collect_query_bond_requirements(query: &QueryMol) -> QueryBondRequirements {
     let mut incident_bonds = vec![Vec::new(); query.atom_count()];
     let mut required_bond_counts = BondCountScreen::default();
+    let mut required_bond_pair_counts = BTreeMap::new();
     let mut ring_bond_ids = BTreeSet::new();
 
     for bond in query.bonds() {
@@ -4593,6 +5745,9 @@ fn collect_query_bond_requirements(query: &QueryMol) -> QueryBondRequirements {
         incident_bonds[bond.src].push(bond.id);
         incident_bonds[bond.dst].push(bond.id);
         count_required_bond_kind(&mut required_bond_counts, requirement.kind);
+        if let Some(pair) = required_bond_kind_pair(&bond.expr) {
+            *required_bond_pair_counts.entry(pair).or_insert(0) += 1;
+        }
         if requirement.requires_ring {
             ring_bond_ids.insert(bond.id);
         }
@@ -4602,6 +5757,7 @@ fn collect_query_bond_requirements(query: &QueryMol) -> QueryBondRequirements {
     QueryBondRequirements {
         incident_bonds,
         counts: required_bond_counts,
+        pair_counts: required_bond_pair_counts,
         ring_bond_ids,
     }
 }
@@ -4613,6 +5769,94 @@ const fn count_required_bond_kind(counts: &mut BondCountScreen, kind: Option<Req
         Some(RequiredBondKind::Triple) => counts.triple += 1,
         Some(RequiredBondKind::Aromatic) => counts.aromatic += 1,
         None => {}
+    }
+}
+
+fn required_bond_kind_pair(expr: &BondExpr) -> Option<BondKindPair> {
+    let BondExpr::Query(tree) = expr else {
+        return None;
+    };
+    bond_kind_mask(tree).to_pair()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BondKindMask(u8);
+
+impl BondKindMask {
+    const ALL: Self =
+        Self(Self::SINGLE_BIT | Self::DOUBLE_BIT | Self::TRIPLE_BIT | Self::AROMATIC_BIT);
+    const AROMATIC_BIT: u8 = 1 << 3;
+    const DOUBLE_BIT: u8 = 1 << 1;
+    const SINGLE_BIT: u8 = 1;
+    const TRIPLE_BIT: u8 = 1 << 2;
+
+    const fn from_kind(kind: RequiredBondKind) -> Self {
+        match kind {
+            RequiredBondKind::Single => Self(Self::SINGLE_BIT),
+            RequiredBondKind::Double => Self(Self::DOUBLE_BIT),
+            RequiredBondKind::Triple => Self(Self::TRIPLE_BIT),
+            RequiredBondKind::Aromatic => Self(Self::AROMATIC_BIT),
+        }
+    }
+
+    const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    const fn intersection(self, other: Self) -> Self {
+        Self(self.0 & other.0)
+    }
+
+    fn to_pair(self) -> Option<BondKindPair> {
+        if self.0.count_ones() != 2 {
+            return None;
+        }
+        let mut kinds = [
+            RequiredBondKind::Single,
+            RequiredBondKind::Double,
+            RequiredBondKind::Triple,
+            RequiredBondKind::Aromatic,
+        ]
+        .into_iter()
+        .filter(|&kind| self.contains(kind));
+        let first = kinds.next()?;
+        let second = kinds.next()?;
+        Some(BondKindPair::new(first, second))
+    }
+
+    const fn contains(self, kind: RequiredBondKind) -> bool {
+        self.0 & Self::from_kind(kind).0 != 0
+    }
+}
+
+fn bond_kind_mask(tree: &BondExprTree) -> BondKindMask {
+    match tree {
+        BondExprTree::Primitive(primitive) => primitive_bond_kind_mask(*primitive),
+        BondExprTree::Not(_) => BondKindMask::ALL,
+        BondExprTree::Or(items) => items
+            .iter()
+            .map(bond_kind_mask)
+            .reduce(BondKindMask::union)
+            .unwrap_or(BondKindMask::ALL),
+        BondExprTree::HighAnd(items) | BondExprTree::LowAnd(items) => items
+            .iter()
+            .map(bond_kind_mask)
+            .reduce(BondKindMask::intersection)
+            .unwrap_or(BondKindMask::ALL),
+    }
+}
+
+const fn primitive_bond_kind_mask(primitive: BondPrimitive) -> BondKindMask {
+    match primitive {
+        BondPrimitive::Bond(Bond::Single | Bond::Up | Bond::Down) => {
+            BondKindMask::from_kind(RequiredBondKind::Single)
+        }
+        BondPrimitive::Bond(Bond::Double) => BondKindMask::from_kind(RequiredBondKind::Double),
+        BondPrimitive::Bond(Bond::Triple) => BondKindMask::from_kind(RequiredBondKind::Triple),
+        BondPrimitive::Aromatic => BondKindMask::from_kind(RequiredBondKind::Aromatic),
+        BondPrimitive::Any | BondPrimitive::Ring | BondPrimitive::Bond(Bond::Quadruple) => {
+            BondKindMask::ALL
+        }
     }
 }
 

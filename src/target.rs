@@ -62,7 +62,6 @@ impl From<Bond> for BondLabel {
             Bond::Single => Self::Single,
             Bond::Double => Self::Double,
             Bond::Triple => Self::Triple,
-            Bond::Aromatic => Self::Aromatic,
             Bond::Up => Self::Up,
             Bond::Down => Self::Down,
             Bond::Quadruple => Self::Any,
@@ -183,7 +182,6 @@ mod tests {
 
     #[test]
     fn bond_label_conversion_covers_remaining_variants() {
-        assert_eq!(BondLabel::from(Bond::Aromatic), BondLabel::Aromatic);
         assert_eq!(BondLabel::from(Bond::Down), BondLabel::Down);
         assert_eq!(BondLabel::from(Bond::Quadruple), BondLabel::Any);
     }

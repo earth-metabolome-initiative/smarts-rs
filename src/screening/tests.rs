@@ -6,9 +6,10 @@ use serde::Deserialize;
 use smiles_parser::Smiles;
 
 use super::{
-    AtomFeature, BondCountScreen, EdgeBondFeature, EdgeFeature, QueryFeatureFilter, QueryScreen,
-    ShardedTargetCorpusIndex, ShardedTargetCorpusIndexError, TargetCandidateSet, TargetCorpusIndex,
-    TargetCorpusIndexShard, TargetCorpusScratch, TargetScreen,
+    count_slice_get, AtomFeature, BondCountScreen, EdgeBondFeature, EdgeFeature,
+    QueryFeatureFilter, QueryScreen, ShardedTargetCorpusIndex, ShardedTargetCorpusIndexError,
+    TargetCandidateSet, TargetCorpusIndex, TargetCorpusIndexShard, TargetCorpusScratch,
+    TargetScreen,
 };
 use crate::prepared::PreparedTarget;
 use crate::{CompiledQuery, MatchScratch};
@@ -38,6 +39,90 @@ fn query_screen_extracts_conservative_lower_bounds() {
     let recursive_hydroxyl = QueryScreen::new(&QueryMol::from_str("[#8&$([O&H1&X2])]").unwrap());
     assert_eq!(
         recursive_hydroxyl.required_total_hydrogen_counts.get(&1),
+        Some(&1)
+    );
+
+    let recursive_ring = QueryScreen::new(&QueryMol::from_str("[!#1&$(C1COCCN1)]").unwrap());
+    assert_eq!(recursive_ring.min_atom_count, 6);
+    assert_eq!(recursive_ring.min_ring_atom_count, 6);
+    assert_eq!(
+        recursive_ring
+            .required_element_counts
+            .get(&elements_rs::Element::C),
+        Some(&4)
+    );
+    assert_eq!(
+        recursive_ring
+            .required_element_counts
+            .get(&elements_rs::Element::N),
+        Some(&1)
+    );
+    assert_eq!(
+        recursive_ring
+            .required_element_counts
+            .get(&elements_rs::Element::O),
+        Some(&1)
+    );
+
+    let recursive_alternatives = QueryScreen::new(
+        &QueryMol::from_str("[!#1;$([#6]1-[#8]-[#7]-1),$([#6]1-[#8]-[#7]-[#6]-1)]").unwrap(),
+    );
+    assert_eq!(recursive_alternatives.min_atom_count, 3);
+    assert_eq!(recursive_alternatives.min_ring_atom_count, 3);
+    assert_eq!(
+        recursive_alternatives
+            .required_element_counts
+            .get(&elements_rs::Element::C),
+        Some(&1)
+    );
+    assert_eq!(
+        recursive_alternatives
+            .required_element_counts
+            .get(&elements_rs::Element::N),
+        Some(&1)
+    );
+    assert_eq!(
+        recursive_alternatives
+            .required_element_counts
+            .get(&elements_rs::Element::O),
+        Some(&1)
+    );
+
+    let heteroaromatic_ring = QueryScreen::new(&QueryMol::from_str("c1ncccc1").unwrap());
+    assert_eq!(
+        heteroaromatic_ring
+            .required_ring_element_counts
+            .get(&elements_rs::Element::C),
+        Some(&5)
+    );
+    assert_eq!(
+        heteroaromatic_ring
+            .required_ring_element_counts
+            .get(&elements_rs::Element::N),
+        Some(&1)
+    );
+    assert_eq!(
+        heteroaromatic_ring
+            .required_aromatic_element_counts
+            .get(&elements_rs::Element::N),
+        Some(&1)
+    );
+
+    let exact_ring_predicates = QueryScreen::new(&QueryMol::from_str("[#6;R2;r6;x3]").unwrap());
+    assert_eq!(
+        exact_ring_predicates
+            .required_ring_membership_counts
+            .get(&2),
+        Some(&1)
+    );
+    assert_eq!(
+        exact_ring_predicates.required_ring_size_counts.get(&6),
+        Some(&1)
+    );
+    assert_eq!(
+        exact_ring_predicates
+            .required_ring_connectivity_counts
+            .get(&3),
         Some(&1)
     );
 }
@@ -75,6 +160,23 @@ fn target_screen_summarizes_prepared_target() {
     );
     assert_eq!(screen.aromatic_atom_count, 6);
     assert_eq!(screen.ring_atom_count, 6);
+    assert_eq!(
+        count_slice_get(&screen.ring_element_counts, &elements_rs::Element::C),
+        Some(&6)
+    );
+    assert_eq!(
+        count_slice_get(&screen.aromatic_element_counts, &elements_rs::Element::C),
+        Some(&6)
+    );
+    assert_eq!(
+        count_slice_get(&screen.ring_membership_counts, &1),
+        Some(&6)
+    );
+    assert_eq!(count_slice_get(&screen.ring_size_counts, &6), Some(&6));
+    assert_eq!(
+        count_slice_get(&screen.ring_connectivity_counts, &2),
+        Some(&6)
+    );
     assert_eq!(screen.bond_counts.aromatic, 6);
     assert_eq!(screen.bond_counts.ring, 6);
 }
@@ -98,6 +200,12 @@ fn screen_rejects_missing_atoms_elements_aromaticity_ring_membership_and_bond_ty
     let double_bond_query = QueryScreen::new(&QueryMol::from_str("C=C").unwrap());
     let ring_bond_query = QueryScreen::new(&QueryMol::from_str("C@C").unwrap());
     let topological_ring_query = QueryScreen::new(&QueryMol::from_str("C1CCCCC1").unwrap());
+    let recursive_ring_query = QueryScreen::new(&QueryMol::from_str("[!#1&$(C1COCCN1)]").unwrap());
+    let ring_nitrogen_query = QueryScreen::new(&QueryMol::from_str("[#7&R]").unwrap());
+    let aromatic_nitrogen_query = QueryScreen::new(&QueryMol::from_str("[n]").unwrap());
+    let ring_membership_two_query = QueryScreen::new(&QueryMol::from_str("[#6;R2]").unwrap());
+    let ring_size_six_query = QueryScreen::new(&QueryMol::from_str("[#6;r6]").unwrap());
+    let ring_connectivity_three_query = QueryScreen::new(&QueryMol::from_str("[#6;x3]").unwrap());
 
     let small_target = TargetScreen::new(&PreparedTarget::new(Smiles::from_str("CC").unwrap()));
     let aliphatic_target = TargetScreen::new(&PreparedTarget::new(Smiles::from_str("CC").unwrap()));
@@ -107,6 +215,17 @@ fn screen_rejects_missing_atoms_elements_aromaticity_ring_membership_and_bond_ty
         TargetScreen::new(&PreparedTarget::new(Smiles::from_str("CC").unwrap()));
     let cyclohexane_target =
         TargetScreen::new(&PreparedTarget::new(Smiles::from_str("C1CCCCC1").unwrap()));
+    let morpholine_target =
+        TargetScreen::new(&PreparedTarget::new(Smiles::from_str("C1COCCN1").unwrap()));
+    let benzene_target =
+        TargetScreen::new(&PreparedTarget::new(Smiles::from_str("c1ccccc1").unwrap()));
+    let pyridine_target =
+        TargetScreen::new(&PreparedTarget::new(Smiles::from_str("n1ccccc1").unwrap()));
+    let naphthalene_target = TargetScreen::new(&PreparedTarget::new(
+        Smiles::from_str("c1ccc2ccccc2c1").unwrap(),
+    ));
+    let cyclopropane_target =
+        TargetScreen::new(&PreparedTarget::new(Smiles::from_str("C1CC1").unwrap()));
 
     assert!(!atom_count_query.may_match(&small_target));
     assert!(!aromatic_query.may_match(&aliphatic_target));
@@ -116,6 +235,18 @@ fn screen_rejects_missing_atoms_elements_aromaticity_ring_membership_and_bond_ty
     assert!(!ring_bond_query.may_match(&single_bond_target));
     assert!(!topological_ring_query.may_match(&acyclic_target));
     assert!(topological_ring_query.may_match(&cyclohexane_target));
+    assert!(!recursive_ring_query.may_match(&acyclic_target));
+    assert!(recursive_ring_query.may_match(&morpholine_target));
+    assert!(!ring_nitrogen_query.may_match(&benzene_target));
+    assert!(ring_nitrogen_query.may_match(&pyridine_target));
+    assert!(!aromatic_nitrogen_query.may_match(&morpholine_target));
+    assert!(aromatic_nitrogen_query.may_match(&pyridine_target));
+    assert!(!ring_membership_two_query.may_match(&benzene_target));
+    assert!(ring_membership_two_query.may_match(&naphthalene_target));
+    assert!(!ring_size_six_query.may_match(&cyclopropane_target));
+    assert!(ring_size_six_query.may_match(&cyclohexane_target));
+    assert!(!ring_connectivity_three_query.may_match(&benzene_target));
+    assert!(ring_connectivity_three_query.may_match(&naphthalene_target));
 }
 
 #[test]
@@ -147,6 +278,71 @@ fn corpus_index_filters_exact_degree_and_total_hydrogen_counts() {
 
     assert_eq!(index.candidate_ids(&terminal_methyl), alloc::vec![0, 2]);
     assert_eq!(index.candidate_ids(&quaternary_carbon), alloc::vec![2]);
+}
+
+#[test]
+fn corpus_index_filters_positive_recursive_alternatives() {
+    let prepared_targets = ["CO", "CS", "CC"]
+        .into_iter()
+        .map(|smiles| PreparedTarget::new(Smiles::from_str(smiles).unwrap()))
+        .collect::<alloc::vec::Vec<_>>();
+    let index = TargetCorpusIndex::new(&prepared_targets);
+    let query = QueryScreen::new(&QueryMol::from_str("[!#1;$([#6]-[#8]),$([#6]-[#16])]").unwrap());
+
+    assert_eq!(index.candidate_ids(&query), alloc::vec![0, 1]);
+}
+
+#[test]
+fn corpus_index_filters_disjunctive_bond_pair_counts() {
+    let prepared_targets = ["CCC", "C#CC", "C=CC", "C=C=C"]
+        .into_iter()
+        .map(|smiles| PreparedTarget::new(Smiles::from_str(smiles).unwrap()))
+        .collect::<alloc::vec::Vec<_>>();
+    let index = TargetCorpusIndex::new(&prepared_targets);
+    let query = QueryScreen::new(&QueryMol::from_str("[#6]-,=[#6]-,=[#6]").unwrap());
+
+    assert_eq!(index.candidate_ids(&query), alloc::vec![0, 2, 3]);
+}
+
+#[test]
+fn corpus_index_filters_ring_and_aromatic_atom_property_counts() {
+    let prepared_targets = [
+        "CCN",
+        "c1ccccc1",
+        "n1ccccc1",
+        "C1CCCCC1",
+        "c1ccc2ccccc2c1",
+        "C1CC1",
+    ]
+    .into_iter()
+    .map(|smiles| PreparedTarget::new(Smiles::from_str(smiles).unwrap()))
+    .collect::<alloc::vec::Vec<_>>();
+    let index = TargetCorpusIndex::new(&prepared_targets);
+
+    let ring_nitrogen = QueryScreen::new(&QueryMol::from_str("[#7&R]").unwrap());
+    let aromatic_nitrogen = QueryScreen::new(&QueryMol::from_str("[n]").unwrap());
+    let fused_ring_carbon = QueryScreen::new(&QueryMol::from_str("[#6;R2]").unwrap());
+    let six_membered_ring_carbon = QueryScreen::new(&QueryMol::from_str("[#6;r6]").unwrap());
+    let fused_ring_connectivity = QueryScreen::new(&QueryMol::from_str("[#6;x3]").unwrap());
+    let three_membered_ring_carbon = QueryScreen::new(&QueryMol::from_str("[#6;r3]").unwrap());
+    let acyclic_carbon = QueryScreen::new(&QueryMol::from_str("[#6;R0]").unwrap());
+
+    assert_eq!(index.candidate_ids(&ring_nitrogen), alloc::vec![2]);
+    assert_eq!(index.candidate_ids(&aromatic_nitrogen), alloc::vec![2]);
+    assert_eq!(index.candidate_ids(&fused_ring_carbon), alloc::vec![4]);
+    assert_eq!(
+        index.candidate_ids(&six_membered_ring_carbon),
+        alloc::vec![1, 2, 3, 4]
+    );
+    assert_eq!(
+        index.candidate_ids(&fused_ring_connectivity),
+        alloc::vec![4]
+    );
+    assert_eq!(
+        index.candidate_ids(&three_membered_ring_carbon),
+        alloc::vec![5]
+    );
+    assert_eq!(index.candidate_ids(&acyclic_carbon), alloc::vec![0]);
 }
 
 #[test]

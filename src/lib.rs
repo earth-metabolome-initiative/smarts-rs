@@ -939,7 +939,7 @@ mod tests {
                 assert_eq!(nested.bond_count(), 1);
                 assert_eq!(
                     nested.bonds()[0].expr,
-                    BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Bond(Bond::Aromatic)))
+                    BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Aromatic))
                 );
             }
             other => panic!("expected bracket atom, got {other:?}"),

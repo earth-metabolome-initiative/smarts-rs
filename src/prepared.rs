@@ -402,7 +402,7 @@ impl PreparedTarget {
             || self
                 .target
                 .edge_for_node_pair((left_atom, right_atom))
-                .is_some_and(|edge| edge.2 == Bond::Aromatic)
+                .is_some_and(|edge| edge.4)
     }
 
     /// Returns whether the provided atom is aromatic under the RDKit-default
@@ -903,7 +903,7 @@ fn hybridization_code(target: &Smiles, aromaticity: &AromaticityAssignment, atom
         match normalized_bond(edge.2) {
             Bond::Double => double_bonds = double_bonds.saturating_add(1),
             Bond::Triple | Bond::Quadruple => has_triple = true,
-            Bond::Single | Bond::Up | Bond::Down | Bond::Aromatic => {}
+            Bond::Single | Bond::Up | Bond::Down => {}
         }
     }
 
@@ -958,7 +958,7 @@ fn neighbor_supports_conjugation(
 const fn normalized_bond(bond: Bond) -> Bond {
     match bond {
         Bond::Up | Bond::Down => Bond::Single,
-        Bond::Single | Bond::Double | Bond::Triple | Bond::Quadruple | Bond::Aromatic => bond,
+        Bond::Single | Bond::Double | Bond::Triple | Bond::Quadruple => bond,
     }
 }
 
@@ -968,6 +968,7 @@ fn effective_bond_label(
     left_atom: AtomId,
     right_atom: AtomId,
     raw_bond: Bond,
+    raw_aromatic: bool,
 ) -> BondLabel {
     if rdkit_like_oxyhalogen_terminal_oxo_bond(target, left_atom, right_atom, raw_bond) {
         return BondLabel::Single;
@@ -976,11 +977,8 @@ fn effective_bond_label(
     {
         return BondLabel::Single;
     }
-    if aromaticity.contains_edge(left_atom, right_atom)
-        && matches!(
-            normalized_bond(raw_bond),
-            Bond::Single | Bond::Double | Bond::Aromatic
-        )
+    if (raw_aromatic || aromaticity.contains_edge(left_atom, right_atom))
+        && matches!(normalized_bond(raw_bond), Bond::Single | Bond::Double)
     {
         BondLabel::Aromatic
     } else {
@@ -1171,9 +1169,7 @@ fn rdkit_like_phosphorus_terminal_oxo_bond(
                 other_double_neighbor = Some(neighbor_atom);
             }
             Bond::Single => single_neighbors.push(neighbor_atom),
-            Bond::Triple | Bond::Quadruple | Bond::Up | Bond::Down | Bond::Aromatic => {
-                return false
-            }
+            Bond::Triple | Bond::Quadruple | Bond::Up | Bond::Down => return false,
         }
     }
 
@@ -1413,7 +1409,8 @@ fn effective_neighbor_cache(
             if atom_id >= other_atom {
                 continue;
             }
-            let label = effective_bond_label(target, aromaticity, atom_id, other_atom, edge.2);
+            let label =
+                effective_bond_label(target, aromaticity, atom_id, other_atom, edge.2, edge.4);
             neighbors[atom_id].push((other_atom, label));
             neighbors[other_atom].push((atom_id, label));
         }
@@ -1458,7 +1455,6 @@ const fn edge_key(left_atom: AtomId, right_atom: AtomId) -> (AtomId, AtomId) {
 mod tests {
     use alloc::string::ToString;
     use alloc::{vec, vec::Vec};
-    use core::str::FromStr;
     use elements_rs::Element;
     use smiles_parser::{atom::Atom, AromaticityPolicy, Smiles};
 

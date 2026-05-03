@@ -6,7 +6,6 @@ use std::{
     fmt::Write,
     fs,
     path::PathBuf,
-    str::FromStr,
 };
 
 use smiles_parser::{bond::Bond, Smiles};
@@ -301,7 +300,7 @@ fn collect_paths(
             if visited[next] {
                 continue;
             }
-            bond_tokens.push(bond_smarts(edge.2));
+            bond_tokens.push(bond_smarts(edge.2, edge.4));
             collect_paths(
                 smiles,
                 ring_membership,
@@ -341,18 +340,18 @@ fn collect_branch_pairs(
                 ring_membership,
                 center,
                 left_id,
-                bond_smarts(left.2),
+                bond_smarts(left.2, left.4),
                 right_id,
-                bond_smarts(right.2),
+                bond_smarts(right.2, right.4),
             );
             let reverse = branch_pair_smarts(
                 smiles,
                 ring_membership,
                 center,
                 right_id,
-                bond_smarts(right.2),
+                bond_smarts(right.2, right.4),
                 left_id,
-                bond_smarts(left.2),
+                bond_smarts(left.2, left.4),
             );
             candidates.insert(forward.min(reverse));
         }
@@ -388,10 +387,10 @@ fn collect_carboxylate_tail_candidates(
         match (edge.2, atomic_number) {
             (Bond::Double, 8) => double_oxygen_neighbors.push(neighbor),
             (bond, 8) if is_single_like_bond(bond) => {
-                single_oxygen_neighbors.push((neighbor, bond_smarts(bond)));
+                single_oxygen_neighbors.push((neighbor, bond_smarts(bond, edge.4)));
             }
             (bond, 6) if is_single_like_bond(bond) => {
-                tail_neighbors.push((neighbor, bond_smarts(bond)));
+                tail_neighbors.push((neighbor, bond_smarts(bond, edge.4)));
             }
             _ => {}
         }
@@ -474,7 +473,7 @@ fn collect_carboxylate_tail_paths(
             if visited[next] {
                 continue;
             }
-            tail_bonds.push(bond_smarts(edge.2));
+            tail_bonds.push(bond_smarts(edge.2, edge.4));
             collect_carboxylate_tail_paths(
                 smiles,
                 ring_membership,
@@ -608,12 +607,14 @@ fn atom_smarts(
     smarts
 }
 
-const fn bond_smarts(bond: Bond) -> &'static str {
+const fn bond_smarts(bond: Bond, aromatic: bool) -> &'static str {
+    if aromatic && matches!(bond, Bond::Single) {
+        return ":";
+    }
     match bond {
         Bond::Single | Bond::Up | Bond::Down => "-",
         Bond::Double => "=",
         Bond::Triple => "#",
         Bond::Quadruple => "$",
-        Bond::Aromatic => ":",
     }
 }

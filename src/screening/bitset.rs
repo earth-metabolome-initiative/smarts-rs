@@ -24,14 +24,17 @@ pub(super) struct CachedFeatureMask {
 }
 
 impl CountBitsetIndex {
+    #[cfg(feature = "epserde")]
     pub(super) fn thresholds(&self) -> &[CountValue] {
         &self.thresholds
     }
 
+    #[cfg(feature = "epserde")]
     pub(super) fn bitsets(&self) -> &[Box<[u64]>] {
         &self.bitsets
     }
 
+    #[cfg(feature = "epserde")]
     pub(super) fn populations(&self) -> &[usize] {
         &self.populations
     }

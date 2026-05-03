@@ -909,7 +909,7 @@ fn canonicalize_runs_expression_simplifications_through_recursion_and_bonds() {
     let mut bonds = query.bonds().to_vec();
     let single = BondExprTree::Primitive(BondPrimitive::Bond(Bond::Single));
     let ring = BondExprTree::Primitive(BondPrimitive::Ring);
-    let aromatic = BondExprTree::Primitive(BondPrimitive::Bond(Bond::Aromatic));
+    let aromatic = BondExprTree::Primitive(BondPrimitive::Aromatic);
     bonds[0].expr = BondExpr::Query(BondExprTree::Or(vec![
         single.clone(),
         BondExprTree::LowAnd(vec![BondExprTree::Or(vec![single, ring]), aromatic]),

@@ -35,14 +35,14 @@ use super::{
         bitset_word_count, ensure_zeroed_words, for_each_set_bit, intersect_source,
         intersect_source_with_population, CountBitsetIndex, RequiredCountFilter,
     },
-    bond_feature_is_unconstrained, bond_feature_satisfies_query,
+    bitset_population, bond_feature_is_unconstrained, bond_feature_satisfies_query,
     features::{
         AtomFeature, EdgeBondFeature, EdgeFeature, Path3Feature, Path4Feature, RequiredBondKind,
         Star3Arm, Star3Feature,
     },
-    finalize_cached_sparse_candidate_mask, load_cached_candidate_mask,
+    fill_all_target_bits, finalize_cached_sparse_candidate_mask, load_cached_candidate_mask,
     merge_reversible_feature_mask, prepare_sparse_candidate_counts, should_filter_sparse_counts,
-    CandidateMaskState, IndexedFeatureCountIndex, IndexedFeatureIdMask,
+    BondKindPair, CandidateMaskState, IndexedFeatureCountIndex, IndexedFeatureIdMask,
     IndexedSparseFeatureCountIndex, QueryFeatureFilter, QueryScreen, SparseCandidateMaskBuffers,
     TargetCandidateSet, TargetCorpusIndex, TargetCorpusIndexShard, TargetCorpusIndexStats,
     TargetCorpusScratch,
@@ -60,7 +60,9 @@ use PersistedTargetCorpusIndexShardBuildStep::{
     BuildPersistedLayout, BuildRuntimeIndex, StorePayload,
 };
 
-const FORMAT_VERSION: u32 = 1;
+const FORMAT_VERSION: u32 = 2;
+const MANIFEST_VERSION: u32 = 1;
+const MANIFEST_SUFFIX: &str = ".manifest.tsv";
 const TARGET_SMILES_SHARD_SUFFIX: &str = ".target-smiles.eps";
 const EXTERNAL_IDS_SHARD_SUFFIX: &str = ".external-ids.eps";
 const ATOM_FEATURE_WIDTH: u16 = 5;
@@ -71,6 +73,80 @@ const EDGE_FEATURE_WIDTH: u16 = ATOM_FEATURE_WIDTH * 2 + BOND_FEATURE_WIDTH;
 const PATH3_FEATURE_WIDTH: u16 = ATOM_FEATURE_WIDTH * 3 + BOND_FEATURE_WIDTH * 2;
 const PATH4_FEATURE_WIDTH: u16 = ATOM_FEATURE_WIDTH * 4 + BOND_FEATURE_WIDTH * 3;
 const STAR3_FEATURE_WIDTH: u16 = ATOM_FEATURE_WIDTH * 4 + BOND_FEATURE_WIDTH * 3;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PersistedShardPayloadKind {
+    TargetIndex,
+    TargetSmiles,
+    ExternalIds,
+}
+
+impl PersistedShardPayloadKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::TargetIndex => "target-index",
+            Self::TargetSmiles => "target-smiles",
+            Self::ExternalIds => "external-ids",
+        }
+    }
+
+    fn from_str(value: &str) -> std::io::Result<Self> {
+        match value {
+            "target-index" => Ok(Self::TargetIndex),
+            "target-smiles" => Ok(Self::TargetSmiles),
+            "external-ids" => Ok(Self::ExternalIds),
+            _ => Err(invalid_manifest_data(format!(
+                "unknown persisted shard payload kind {value}"
+            ))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PersistedShardStoredCompression {
+    None,
+    Zstd,
+}
+
+impl PersistedShardStoredCompression {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Zstd => "zstd",
+        }
+    }
+
+    fn from_str(value: &str) -> std::io::Result<Self> {
+        match value {
+            "none" => Ok(Self::None),
+            "zstd" => Ok(Self::Zstd),
+            _ => Err(invalid_manifest_data(format!(
+                "unknown persisted shard compression {value}"
+            ))),
+        }
+    }
+}
+
+#[cfg(feature = "zstd")]
+impl From<PersistedShardCompression> for PersistedShardStoredCompression {
+    fn from(compression: PersistedShardCompression) -> Self {
+        match compression {
+            PersistedShardCompression::None => Self::None,
+            PersistedShardCompression::Zstd { .. } => Self::Zstd,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PersistedShardManifest {
+    manifest_version: u32,
+    payload_kind: PersistedShardPayloadKind,
+    format_version: u32,
+    base_target_id: u64,
+    target_count: u64,
+    compression: PersistedShardStoredCompression,
+    payload_bytes: u64,
+}
 
 /// A count-bitset filter loaded from a persisted flat count index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -387,6 +463,245 @@ fn invalid_store_input(message: impl Into<String>) -> PersistedShardStoreError {
     IoError::new(ErrorKind::InvalidInput, message.into()).into()
 }
 
+fn invalid_manifest_data(message: impl Into<String>) -> IoError {
+    IoError::new(ErrorKind::InvalidData, message.into())
+}
+
+#[cfg(feature = "zstd")]
+fn write_payload_manifest(
+    path: impl AsRef<Path>,
+    payload_kind: PersistedShardPayloadKind,
+    format_version: u32,
+    base_target_id: u64,
+    target_count: u64,
+    compression: PersistedShardStoredCompression,
+    payload_bytes: u64,
+) -> std::io::Result<()> {
+    let mut writer = BufWriter::new(File::create(persisted_manifest_path_for_payload_path(
+        path,
+    ))?);
+    writeln!(writer, "manifest_version\t{MANIFEST_VERSION}")?;
+    writeln!(writer, "payload_kind\t{}", payload_kind.as_str())?;
+    writeln!(writer, "format_version\t{format_version}")?;
+    writeln!(writer, "base_target_id\t{base_target_id}")?;
+    writeln!(writer, "target_count\t{target_count}")?;
+    writeln!(writer, "compression\t{}", compression.as_str())?;
+    writeln!(writer, "payload_bytes\t{payload_bytes}")?;
+    writeln!(writer, "crate_version\t{}", env!("CARGO_PKG_VERSION"))?;
+    writer.flush()
+}
+
+fn validate_payload_manifest(
+    path: impl AsRef<Path>,
+    expected_kind: Option<PersistedShardPayloadKind>,
+    expected_compression: PersistedShardStoredCompression,
+) -> std::io::Result<PersistedShardManifest> {
+    let path = path.as_ref();
+    let manifest = read_payload_manifest(path)?;
+    if manifest.manifest_version != MANIFEST_VERSION {
+        return Err(invalid_manifest_data(format!(
+            "persisted shard manifest {} has version {}, expected {MANIFEST_VERSION}",
+            persisted_manifest_path_for_payload_path(path).display(),
+            manifest.manifest_version
+        )));
+    }
+    if let Some(expected_kind) = expected_kind {
+        if manifest.payload_kind != expected_kind {
+            return Err(invalid_manifest_data(format!(
+                "persisted shard manifest {} has payload kind {}, expected {}",
+                persisted_manifest_path_for_payload_path(path).display(),
+                manifest.payload_kind.as_str(),
+                expected_kind.as_str()
+            )));
+        }
+    }
+    if manifest.format_version != FORMAT_VERSION {
+        return Err(invalid_manifest_data(format!(
+            "persisted shard manifest {} has format version {}, expected {FORMAT_VERSION}",
+            persisted_manifest_path_for_payload_path(path).display(),
+            manifest.format_version
+        )));
+    }
+    if manifest.compression != expected_compression {
+        return Err(invalid_manifest_data(format!(
+            "persisted shard manifest {} has compression {}, expected {}",
+            persisted_manifest_path_for_payload_path(path).display(),
+            manifest.compression.as_str(),
+            expected_compression.as_str()
+        )));
+    }
+    let payload_bytes = std::fs::metadata(path)?.len();
+    if manifest.payload_bytes != payload_bytes {
+        return Err(invalid_manifest_data(format!(
+            "persisted shard manifest {} records {} payload bytes, but {} has {payload_bytes}",
+            persisted_manifest_path_for_payload_path(path).display(),
+            manifest.payload_bytes,
+            path.display()
+        )));
+    }
+    Ok(manifest)
+}
+
+fn validate_next_shard_base(
+    path: &Path,
+    manifest: &PersistedShardManifest,
+    expected_base_target_id: u64,
+) -> std::io::Result<()> {
+    if manifest.base_target_id == expected_base_target_id {
+        return Ok(());
+    }
+    if manifest.base_target_id < expected_base_target_id {
+        return Err(invalid_manifest_data(format!(
+            "persisted shard {} overlaps previous shard range: base target id {}, expected {}",
+            path.display(),
+            manifest.base_target_id,
+            expected_base_target_id
+        )));
+    }
+    Err(invalid_manifest_data(format!(
+        "persisted shard {} leaves a target-id gap: base target id {}, expected {}",
+        path.display(),
+        manifest.base_target_id,
+        expected_base_target_id
+    )))
+}
+
+fn validate_sidecar_manifest_header(
+    sidecar_name: &str,
+    sidecar_path: &Path,
+    sidecar_manifest: &PersistedShardManifest,
+    index_path: &Path,
+    index_manifest: &PersistedShardManifest,
+) -> std::io::Result<()> {
+    if sidecar_manifest.format_version == index_manifest.format_version
+        && sidecar_manifest.base_target_id == index_manifest.base_target_id
+        && sidecar_manifest.target_count == index_manifest.target_count
+    {
+        return Ok(());
+    }
+    Err(invalid_manifest_data(format!(
+        "{sidecar_name} sidecar manifest {} does not match index shard manifest {}: sidecar format={}, base={}, len={}; index format={}, base={}, len={}",
+        persisted_manifest_path_for_payload_path(sidecar_path).display(),
+        persisted_manifest_path_for_payload_path(index_path).display(),
+        sidecar_manifest.format_version,
+        sidecar_manifest.base_target_id,
+        sidecar_manifest.target_count,
+        index_manifest.format_version,
+        index_manifest.base_target_id,
+        index_manifest.target_count
+    )))
+}
+
+fn read_payload_manifest(path: &Path) -> std::io::Result<PersistedShardManifest> {
+    let manifest_path = persisted_manifest_path_for_payload_path(path);
+    let raw = std::fs::read_to_string(&manifest_path).map_err(|error| {
+        IoError::new(
+            error.kind(),
+            format!(
+                "failed to read persisted shard manifest {}: {error}",
+                manifest_path.display()
+            ),
+        )
+    })?;
+    parse_payload_manifest(&manifest_path, &raw)
+}
+
+fn parse_payload_manifest(
+    manifest_path: &Path,
+    raw: &str,
+) -> std::io::Result<PersistedShardManifest> {
+    let mut manifest_version = None;
+    let mut payload_kind = None;
+    let mut format_version = None;
+    let mut base_target_id = None;
+    let mut target_count = None;
+    let mut compression = None;
+    let mut payload_bytes = None;
+
+    for (line_index, line) in raw.lines().enumerate() {
+        if line.is_empty() {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('\t') else {
+            return Err(invalid_manifest_data(format!(
+                "invalid persisted shard manifest {} line {}",
+                manifest_path.display(),
+                line_index + 1
+            )));
+        };
+        match key {
+            "manifest_version" => {
+                manifest_version = Some(parse_manifest_value(manifest_path, key, value)?);
+            }
+            "payload_kind" => {
+                payload_kind = Some(PersistedShardPayloadKind::from_str(value)?);
+            }
+            "format_version" => {
+                format_version = Some(parse_manifest_value(manifest_path, key, value)?);
+            }
+            "base_target_id" => {
+                base_target_id = Some(parse_manifest_value(manifest_path, key, value)?);
+            }
+            "target_count" => {
+                target_count = Some(parse_manifest_value(manifest_path, key, value)?);
+            }
+            "compression" => {
+                compression = Some(PersistedShardStoredCompression::from_str(value)?);
+            }
+            "payload_bytes" => {
+                payload_bytes = Some(parse_manifest_value(manifest_path, key, value)?);
+            }
+            "crate_version" => {}
+            _ => {
+                return Err(invalid_manifest_data(format!(
+                    "unknown persisted shard manifest key {key} in {}",
+                    manifest_path.display()
+                )));
+            }
+        }
+    }
+
+    Ok(PersistedShardManifest {
+        manifest_version: require_manifest_field(
+            manifest_path,
+            "manifest_version",
+            manifest_version,
+        )?,
+        payload_kind: require_manifest_field(manifest_path, "payload_kind", payload_kind)?,
+        format_version: require_manifest_field(manifest_path, "format_version", format_version)?,
+        base_target_id: require_manifest_field(manifest_path, "base_target_id", base_target_id)?,
+        target_count: require_manifest_field(manifest_path, "target_count", target_count)?,
+        compression: require_manifest_field(manifest_path, "compression", compression)?,
+        payload_bytes: require_manifest_field(manifest_path, "payload_bytes", payload_bytes)?,
+    })
+}
+
+fn parse_manifest_value<T>(manifest_path: &Path, key: &str, value: &str) -> std::io::Result<T>
+where
+    T: FromStr,
+    T::Err: fmt::Display,
+{
+    value.parse().map_err(|error| {
+        invalid_manifest_data(format!(
+            "invalid persisted shard manifest value for {key} in {}: {error}",
+            manifest_path.display()
+        ))
+    })
+}
+
+fn require_manifest_field<T>(
+    manifest_path: &Path,
+    key: &str,
+    value: Option<T>,
+) -> std::io::Result<T> {
+    value.ok_or_else(|| {
+        invalid_manifest_data(format!(
+            "missing persisted shard manifest key {key} in {}",
+            manifest_path.display()
+        ))
+    })
+}
+
 #[cfg(feature = "zstd")]
 unsafe fn store_epserde_value_with_compression_unchecked<T>(
     value: &T,
@@ -501,16 +816,26 @@ pub struct PersistedScalarCountIndexes<CountIndex = PersistedCountBitsetIndex> {
     ring_bond: CountIndex,
 }
 
-/// Persisted flat form of element, degree, and total-hydrogen count indexes.
+/// Persisted flat form of keyed atom-property count indexes.
 #[derive(Debug, Clone, PartialEq, Eq, Epserde)]
 pub struct PersistedAtomPropertyCountIndexes<
     ElementCounts = PersistedKeyedCountIndexes,
+    RingElementCounts = PersistedKeyedCountIndexes,
+    AromaticElementCounts = PersistedKeyedCountIndexes,
     DegreeCounts = PersistedKeyedCountIndexes,
     TotalHydrogenCounts = PersistedKeyedCountIndexes,
+    RingMembershipCounts = PersistedKeyedCountIndexes,
+    RingSizeCounts = PersistedKeyedCountIndexes,
+    RingConnectivityCounts = PersistedKeyedCountIndexes,
 > {
     element: ElementCounts,
+    ring_element: RingElementCounts,
+    aromatic_element: AromaticElementCounts,
     degree: DegreeCounts,
     total_hydrogen: TotalHydrogenCounts,
+    ring_membership: RingMembershipCounts,
+    ring_size: RingSizeCounts,
+    ring_connectivity: RingConnectivityCounts,
 }
 
 /// Persisted fixed-width feature domain.
@@ -1042,7 +1367,19 @@ impl PersistedTargetSmilesShard {
         path: impl AsRef<Path>,
         compression: PersistedShardCompression,
     ) -> Result<PersistedShardStoreStats, PersistedShardStoreError> {
-        unsafe { store_epserde_value_with_compression_unchecked(self, path, compression) }
+        let path = path.as_ref();
+        let stats =
+            unsafe { store_epserde_value_with_compression_unchecked(self, path, compression)? };
+        write_payload_manifest(
+            path,
+            PersistedShardPayloadKind::TargetSmiles,
+            self.format_version,
+            self.base_target_id,
+            self.target_count,
+            compression.into(),
+            stats.disk_bytes,
+        )?;
+        Ok(stats)
     }
 
     /// Memory-maps and epsilon-deserializes a trusted target-SMILES sidecar.
@@ -1062,6 +1399,35 @@ impl PersistedTargetSmilesShard {
     ) -> Result<deser::MemCase<Self>, Box<dyn std::error::Error + Send + Sync + 'static>> {
         unsafe { <Self as deser::Deserialize>::mmap(path, flags) }
             .map_err(|error| -> Box<dyn std::error::Error + Send + Sync + 'static> { error.into() })
+    }
+
+    /// Validates the manifest and memory-maps a raw target-SMILES sidecar.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the manifest is missing or incompatible, if the
+    /// payload byte length differs from the manifest, or if mmap-backed
+    /// deserialization fails.
+    pub fn mmap(
+        path: impl AsRef<Path>,
+        flags: deser::Flags,
+    ) -> Result<deser::MemCase<Self>, Box<dyn std::error::Error + Send + Sync + 'static>> {
+        let path = path.as_ref();
+        let manifest = validate_payload_manifest(
+            path,
+            Some(PersistedShardPayloadKind::TargetSmiles),
+            PersistedShardStoredCompression::None,
+        )?;
+        let mapped = unsafe { Self::mmap_unchecked(path, flags)? };
+        validate_loaded_payload_header(
+            "target SMILES",
+            path,
+            &manifest,
+            mapped.uncase().format_version(),
+            mapped.uncase().base_target_id(),
+            mapped.uncase().target_count(),
+        )?;
+        Ok(mapped)
     }
 }
 
@@ -1129,7 +1495,19 @@ impl PersistedExternalIdShard {
         path: impl AsRef<Path>,
         compression: PersistedShardCompression,
     ) -> Result<PersistedShardStoreStats, PersistedShardStoreError> {
-        unsafe { store_epserde_value_with_compression_unchecked(self, path, compression) }
+        let path = path.as_ref();
+        let stats =
+            unsafe { store_epserde_value_with_compression_unchecked(self, path, compression)? };
+        write_payload_manifest(
+            path,
+            PersistedShardPayloadKind::ExternalIds,
+            self.format_version,
+            self.base_target_id,
+            self.target_count,
+            compression.into(),
+            stats.disk_bytes,
+        )?;
+        Ok(stats)
     }
 
     /// Memory-maps and epsilon-deserializes a trusted external-id sidecar.
@@ -1149,6 +1527,35 @@ impl PersistedExternalIdShard {
     ) -> Result<deser::MemCase<Self>, Box<dyn std::error::Error + Send + Sync + 'static>> {
         unsafe { <Self as deser::Deserialize>::mmap(path, flags) }
             .map_err(|error| -> Box<dyn std::error::Error + Send + Sync + 'static> { error.into() })
+    }
+
+    /// Validates the manifest and memory-maps a raw external-id sidecar.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the manifest is missing or incompatible, if the
+    /// payload byte length differs from the manifest, or if mmap-backed
+    /// deserialization fails.
+    pub fn mmap(
+        path: impl AsRef<Path>,
+        flags: deser::Flags,
+    ) -> Result<deser::MemCase<Self>, Box<dyn std::error::Error + Send + Sync + 'static>> {
+        let path = path.as_ref();
+        let manifest = validate_payload_manifest(
+            path,
+            Some(PersistedShardPayloadKind::ExternalIds),
+            PersistedShardStoredCompression::None,
+        )?;
+        let mapped = unsafe { Self::mmap_unchecked(path, flags)? };
+        validate_loaded_payload_header(
+            "external id",
+            path,
+            &manifest,
+            mapped.uncase().format_version(),
+            mapped.uncase().base_target_id(),
+            mapped.uncase().target_count(),
+        )?;
+        Ok(mapped)
     }
 }
 
@@ -1213,6 +1620,149 @@ impl PersistedTargetCorpusIndexShardPaths {
         self.paths.is_empty()
     }
 
+    /// Validates raw shard manifests as a contiguous target-id range in path order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any shard manifest is missing or incompatible, if a
+    /// shard payload length differs from its manifest, or if consecutive
+    /// manifests overlap or leave a gap in target ids.
+    pub fn validate_manifests(&self) -> std::io::Result<()> {
+        self.validated_target_index_manifests().map(|_| ())
+    }
+
+    /// Counts candidates across all raw shard paths after manifest validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any manifest is missing or incompatible, or if any
+    /// raw shard cannot be memory-mapped.
+    pub fn candidate_count(
+        &self,
+        query: &QueryScreen,
+    ) -> Result<usize, Box<dyn std::error::Error + Send + Sync + 'static>> {
+        self.validate_manifests()?;
+        let mut count = 0usize;
+        for path in &self.paths {
+            count = count.saturating_add(candidate_count_for_raw_shard(path, query)?);
+        }
+        Ok(count)
+    }
+
+    /// Counts candidates across all raw shard paths in parallel after manifest validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any manifest is missing or incompatible, or if any
+    /// raw shard cannot be memory-mapped.
+    #[cfg(feature = "rayon")]
+    pub fn par_candidate_count(
+        &self,
+        query: &QueryScreen,
+    ) -> Result<usize, Box<dyn std::error::Error + Send + Sync + 'static>> {
+        self.validate_manifests()?;
+        self.paths
+            .par_iter()
+            .map(|path| candidate_count_for_raw_shard(path, query))
+            .try_reduce(|| 0usize, |left, right| Ok(left.saturating_add(right)))
+    }
+
+    /// Collects candidates across all raw shard paths after manifest validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any manifest is missing or incompatible, or if any
+    /// raw shard cannot be memory-mapped.
+    pub fn candidate_ids(
+        &self,
+        query: &QueryScreen,
+    ) -> Result<Vec<usize>, Box<dyn std::error::Error + Send + Sync + 'static>> {
+        self.validate_manifests()?;
+        let mut out = Vec::new();
+        for path in &self.paths {
+            candidate_ids_for_raw_shard_into(path, query, &mut out)?;
+        }
+        Ok(out)
+    }
+
+    /// Collects candidates across all raw shard paths in parallel after manifest validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any manifest is missing or incompatible, or if any
+    /// raw shard cannot be memory-mapped.
+    #[cfg(feature = "rayon")]
+    pub fn par_candidate_ids(
+        &self,
+        query: &QueryScreen,
+    ) -> Result<Vec<usize>, Box<dyn std::error::Error + Send + Sync + 'static>> {
+        self.validate_manifests()?;
+        let chunks = self
+            .paths
+            .par_iter()
+            .map(|path| candidate_ids_for_raw_shard(path, query))
+            .collect::<Result<Vec<_>, _>>()?;
+        let target_count = chunks.iter().map(Vec::len).sum();
+        let mut out = Vec::with_capacity(target_count);
+        for chunk in chunks {
+            out.extend(chunk);
+        }
+        Ok(out)
+    }
+
+    /// Collects exact SMARTS hits across all raw queryable shard paths after manifest validation.
+    ///
+    /// This screens each persisted index shard first, then runs exact SMARTS
+    /// matching against the aligned persisted target-SMILES sidecar.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any manifest is missing or incompatible, if any
+    /// shard or target sidecar cannot be memory-mapped, if sidecar metadata
+    /// does not match the index shard, or if a candidate target SMILES cannot
+    /// be parsed.
+    pub fn matching_hits(
+        &self,
+        query: &CompiledQuery,
+    ) -> Result<Vec<PersistedTargetHit>, Box<dyn std::error::Error + Send + Sync + 'static>> {
+        self.validate_queryable_manifests()?;
+        let mut out = Vec::new();
+        for path in &self.paths {
+            out.extend(matching_hits_for_raw_shard(path, query)?);
+        }
+        Ok(out)
+    }
+
+    /// Collects exact SMARTS hits across all raw queryable shard paths in parallel after manifest validation.
+    ///
+    /// This screens each persisted index shard first, then runs exact SMARTS
+    /// matching against the aligned persisted target-SMILES sidecar.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any manifest is missing or incompatible, if any
+    /// shard or target sidecar cannot be memory-mapped, if sidecar metadata
+    /// does not match the index shard, or if a candidate target SMILES cannot
+    /// be parsed.
+    #[cfg(feature = "rayon")]
+    pub fn par_matching_hits(
+        &self,
+        query: &CompiledQuery,
+    ) -> Result<Vec<PersistedTargetHit>, Box<dyn std::error::Error + Send + Sync + 'static>> {
+        self.validate_queryable_manifests()?;
+        let chunks = self
+            .paths
+            .par_iter()
+            .map(|path| matching_hits_for_raw_shard(path, query))
+            .collect::<Result<Vec<_>, _>>()?;
+        let target_count = chunks.iter().map(Vec::len).sum();
+        let mut out = Vec::with_capacity(target_count);
+        for chunk in chunks {
+            out.extend(chunk);
+        }
+        Ok(out)
+    }
+
     /// Counts candidates across all raw shard paths.
     ///
     /// # Errors
@@ -1229,7 +1779,8 @@ impl PersistedTargetCorpusIndexShardPaths {
     ) -> Result<usize, Box<dyn std::error::Error + Send + Sync + 'static>> {
         let mut count = 0usize;
         for path in &self.paths {
-            count = count.saturating_add(unsafe { candidate_count_for_raw_shard(path, query)? });
+            count = count
+                .saturating_add(unsafe { candidate_count_for_raw_shard_unchecked(path, query)? });
         }
         Ok(count)
     }
@@ -1251,7 +1802,7 @@ impl PersistedTargetCorpusIndexShardPaths {
     ) -> Result<usize, Box<dyn std::error::Error + Send + Sync + 'static>> {
         self.paths
             .par_iter()
-            .map(|path| unsafe { candidate_count_for_raw_shard(path, query) })
+            .map(|path| unsafe { candidate_count_for_raw_shard_unchecked(path, query) })
             .try_reduce(|| 0usize, |left, right| Ok(left.saturating_add(right)))
     }
 
@@ -1271,7 +1822,7 @@ impl PersistedTargetCorpusIndexShardPaths {
     ) -> Result<Vec<usize>, Box<dyn std::error::Error + Send + Sync + 'static>> {
         let mut out = Vec::new();
         for path in &self.paths {
-            unsafe { candidate_ids_for_raw_shard_into(path, query, &mut out)? };
+            unsafe { candidate_ids_for_raw_shard_into_unchecked(path, query, &mut out)? };
         }
         Ok(out)
     }
@@ -1297,7 +1848,7 @@ impl PersistedTargetCorpusIndexShardPaths {
     ) -> Result<Vec<PersistedTargetHit>, Box<dyn std::error::Error + Send + Sync + 'static>> {
         let mut out = Vec::new();
         for path in &self.paths {
-            out.extend(unsafe { matching_hits_for_raw_shard(path, query)? });
+            out.extend(unsafe { matching_hits_for_raw_shard_unchecked(path, query)? });
         }
         Ok(out)
     }
@@ -1320,7 +1871,7 @@ impl PersistedTargetCorpusIndexShardPaths {
         let chunks = self
             .paths
             .par_iter()
-            .map(|path| unsafe { candidate_ids_for_raw_shard(path, query) })
+            .map(|path| unsafe { candidate_ids_for_raw_shard_unchecked(path, query) })
             .collect::<Result<Vec<_>, _>>()?;
         let target_count = chunks.iter().map(Vec::len).sum();
         let mut out = Vec::with_capacity(target_count);
@@ -1353,7 +1904,7 @@ impl PersistedTargetCorpusIndexShardPaths {
         let chunks = self
             .paths
             .par_iter()
-            .map(|path| unsafe { matching_hits_for_raw_shard(path, query) })
+            .map(|path| unsafe { matching_hits_for_raw_shard_unchecked(path, query) })
             .collect::<Result<Vec<_>, _>>()?;
         let target_count = chunks.iter().map(Vec::len).sum();
         let mut out = Vec::with_capacity(target_count);
@@ -1413,6 +1964,230 @@ impl PersistedTargetCorpusIndexShardPaths {
     pub fn extracted_raw_paths(&self) -> Self {
         Self::from_paths(self.paths.iter().map(raw_path_for_zstd_shard))
     }
+
+    /// Validates and memory-maps all raw shard paths for repeated queries.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any manifest is missing or incompatible, or if any
+    /// shard cannot be memory-mapped.
+    pub fn mmap(
+        &self,
+    ) -> Result<
+        MappedPersistedTargetCorpusIndexShards,
+        Box<dyn std::error::Error + Send + Sync + 'static>,
+    > {
+        self.validate_manifests()?;
+        MappedPersistedTargetCorpusIndexShards::mmap(self)
+    }
+
+    /// Memory-maps all raw shard paths for repeated queries.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any shard cannot be memory-mapped.
+    ///
+    /// # Safety
+    ///
+    /// Raw shard files must be trusted epserde payloads produced by a
+    /// compatible version of this crate and epserde.
+    pub unsafe fn mmap_unchecked(
+        &self,
+    ) -> Result<
+        MappedPersistedTargetCorpusIndexShards,
+        Box<dyn std::error::Error + Send + Sync + 'static>,
+    > {
+        unsafe { MappedPersistedTargetCorpusIndexShards::mmap_unchecked(self) }
+    }
+
+    fn validate_queryable_manifests(&self) -> std::io::Result<()> {
+        let index_manifests = self.validated_target_index_manifests()?;
+        for (path, index_manifest) in self.paths.iter().zip(index_manifests) {
+            let smiles_path = persisted_target_smiles_path_for_index_shard_path(path);
+            let smiles_manifest = validate_payload_manifest(
+                &smiles_path,
+                Some(PersistedShardPayloadKind::TargetSmiles),
+                PersistedShardStoredCompression::None,
+            )?;
+            validate_sidecar_manifest_header(
+                "target SMILES",
+                &smiles_path,
+                &smiles_manifest,
+                path,
+                &index_manifest,
+            )?;
+
+            let external_ids_path = persisted_external_ids_path_for_index_shard_path(path);
+            if external_ids_path.is_file() {
+                let external_ids_manifest = validate_payload_manifest(
+                    &external_ids_path,
+                    Some(PersistedShardPayloadKind::ExternalIds),
+                    PersistedShardStoredCompression::None,
+                )?;
+                validate_sidecar_manifest_header(
+                    "external id",
+                    &external_ids_path,
+                    &external_ids_manifest,
+                    path,
+                    &index_manifest,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn validated_target_index_manifests(&self) -> std::io::Result<Vec<PersistedShardManifest>> {
+        let mut manifests = Vec::with_capacity(self.paths.len());
+        let mut expected_base_target_id = None;
+        for path in &self.paths {
+            let manifest = validate_payload_manifest(
+                path,
+                Some(PersistedShardPayloadKind::TargetIndex),
+                PersistedShardStoredCompression::None,
+            )?;
+            if let Some(expected_base_target_id) = expected_base_target_id {
+                validate_next_shard_base(path, &manifest, expected_base_target_id)?;
+            }
+            expected_base_target_id = Some(
+                manifest
+                    .base_target_id
+                    .checked_add(manifest.target_count)
+                    .ok_or_else(|| {
+                        invalid_manifest_data(format!(
+                            "persisted shard target range overflows u64 at {}",
+                            path.display()
+                        ))
+                    })?,
+            );
+            manifests.push(manifest);
+        }
+        Ok(manifests)
+    }
+}
+
+/// Reusable memory-mapped persisted target-index shards.
+///
+/// Use this for workloads that run many SMARTS queries against the same
+/// persisted corpus. It keeps the epserde mappings open and avoids remapping
+/// shard files for every query.
+#[derive(Debug)]
+pub struct MappedPersistedTargetCorpusIndexShards {
+    shards: Box<[deser::MemCase<PersistedTargetCorpusIndexShard>]>,
+}
+
+impl MappedPersistedTargetCorpusIndexShards {
+    /// Validates and memory-maps all raw shard paths.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any manifest is missing or incompatible, or if any
+    /// shard cannot be memory-mapped.
+    pub fn mmap(
+        paths: &PersistedTargetCorpusIndexShardPaths,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync + 'static>> {
+        let shards = paths
+            .paths()
+            .iter()
+            .map(|path| PersistedTargetCorpusIndexShard::mmap(path, deser::Flags::empty()))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
+            shards: shards.into_boxed_slice(),
+        })
+    }
+
+    /// Memory-maps all raw shard paths.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any shard cannot be memory-mapped.
+    ///
+    /// # Safety
+    ///
+    /// Raw shard files must be trusted epserde payloads produced by a
+    /// compatible version of this crate and epserde.
+    pub unsafe fn mmap_unchecked(
+        paths: &PersistedTargetCorpusIndexShardPaths,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync + 'static>> {
+        let shards = paths
+            .paths()
+            .iter()
+            .map(|path| unsafe {
+                PersistedTargetCorpusIndexShard::mmap_unchecked(path, deser::Flags::empty())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
+            shards: shards.into_boxed_slice(),
+        })
+    }
+
+    /// Returns the number of mapped shards.
+    #[inline]
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.shards.len()
+    }
+
+    /// Returns whether there are no mapped shards.
+    #[inline]
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.shards.is_empty()
+    }
+
+    /// Returns the mapped shards.
+    #[inline]
+    #[must_use]
+    pub const fn shards(&self) -> &[deser::MemCase<PersistedTargetCorpusIndexShard>] {
+        &self.shards
+    }
+
+    /// Counts candidates across the mapped shards.
+    #[must_use]
+    pub fn candidate_count(&self, query: &QueryScreen) -> usize {
+        self.shards
+            .iter()
+            .map(|shard| shard.uncase().candidate_count(query))
+            .sum()
+    }
+
+    /// Counts candidates across the mapped shards in parallel.
+    #[cfg(feature = "rayon")]
+    #[must_use]
+    pub fn par_candidate_count(&self, query: &QueryScreen) -> usize {
+        self.shards
+            .par_iter()
+            .map(|shard| shard.uncase().candidate_count(query))
+            .sum()
+    }
+
+    /// Collects global candidate target ids across the mapped shards.
+    #[must_use]
+    pub fn candidate_ids(&self, query: &QueryScreen) -> Vec<usize> {
+        let mut out = Vec::new();
+        for shard in &self.shards {
+            let mut shard_ids = Vec::new();
+            shard.uncase().candidate_ids_into(query, &mut shard_ids);
+            out.extend(shard_ids);
+        }
+        out
+    }
+
+    /// Collects global candidate target ids across the mapped shards in parallel.
+    #[cfg(feature = "rayon")]
+    #[must_use]
+    pub fn par_candidate_ids(&self, query: &QueryScreen) -> Vec<usize> {
+        let chunks = self
+            .shards
+            .par_iter()
+            .map(|shard| shard.uncase().candidate_ids(query))
+            .collect::<Vec<_>>();
+        let target_count = chunks.iter().map(Vec::len).sum();
+        let mut out = Vec::with_capacity(target_count);
+        for chunk in chunks {
+            out.extend(chunk);
+        }
+        out
+    }
 }
 
 fn shard_paths_with_suffix(dir: impl AsRef<Path>, suffix: &str) -> std::io::Result<Vec<PathBuf>> {
@@ -1430,6 +2205,21 @@ fn shard_paths_with_suffix(dir: impl AsRef<Path>, suffix: &str) -> std::io::Resu
     });
     paths.sort();
     Ok(paths)
+}
+
+/// Returns the manifest sidecar path for a persisted payload path.
+///
+/// The manifest is intentionally outside the epserde payload so callers can
+/// validate the payload kind, format version, compression mode, target range,
+/// and byte length before using mmap-backed epserde deserialization.
+#[must_use]
+pub fn persisted_manifest_path_for_payload_path(path: impl AsRef<Path>) -> PathBuf {
+    let path = path.as_ref();
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    path.with_file_name(format!("{file_name}{MANIFEST_SUFFIX}"))
 }
 
 /// Returns the target-SMILES sidecar path for an index shard path.
@@ -1459,7 +2249,18 @@ fn persisted_sidecar_path_for_index_shard_path(path: impl AsRef<Path>, suffix: &
     path.with_file_name(format!("{file_name}{suffix}"))
 }
 
-unsafe fn candidate_count_for_raw_shard(
+fn candidate_count_for_raw_shard(
+    path: impl AsRef<Path>,
+    query: &QueryScreen,
+) -> Result<usize, Box<dyn std::error::Error + Send + Sync + 'static>> {
+    let mapped = PersistedTargetCorpusIndexShard::mmap(path, deser::Flags::empty())?;
+    let mut scratch = TargetCorpusScratch::new();
+    Ok(mapped
+        .uncase()
+        .candidate_count_with_scratch(query, &mut scratch))
+}
+
+unsafe fn candidate_count_for_raw_shard_unchecked(
     path: impl AsRef<Path>,
     query: &QueryScreen,
 ) -> Result<usize, Box<dyn std::error::Error + Send + Sync + 'static>> {
@@ -1471,16 +2272,40 @@ unsafe fn candidate_count_for_raw_shard(
         .candidate_count_with_scratch(query, &mut scratch))
 }
 
-unsafe fn candidate_ids_for_raw_shard(
+fn candidate_ids_for_raw_shard(
     path: impl AsRef<Path>,
     query: &QueryScreen,
 ) -> Result<Vec<usize>, Box<dyn std::error::Error + Send + Sync + 'static>> {
     let mut out = Vec::new();
-    unsafe { candidate_ids_for_raw_shard_into(path, query, &mut out)? };
+    candidate_ids_for_raw_shard_into(path, query, &mut out)?;
     Ok(out)
 }
 
-unsafe fn candidate_ids_for_raw_shard_into(
+fn candidate_ids_for_raw_shard_into(
+    path: impl AsRef<Path>,
+    query: &QueryScreen,
+    out: &mut Vec<usize>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
+    let mapped = PersistedTargetCorpusIndexShard::mmap(path, deser::Flags::empty())?;
+    let mut scratch = TargetCorpusScratch::new();
+    let mut shard_ids = Vec::new();
+    mapped
+        .uncase()
+        .candidate_ids_with_scratch_into(query, &mut scratch, &mut shard_ids);
+    out.extend(shard_ids);
+    Ok(())
+}
+
+unsafe fn candidate_ids_for_raw_shard_unchecked(
+    path: impl AsRef<Path>,
+    query: &QueryScreen,
+) -> Result<Vec<usize>, Box<dyn std::error::Error + Send + Sync + 'static>> {
+    let mut out = Vec::new();
+    unsafe { candidate_ids_for_raw_shard_into_unchecked(path, query, &mut out)? };
+    Ok(out)
+}
+
+unsafe fn candidate_ids_for_raw_shard_into_unchecked(
     path: impl AsRef<Path>,
     query: &QueryScreen,
     out: &mut Vec<usize>,
@@ -1496,14 +2321,81 @@ unsafe fn candidate_ids_for_raw_shard_into(
     Ok(())
 }
 
-unsafe fn matching_hits_for_raw_shard(
+fn matching_hits_for_raw_shard(
+    path: impl AsRef<Path>,
+    query: &CompiledQuery,
+) -> Result<Vec<PersistedTargetHit>, Box<dyn std::error::Error + Send + Sync + 'static>> {
+    let path = path.as_ref();
+    let mapped_index = PersistedTargetCorpusIndexShard::mmap(path, deser::Flags::empty())?;
+    let smiles_path = persisted_target_smiles_path_for_index_shard_path(path);
+    let mapped_smiles = PersistedTargetSmilesShard::mmap(&smiles_path, deser::Flags::empty())?;
+    let external_ids_path = persisted_external_ids_path_for_index_shard_path(path);
+    let mapped_external_ids = if external_ids_path.is_file() {
+        Some(PersistedExternalIdShard::mmap(
+            &external_ids_path,
+            deser::Flags::empty(),
+        )?)
+    } else {
+        None
+    };
+    matching_hits_for_loaded_shard(
+        path,
+        mapped_index.uncase(),
+        mapped_smiles.uncase(),
+        mapped_external_ids.as_ref().map(deser::MemCase::uncase),
+        query,
+    )
+}
+
+unsafe fn matching_hits_for_raw_shard_unchecked(
     path: impl AsRef<Path>,
     query: &CompiledQuery,
 ) -> Result<Vec<PersistedTargetHit>, Box<dyn std::error::Error + Send + Sync + 'static>> {
     let path = path.as_ref();
     let mapped_index =
         unsafe { PersistedTargetCorpusIndexShard::mmap_unchecked(path, deser::Flags::empty())? };
-    let index = mapped_index.uncase();
+    let smiles_path = persisted_target_smiles_path_for_index_shard_path(path);
+    let mapped_smiles =
+        unsafe { PersistedTargetSmilesShard::mmap_unchecked(&smiles_path, deser::Flags::empty())? };
+    let external_ids_path = persisted_external_ids_path_for_index_shard_path(path);
+    let mapped_external_ids = if external_ids_path.is_file() {
+        Some(unsafe {
+            PersistedExternalIdShard::mmap_unchecked(&external_ids_path, deser::Flags::empty())?
+        })
+    } else {
+        None
+    };
+    matching_hits_for_loaded_shard(
+        path,
+        mapped_index.uncase(),
+        mapped_smiles.uncase(),
+        mapped_external_ids.as_ref().map(deser::MemCase::uncase),
+        query,
+    )
+}
+
+fn matching_hits_for_loaded_shard<ScalarCounts, AtomPropertyCounts, Edge, Path3, Path4, Star3>(
+    path: &Path,
+    index: &PersistedTargetCorpusIndexShard<
+        ScalarCounts,
+        AtomPropertyCounts,
+        Edge,
+        Path3,
+        Path4,
+        Star3,
+    >,
+    smiles: &PersistedTargetSmilesShard,
+    external_ids: Option<&PersistedExternalIdShard>,
+    query: &CompiledQuery,
+) -> Result<Vec<PersistedTargetHit>, Box<dyn std::error::Error + Send + Sync + 'static>>
+where
+    ScalarCounts: PersistedScalarCountIndexesAccess,
+    AtomPropertyCounts: PersistedAtomPropertyCountIndexesAccess,
+    Edge: PersistedLocalFeatureFamilyAccess,
+    Path3: PersistedLocalFeatureFamilyAccess,
+    Path4: PersistedLocalFeatureFamilyAccess,
+    Star3: PersistedLocalFeatureFamilyAccess,
+{
     let base_target_id = index
         .base_target_id_usize()
         .ok_or_else(|| invalid_data_error("persisted shard base target id exceeds usize"))?;
@@ -1518,10 +2410,6 @@ unsafe fn matching_hits_for_raw_shard(
         &mut candidate_ids,
     );
 
-    let smiles_path = persisted_target_smiles_path_for_index_shard_path(path);
-    let mapped_smiles =
-        unsafe { PersistedTargetSmilesShard::mmap_unchecked(&smiles_path, deser::Flags::empty())? };
-    let smiles = mapped_smiles.uncase();
     validate_query_sidecar_header(
         "target SMILES",
         path,
@@ -1530,16 +2418,7 @@ unsafe fn matching_hits_for_raw_shard(
         index.base_target_id(),
         index.target_count(),
     )?;
-
-    let external_ids_path = persisted_external_ids_path_for_index_shard_path(path);
-    let mapped_external_ids = if external_ids_path.is_file() {
-        Some(unsafe {
-            PersistedExternalIdShard::mmap_unchecked(&external_ids_path, deser::Flags::empty())?
-        })
-    } else {
-        None
-    };
-    if let Some(external_ids) = mapped_external_ids.as_ref().map(deser::MemCase::uncase) {
+    if let Some(external_ids) = external_ids {
         validate_query_sidecar_header(
             "external id",
             path,
@@ -1550,7 +2429,6 @@ unsafe fn matching_hits_for_raw_shard(
         )?;
     }
 
-    let external_ids = mapped_external_ids.as_ref().map(deser::MemCase::uncase);
     let mut match_scratch = MatchScratch::new();
     let mut hits = Vec::new();
     for target_id in candidate_ids {
@@ -1567,7 +2445,7 @@ unsafe fn matching_hits_for_raw_shard(
         let target_smiles = smiles.target_smiles(local_target_id).ok_or_else(|| {
             invalid_data_error(format!(
                 "missing target SMILES for target id {target_id} in {}",
-                smiles_path.display()
+                persisted_target_smiles_path_for_index_shard_path(path).display()
             ))
         })?;
         let target = PreparedTarget::new(Smiles::from_str(target_smiles).map_err(|error| {
@@ -1607,6 +2485,35 @@ fn validate_query_sidecar_header(
     )))
 }
 
+fn validate_loaded_payload_header(
+    payload_name: &str,
+    path: &Path,
+    manifest: &PersistedShardManifest,
+    format_version: u32,
+    base_target_id: u64,
+    target_count: u64,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
+    if format_version != manifest.format_version {
+        return Err(invalid_data_error(format!(
+            "{payload_name} payload {} has format version {}, manifest records {}",
+            path.display(),
+            format_version,
+            manifest.format_version
+        )));
+    }
+    if base_target_id != manifest.base_target_id || target_count != manifest.target_count {
+        return Err(invalid_data_error(format!(
+            "{payload_name} payload {} metadata does not match manifest: payload base={}, len={}; manifest base={}, len={}",
+            path.display(),
+            base_target_id,
+            target_count,
+            manifest.base_target_id,
+            manifest.target_count
+        )));
+    }
+    Ok(())
+}
+
 fn invalid_data_error(
     message: impl Into<String>,
 ) -> Box<dyn std::error::Error + Send + Sync + 'static> {
@@ -1618,13 +2525,25 @@ fn extract_zstd_shard_if_missing(
     source: impl AsRef<Path>,
 ) -> Result<PersistedShardExtraction, PersistedShardStoreError> {
     let source = source.as_ref();
+    let source_manifest =
+        validate_payload_manifest(source, None, PersistedShardStoredCompression::Zstd)?;
     let destination = raw_path_for_zstd_shard(source);
     if destination.exists() {
+        let disk_bytes = std::fs::metadata(&destination)?.len();
+        write_payload_manifest(
+            &destination,
+            source_manifest.payload_kind,
+            source_manifest.format_version,
+            source_manifest.base_target_id,
+            source_manifest.target_count,
+            PersistedShardStoredCompression::None,
+            disk_bytes,
+        )?;
         return Ok(PersistedShardExtraction {
             source: source.to_path_buf(),
-            disk_bytes: std::fs::metadata(&destination)?.len(),
             destination,
             extracted: false,
+            disk_bytes,
         });
     }
 
@@ -1633,6 +2552,15 @@ fn extract_zstd_shard_if_missing(
     let mut output = BufWriter::new(File::create(&destination)?);
     let disk_bytes = std::io::copy(&mut decoder, &mut output)?;
     output.flush()?;
+    write_payload_manifest(
+        &destination,
+        source_manifest.payload_kind,
+        source_manifest.format_version,
+        source_manifest.base_target_id,
+        source_manifest.target_count,
+        PersistedShardStoredCompression::None,
+        disk_bytes,
+    )?;
     Ok(PersistedShardExtraction {
         source: source.to_path_buf(),
         destination,
@@ -1737,13 +2665,24 @@ impl PersistedTargetCorpusIndexShard {
     ) -> Result<PersistedShardStoreStats, PersistedShardStoreError> {
         match compression {
             PersistedShardCompression::None => {
-                unsafe { self.store_unchecked(path.as_ref())? };
-                let disk_bytes = std::fs::metadata(path.as_ref())?.len();
+                let path = path.as_ref();
+                unsafe { self.store_unchecked(path)? };
+                let disk_bytes = std::fs::metadata(path)?.len();
                 let serialized_bytes = usize::try_from(disk_bytes).unwrap_or(usize::MAX);
-                Ok(PersistedShardStoreStats {
+                let stats = PersistedShardStoreStats {
                     serialized_bytes,
                     disk_bytes,
-                })
+                };
+                write_payload_manifest(
+                    path,
+                    PersistedShardPayloadKind::TargetIndex,
+                    self.format_version,
+                    self.base_target_id,
+                    self.target_count,
+                    PersistedShardStoredCompression::None,
+                    stats.disk_bytes,
+                )?;
+                Ok(stats)
             }
             PersistedShardCompression::Zstd {
                 level,
@@ -1780,10 +2719,20 @@ impl PersistedTargetCorpusIndexShard {
         let mut writer = encoder.finish()?;
         writer.flush()?;
         let disk_bytes = std::fs::metadata(path.as_ref())?.len();
-        Ok(PersistedShardStoreStats {
+        let stats = PersistedShardStoreStats {
             serialized_bytes,
             disk_bytes,
-        })
+        };
+        write_payload_manifest(
+            path,
+            PersistedShardPayloadKind::TargetIndex,
+            self.format_version,
+            self.base_target_id,
+            self.target_count,
+            PersistedShardStoredCompression::Zstd,
+            stats.disk_bytes,
+        )?;
+        Ok(stats)
     }
 
     /// Deserializes a full owned shard payload from an epserde reader.
@@ -1819,6 +2768,35 @@ impl PersistedTargetCorpusIndexShard {
     ) -> Result<deser::MemCase<Self>, Box<dyn std::error::Error + Send + Sync + 'static>> {
         unsafe { <Self as deser::Deserialize>::mmap(path, flags) }
             .map_err(|error| -> Box<dyn std::error::Error + Send + Sync + 'static> { error.into() })
+    }
+
+    /// Validates the manifest and memory-maps a raw persisted index shard.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the manifest is missing or incompatible, if the
+    /// payload byte length differs from the manifest, or if mmap-backed
+    /// deserialization fails.
+    pub fn mmap(
+        path: impl AsRef<Path>,
+        flags: deser::Flags,
+    ) -> Result<deser::MemCase<Self>, Box<dyn std::error::Error + Send + Sync + 'static>> {
+        let path = path.as_ref();
+        let manifest = validate_payload_manifest(
+            path,
+            Some(PersistedShardPayloadKind::TargetIndex),
+            PersistedShardStoredCompression::None,
+        )?;
+        let mapped = unsafe { Self::mmap_unchecked(path, flags)? };
+        validate_loaded_payload_header(
+            "target index",
+            path,
+            &manifest,
+            mapped.uncase().format_version(),
+            mapped.uncase().base_target_id(),
+            mapped.uncase().target_count(),
+        )?;
+        Ok(mapped)
     }
 }
 
@@ -2068,6 +3046,14 @@ impl PersistedAtomPropertyCountIndexes {
                 &index.indexed_element_count_index,
                 |element| u16::from(u8::from(*element)),
             ),
+            ring_element: PersistedKeyedCountIndexes::from_count_indexes(
+                &index.indexed_ring_element_count_index,
+                |element| u16::from(u8::from(*element)),
+            ),
+            aromatic_element: PersistedKeyedCountIndexes::from_count_indexes(
+                &index.indexed_aromatic_element_count_index,
+                |element| u16::from(u8::from(*element)),
+            ),
             degree: PersistedKeyedCountIndexes::from_count_indexes(
                 &index.indexed_degree_count_index,
                 |degree| *degree,
@@ -2076,18 +3062,62 @@ impl PersistedAtomPropertyCountIndexes {
                 &index.indexed_total_hydrogen_count_index,
                 |total_hydrogen| *total_hydrogen,
             ),
+            ring_membership: PersistedKeyedCountIndexes::from_count_indexes(
+                &index.indexed_ring_membership_count_index,
+                |ring_membership| *ring_membership,
+            ),
+            ring_size: PersistedKeyedCountIndexes::from_count_indexes(
+                &index.indexed_ring_size_count_index,
+                |ring_size| *ring_size,
+            ),
+            ring_connectivity: PersistedKeyedCountIndexes::from_count_indexes(
+                &index.indexed_ring_connectivity_count_index,
+                |ring_connectivity| *ring_connectivity,
+            ),
         }
     }
 }
 
-impl<ElementCounts, DegreeCounts, TotalHydrogenCounts>
-    PersistedAtomPropertyCountIndexes<ElementCounts, DegreeCounts, TotalHydrogenCounts>
+impl<
+        ElementCounts,
+        RingElementCounts,
+        AromaticElementCounts,
+        DegreeCounts,
+        TotalHydrogenCounts,
+        RingMembershipCounts,
+        RingSizeCounts,
+        RingConnectivityCounts,
+    >
+    PersistedAtomPropertyCountIndexes<
+        ElementCounts,
+        RingElementCounts,
+        AromaticElementCounts,
+        DegreeCounts,
+        TotalHydrogenCounts,
+        RingMembershipCounts,
+        RingSizeCounts,
+        RingConnectivityCounts,
+    >
 {
     /// Returns persisted element count indexes keyed by atomic number.
     #[inline]
     #[must_use]
     pub const fn element_counts(&self) -> &ElementCounts {
         &self.element
+    }
+
+    /// Returns persisted ring-element count indexes keyed by atomic number.
+    #[inline]
+    #[must_use]
+    pub const fn ring_element_counts(&self) -> &RingElementCounts {
+        &self.ring_element
+    }
+
+    /// Returns persisted aromatic-element count indexes keyed by atomic number.
+    #[inline]
+    #[must_use]
+    pub const fn aromatic_element_counts(&self) -> &AromaticElementCounts {
+        &self.aromatic_element
     }
 
     /// Returns persisted exact-degree count indexes.
@@ -2102,6 +3132,27 @@ impl<ElementCounts, DegreeCounts, TotalHydrogenCounts>
     #[must_use]
     pub const fn total_hydrogen_counts(&self) -> &TotalHydrogenCounts {
         &self.total_hydrogen
+    }
+
+    /// Returns persisted exact ring-membership count indexes.
+    #[inline]
+    #[must_use]
+    pub const fn ring_membership_counts(&self) -> &RingMembershipCounts {
+        &self.ring_membership
+    }
+
+    /// Returns persisted exact smallest-ring-size count indexes.
+    #[inline]
+    #[must_use]
+    pub const fn ring_size_counts(&self) -> &RingSizeCounts {
+        &self.ring_size
+    }
+
+    /// Returns persisted exact ring-connectivity count indexes.
+    #[inline]
+    #[must_use]
+    pub const fn ring_connectivity_counts(&self) -> &RingConnectivityCounts {
+        &self.ring_connectivity
     }
 }
 
@@ -3052,6 +4103,12 @@ trait PersistedScalarCountIndexesAccess {
         query: &QueryScreen,
         filters: &mut Vec<RequiredCountFilter<'idx>>,
     ) -> bool;
+
+    fn bond_kind_count_filter(
+        &self,
+        kind: RequiredBondKind,
+        required: usize,
+    ) -> Option<RequiredCountFilter<'_>>;
 }
 
 impl<CountIndex> PersistedScalarCountIndexesAccess for PersistedScalarCountIndexes<CountIndex>
@@ -3079,6 +4136,24 @@ where
             .into_iter()
             .all(|(index, required)| push_persisted_required_filter(filters, index, required))
     }
+
+    fn bond_kind_count_filter(
+        &self,
+        kind: RequiredBondKind,
+        required: usize,
+    ) -> Option<RequiredCountFilter<'_>> {
+        let index = match kind {
+            RequiredBondKind::Single => &self.single_bond,
+            RequiredBondKind::Double => &self.double_bond,
+            RequiredBondKind::Triple => &self.triple_bond,
+            RequiredBondKind::Aromatic => &self.aromatic_bond,
+        };
+        let filter = index.persisted_filter_for_at_least(required)?;
+        Some(RequiredCountFilter {
+            population: filter.population,
+            source: filter.source,
+        })
+    }
 }
 
 trait PersistedAtomPropertyCountIndexesAccess {
@@ -3089,12 +4164,35 @@ trait PersistedAtomPropertyCountIndexesAccess {
     ) -> bool;
 }
 
-impl<ElementCounts, DegreeCounts, TotalHydrogenCounts> PersistedAtomPropertyCountIndexesAccess
-    for PersistedAtomPropertyCountIndexes<ElementCounts, DegreeCounts, TotalHydrogenCounts>
+impl<
+        ElementCounts,
+        RingElementCounts,
+        AromaticElementCounts,
+        DegreeCounts,
+        TotalHydrogenCounts,
+        RingMembershipCounts,
+        RingSizeCounts,
+        RingConnectivityCounts,
+    > PersistedAtomPropertyCountIndexesAccess
+    for PersistedAtomPropertyCountIndexes<
+        ElementCounts,
+        RingElementCounts,
+        AromaticElementCounts,
+        DegreeCounts,
+        TotalHydrogenCounts,
+        RingMembershipCounts,
+        RingSizeCounts,
+        RingConnectivityCounts,
+    >
 where
     ElementCounts: PersistedKeyedCountIndexesAccess,
+    RingElementCounts: PersistedKeyedCountIndexesAccess,
+    AromaticElementCounts: PersistedKeyedCountIndexesAccess,
     DegreeCounts: PersistedKeyedCountIndexesAccess,
     TotalHydrogenCounts: PersistedKeyedCountIndexesAccess,
+    RingMembershipCounts: PersistedKeyedCountIndexesAccess,
+    RingSizeCounts: PersistedKeyedCountIndexesAccess,
+    RingConnectivityCounts: PersistedKeyedCountIndexesAccess,
 {
     fn collect_atom_property_count_filters<'idx>(
         &'idx self,
@@ -3109,11 +4207,44 @@ where
                 return false;
             }
         }
+        for (element, required) in &query.required_ring_element_counts {
+            if !self.ring_element.push_filter_for_key(
+                filters,
+                u16::from(u8::from(*element)),
+                *required,
+            ) {
+                return false;
+            }
+        }
+        for (element, required) in &query.required_aromatic_element_counts {
+            if !self.aromatic_element.push_filter_for_key(
+                filters,
+                u16::from(u8::from(*element)),
+                *required,
+            ) {
+                return false;
+            }
+        }
         collect_persisted_keyed_count_filters(filters, &self.degree, &query.required_degree_counts)
             && collect_persisted_keyed_count_filters(
                 filters,
                 &self.total_hydrogen,
                 &query.required_total_hydrogen_counts,
+            )
+            && collect_persisted_keyed_count_filters(
+                filters,
+                &self.ring_membership,
+                &query.required_ring_membership_counts,
+            )
+            && collect_persisted_keyed_count_filters(
+                filters,
+                &self.ring_size,
+                &query.required_ring_size_counts,
+            )
+            && collect_persisted_keyed_count_filters(
+                filters,
+                &self.ring_connectivity,
+                &query.required_ring_connectivity_counts,
             )
     }
 }
@@ -3328,6 +4459,15 @@ where
         query: &QueryScreen,
         scratch: &mut TargetCorpusScratch<'idx>,
     ) -> Option<CandidateMaskState> {
+        self.populate_candidate_mask_with_initial_source(query, scratch, None)
+    }
+
+    fn populate_candidate_mask_with_initial_source<'idx>(
+        &'idx self,
+        query: &QueryScreen,
+        scratch: &mut TargetCorpusScratch<'idx>,
+        initial_source: Option<(&[u64], usize)>,
+    ) -> Option<CandidateMaskState> {
         let target_count = self.target_count_usize()?;
         if target_count == 0 {
             return None;
@@ -3337,8 +4477,13 @@ where
         scratch.filters.clear();
         scratch.filters.reserve(
             12 + query.required_element_counts.len()
+                + query.required_ring_element_counts.len()
+                + query.required_aromatic_element_counts.len()
                 + query.required_degree_counts.len()
                 + query.required_total_hydrogen_counts.len()
+                + query.required_ring_membership_counts.len()
+                + query.required_ring_size_counts.len()
+                + query.required_ring_connectivity_counts.len()
                 + query.required_edge_feature_counts.len()
                 + query.required_path3_feature_counts.len()
                 + query.required_path4_feature_counts.len()
@@ -3350,10 +4495,19 @@ where
 
         scratch.ensure_word_count(bitset_word_count(target_count));
         let mut has_active_source = false;
+        let mut candidate_population = if let Some((source, source_population)) = initial_source {
+            intersect_source_with_population(
+                &mut scratch.candidate_mask,
+                &mut has_active_source,
+                source,
+                source_population,
+            )?
+        } else {
+            target_count
+        };
         scratch
             .filters
             .sort_unstable_by_key(|filter| filter.population);
-        let mut candidate_population = target_count;
         for &filter in &scratch.filters {
             let population = intersect_source_with_population(
                 &mut scratch.candidate_mask,
@@ -3363,7 +4517,23 @@ where
             )?;
             candidate_population = population;
         }
+        if !self.apply_bond_pair_count_filters(
+            query,
+            scratch,
+            &mut has_active_source,
+            &mut candidate_population,
+        ) {
+            return None;
+        }
         if !self.apply_feature_count_filters(
+            query,
+            scratch,
+            &mut has_active_source,
+            &mut candidate_population,
+        ) {
+            return None;
+        }
+        if !self.apply_alternative_screen_groups(
             query,
             scratch,
             &mut has_active_source,
@@ -3388,6 +4558,120 @@ where
             && self
                 .atom_property_counts
                 .collect_atom_property_count_filters(query, filters)
+    }
+
+    fn apply_bond_pair_count_filters(
+        &self,
+        query: &QueryScreen,
+        scratch: &mut TargetCorpusScratch<'_>,
+        has_active_source: &mut bool,
+        candidate_population: &mut usize,
+    ) -> bool {
+        for (&pair, &required) in &query.required_bond_pair_counts {
+            let Some(pair_population) =
+                self.populate_bond_pair_count_candidate_mask(pair, required, scratch)
+            else {
+                return false;
+            };
+            let Some(population) = intersect_source_with_population(
+                &mut scratch.candidate_mask,
+                has_active_source,
+                &scratch.bond_pair_candidate_mask,
+                pair_population,
+            ) else {
+                return false;
+            };
+            *candidate_population = population;
+        }
+
+        true
+    }
+
+    fn populate_bond_pair_count_candidate_mask(
+        &self,
+        pair: BondKindPair,
+        required: usize,
+        scratch: &mut TargetCorpusScratch<'_>,
+    ) -> Option<usize> {
+        let target_count = self.target_count_usize()?;
+        if required == 0 {
+            return Some(target_count);
+        }
+
+        let word_count = bitset_word_count(target_count);
+        ensure_zeroed_words(&mut scratch.bond_pair_candidate_mask, word_count);
+        for first_required in 0..=required {
+            let second_required = required - first_required;
+            if self.populate_bond_pair_count_term_mask(
+                pair,
+                first_required,
+                second_required,
+                scratch,
+            ) {
+                for (candidate_word, &term_word) in scratch
+                    .bond_pair_candidate_mask
+                    .iter_mut()
+                    .zip(&scratch.bond_pair_term_mask)
+                {
+                    *candidate_word |= term_word;
+                }
+            }
+        }
+
+        let population = bitset_population(&scratch.bond_pair_candidate_mask, target_count);
+        (population != 0).then_some(population)
+    }
+
+    fn populate_bond_pair_count_term_mask(
+        &self,
+        pair: BondKindPair,
+        first_required: usize,
+        second_required: usize,
+        scratch: &mut TargetCorpusScratch<'_>,
+    ) -> bool {
+        let Some(target_count) = self.target_count_usize() else {
+            return false;
+        };
+        let word_count = bitset_word_count(target_count);
+        ensure_zeroed_words(&mut scratch.bond_pair_term_mask, word_count);
+        let mut has_term_source = false;
+        if first_required > 0 {
+            let Some(filter) = self
+                .scalar_counts
+                .bond_kind_count_filter(pair.first, first_required)
+            else {
+                return false;
+            };
+            if intersect_source_with_population(
+                &mut scratch.bond_pair_term_mask,
+                &mut has_term_source,
+                filter.source,
+                filter.population,
+            )
+            .is_none()
+            {
+                return false;
+            }
+        }
+        if second_required > 0 {
+            let Some(filter) = self
+                .scalar_counts
+                .bond_kind_count_filter(pair.second, second_required)
+            else {
+                return false;
+            };
+            if intersect_source_with_population(
+                &mut scratch.bond_pair_term_mask,
+                &mut has_term_source,
+                filter.source,
+                filter.population,
+            )
+            .is_none()
+            {
+                return false;
+            }
+        }
+        has_term_source
     }
 
     fn apply_feature_count_filters<'idx>(
@@ -3447,6 +4731,70 @@ where
         mask.clear();
         mask.extend_from_slice(&scratch.candidate_mask);
         Some(mask)
+    }
+
+    fn apply_alternative_screen_groups<'idx>(
+        &'idx self,
+        query: &QueryScreen,
+        scratch: &mut TargetCorpusScratch<'idx>,
+        has_active_source: &mut bool,
+        candidate_population: &mut usize,
+    ) -> bool {
+        for group in &query.alternative_screen_groups {
+            let group_result = {
+                let active_source = if *has_active_source {
+                    Some((scratch.candidate_mask.as_slice(), *candidate_population))
+                } else {
+                    None
+                };
+                self.alternative_screen_group_candidate_mask(group, active_source)
+            };
+            let Some((group_mask, group_population)) = group_result else {
+                return false;
+            };
+            let Some(population) = intersect_source_with_population(
+                &mut scratch.candidate_mask,
+                has_active_source,
+                &group_mask,
+                group_population,
+            ) else {
+                return false;
+            };
+            *candidate_population = population;
+        }
+        true
+    }
+
+    fn alternative_screen_group_candidate_mask(
+        &self,
+        group: &[QueryScreen],
+        active_source: Option<(&[u64], usize)>,
+    ) -> Option<(Vec<u64>, usize)> {
+        let target_count = self.target_count_usize()?;
+        let word_count = bitset_word_count(target_count);
+        let mut group_mask = vec![0; word_count];
+        let mut alternative_scratch = TargetCorpusScratch::new();
+        for alternative in group {
+            let Some(state) = self.populate_candidate_mask_with_initial_source(
+                alternative,
+                &mut alternative_scratch,
+                active_source,
+            ) else {
+                continue;
+            };
+            if !state.has_active_source {
+                fill_all_target_bits(&mut group_mask, target_count);
+                return Some((group_mask, target_count));
+            }
+            for (group_word, &alternative_word) in group_mask
+                .iter_mut()
+                .zip(&alternative_scratch.candidate_mask)
+            {
+                *group_word |= alternative_word;
+            }
+        }
+        let population = bitset_population(&group_mask, target_count);
+        (population != 0).then_some((group_mask, population))
     }
 
     fn populate_feature_candidate_mask(
@@ -4916,7 +6264,7 @@ fn accumulate_persisted_sparse_target_count(
 mod tests {
     use core::str::FromStr;
 
-    use alloc::format;
+    use alloc::{format, string::ToString};
     use epserde::deser::Flags;
     use epserde::prelude::*;
     use smiles_parser::Smiles;
@@ -5012,6 +6360,167 @@ mod tests {
 
     #[cfg(feature = "zstd")]
     #[test]
+    fn persisted_target_corpus_index_shard_checked_mmap_requires_manifest() {
+        let targets = persisted_candidate_targets();
+        let index = TargetCorpusIndex::new(&targets);
+        let shard = TargetCorpusIndexShard::new(17, index);
+        let persisted = PersistedTargetCorpusIndexShard::from_index_shard(&shard);
+        let legacy_path = persisted_shard_temp_path();
+
+        unsafe {
+            persisted.store_unchecked(&legacy_path).unwrap();
+        }
+        let error =
+            PersistedTargetCorpusIndexShard::mmap(&legacy_path, Flags::empty()).unwrap_err();
+        assert!(error.to_string().contains("manifest"));
+        std::fs::remove_file(legacy_path).unwrap();
+
+        let path = persisted_shard_temp_path();
+        unsafe {
+            PersistedTargetCorpusIndexShardBuilder::new(&targets)
+                .base_target_id(17)
+                .store_unchecked(&path)
+                .unwrap();
+        }
+        let mapped = PersistedTargetCorpusIndexShard::mmap(&path, Flags::empty()).unwrap();
+        let loaded = mapped.uncase();
+
+        assert_eq!(loaded.format_version(), FORMAT_VERSION);
+        assert_eq!(loaded.base_target_id(), 17);
+        assert_eq!(loaded.target_count(), 5);
+        assert_persisted_candidates_match_runtime_index(loaded, &shard);
+
+        replace_manifest_value(&path, "format_version", "999");
+        let error = PersistedTargetCorpusIndexShard::mmap(&path, Flags::empty()).unwrap_err();
+        assert!(error.to_string().contains("format version"));
+
+        remove_payload_and_manifest(path);
+    }
+
+    #[cfg(feature = "zstd")]
+    #[test]
+    fn persisted_shard_paths_validate_contiguous_manifests() {
+        let targets = persisted_candidate_targets();
+        let first_path = persisted_shard_temp_path();
+        let second_path = persisted_shard_temp_path();
+
+        unsafe {
+            PersistedTargetCorpusIndexShardBuilder::new(&targets)
+                .base_target_id(17)
+                .store_unchecked(&first_path)
+                .unwrap();
+            PersistedTargetCorpusIndexShardBuilder::new(&targets)
+                .base_target_id(22)
+                .store_unchecked(&second_path)
+                .unwrap();
+        }
+
+        PersistedTargetCorpusIndexShardPaths::from_paths([first_path.clone(), second_path.clone()])
+            .validate_manifests()
+            .unwrap();
+
+        remove_payload_and_manifest(first_path);
+        remove_payload_and_manifest(second_path);
+    }
+
+    #[cfg(feature = "zstd")]
+    #[test]
+    fn persisted_shard_paths_reject_manifest_gaps_and_overlaps() {
+        for (second_base_target_id, expected_error) in [(21, "overlaps"), (23, "gap")] {
+            let targets = persisted_candidate_targets();
+            let first_path = persisted_shard_temp_path();
+            let second_path = persisted_shard_temp_path();
+
+            unsafe {
+                PersistedTargetCorpusIndexShardBuilder::new(&targets)
+                    .base_target_id(17)
+                    .store_unchecked(&first_path)
+                    .unwrap();
+                PersistedTargetCorpusIndexShardBuilder::new(&targets)
+                    .base_target_id(second_base_target_id)
+                    .store_unchecked(&second_path)
+                    .unwrap();
+            }
+
+            let error = PersistedTargetCorpusIndexShardPaths::from_paths([
+                first_path.clone(),
+                second_path.clone(),
+            ])
+            .validate_manifests()
+            .unwrap_err();
+            assert!(
+                error.to_string().contains(expected_error),
+                "unexpected error: {error}"
+            );
+
+            remove_payload_and_manifest(first_path);
+            remove_payload_and_manifest(second_path);
+        }
+    }
+
+    #[cfg(feature = "zstd")]
+    #[test]
+    fn persisted_shard_paths_reject_manifest_payload_byte_mismatch() {
+        let targets = persisted_candidate_targets();
+        let path = persisted_shard_temp_path();
+
+        unsafe {
+            PersistedTargetCorpusIndexShardBuilder::new(&targets)
+                .base_target_id(17)
+                .store_unchecked(&path)
+                .unwrap();
+        }
+        replace_manifest_value(&path, "payload_bytes", "0");
+
+        let error = PersistedTargetCorpusIndexShardPaths::from_paths([path.clone()])
+            .validate_manifests()
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("payload bytes"),
+            "unexpected error: {error}"
+        );
+
+        remove_payload_and_manifest(path);
+    }
+
+    #[cfg(feature = "zstd")]
+    #[test]
+    fn persisted_queryable_shard_paths_reject_sidecar_manifest_mismatch() {
+        let target_smiles = ["CCO", "CC=O", "COC"]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>();
+        let targets = target_smiles
+            .iter()
+            .map(|smiles| PreparedTarget::new(Smiles::from_str(smiles).unwrap()))
+            .collect::<Vec<_>>();
+        let path = persisted_shard_temp_path();
+
+        unsafe {
+            PersistedTargetCorpusIndexShardBuilder::new(&targets)
+                .base_target_id(17)
+                .target_smiles(&target_smiles)
+                .store_queryable_unchecked(&path)
+                .unwrap();
+        }
+        let smiles_path = persisted_target_smiles_path_for_index_shard_path(&path);
+        replace_manifest_value(&smiles_path, "target_count", "99");
+
+        let query = CompiledQuery::new(crate::QueryMol::from_str("[#6]=[#8]").unwrap()).unwrap();
+        let error = PersistedTargetCorpusIndexShardPaths::from_paths([path.clone()])
+            .matching_hits(&query)
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("target SMILES sidecar manifest"),
+            "unexpected error: {error}"
+        );
+
+        remove_payload_and_manifest(smiles_path);
+        remove_payload_and_manifest(path);
+    }
+
+    #[cfg(feature = "zstd")]
+    #[test]
     fn persisted_target_corpus_index_shard_stores_zstd_payload() {
         let targets = persisted_candidate_targets();
         let index = TargetCorpusIndex::new(&targets);
@@ -5042,7 +6551,7 @@ mod tests {
         assert_eq!(loaded, persisted);
         assert_persisted_candidates_match_runtime_index(&loaded, &shard);
 
-        std::fs::remove_file(path).unwrap();
+        remove_payload_and_manifest(path);
     }
 
     #[cfg(feature = "zstd")]
@@ -5074,7 +6583,7 @@ mod tests {
             ]
         );
 
-        std::fs::remove_file(path).unwrap();
+        remove_payload_and_manifest(path);
     }
 
     #[cfg(all(feature = "zstd", feature = "terminal-progress"))]
@@ -5092,7 +6601,7 @@ mod tests {
 
         assert_eq!(stats.target_count, targets.len());
 
-        std::fs::remove_file(path).unwrap();
+        remove_payload_and_manifest(path);
     }
 
     #[cfg(feature = "zstd")]
@@ -5122,11 +6631,9 @@ mod tests {
         assert!(stats.external_ids_store_stats.is_some());
 
         let query = CompiledQuery::new(crate::QueryMol::from_str("[#6]=[#8]").unwrap()).unwrap();
-        let hits = unsafe {
-            PersistedTargetCorpusIndexShardPaths::from_paths([path.clone()])
-                .matching_hits_unchecked(&query)
-                .unwrap()
-        };
+        let hits = PersistedTargetCorpusIndexShardPaths::from_paths([path.clone()])
+            .matching_hits(&query)
+            .unwrap();
         assert_eq!(
             hits,
             [PersistedTargetHit {
@@ -5135,9 +6642,51 @@ mod tests {
             }]
         );
 
-        std::fs::remove_file(persisted_target_smiles_path_for_index_shard_path(&path)).unwrap();
-        std::fs::remove_file(persisted_external_ids_path_for_index_shard_path(&path)).unwrap();
-        std::fs::remove_file(path).unwrap();
+        remove_payload_and_manifest(persisted_target_smiles_path_for_index_shard_path(&path));
+        remove_payload_and_manifest(persisted_external_ids_path_for_index_shard_path(&path));
+        remove_payload_and_manifest(path);
+    }
+
+    #[cfg(feature = "zstd")]
+    #[test]
+    fn persisted_shard_matches_runtime_ring_property_filters() {
+        let targets = [
+            "CCN",
+            "c1ccccc1",
+            "n1ccccc1",
+            "C1CCCCC1",
+            "c1ccc2ccccc2c1",
+            "C1CC1",
+        ]
+        .into_iter()
+        .map(|smiles| PreparedTarget::new(Smiles::from_str(smiles).unwrap()))
+        .collect::<Vec<_>>();
+        let runtime_index = TargetCorpusIndex::new(&targets);
+        let runtime_shard = TargetCorpusIndexShard::new(17, runtime_index);
+        let path = persisted_shard_temp_path();
+
+        unsafe {
+            PersistedTargetCorpusIndexShardBuilder::new(&targets)
+                .base_target_id(17)
+                .store_unchecked(&path)
+                .unwrap();
+        }
+
+        let persisted_paths = PersistedTargetCorpusIndexShardPaths::from_paths([path.clone()]);
+        for smarts in [
+            "[#7&R]", "[n]", "[#6;R2]", "[#6;r6]", "[#6;x3]", "[#6;r3]", "[#6;R0]",
+        ] {
+            let query = QueryScreen::new(&crate::QueryMol::from_str(smarts).unwrap());
+            let expected = runtime_shard
+                .index()
+                .candidate_ids(&query)
+                .into_iter()
+                .map(|target_id| runtime_shard.base_target_id() + target_id)
+                .collect::<Vec<_>>();
+            assert_eq!(persisted_paths.candidate_ids(&query).unwrap(), expected);
+        }
+
+        remove_payload_and_manifest(path);
     }
 
     #[cfg(all(feature = "zstd", feature = "rayon"))]
@@ -5184,14 +6733,22 @@ mod tests {
             .into_iter()
             .map(|target_id| shard.base_target_id() + target_id)
             .collect::<Vec<_>>();
-        let candidate_count = unsafe { raw_shards.par_candidate_count_unchecked(&query).unwrap() };
-        let candidate_ids = unsafe { raw_shards.par_candidate_ids_unchecked(&query).unwrap() };
+        let candidate_count = raw_shards.par_candidate_count(&query).unwrap();
+        let candidate_ids = raw_shards.par_candidate_ids(&query).unwrap();
+        let mapped_shards = raw_shards.mmap().unwrap();
 
         assert_eq!(candidate_count, expected.len());
         assert_eq!(candidate_ids, expected);
+        assert_eq!(mapped_shards.len(), 1);
+        assert!(!mapped_shards.is_empty());
+        assert_eq!(mapped_shards.shards().len(), 1);
+        assert_eq!(mapped_shards.candidate_count(&query), expected.len());
+        assert_eq!(mapped_shards.par_candidate_count(&query), expected.len());
+        assert_eq!(mapped_shards.candidate_ids(&query), expected);
+        assert_eq!(mapped_shards.par_candidate_ids(&query), expected);
 
-        std::fs::remove_file(raw_path).unwrap();
-        std::fs::remove_file(compressed_path).unwrap();
+        remove_payload_and_manifest(raw_path);
+        remove_payload_and_manifest(compressed_path);
     }
 
     #[cfg(all(feature = "zstd", feature = "rayon"))]
@@ -5244,12 +6801,10 @@ mod tests {
         assert!(raw_external_ids_path.is_file());
 
         let query = CompiledQuery::new(crate::QueryMol::from_str("[#6]=[#8]").unwrap()).unwrap();
-        let hits = unsafe {
-            compressed_shards
-                .extracted_raw_paths()
-                .par_matching_hits_unchecked(&query)
-                .unwrap()
-        };
+        let hits = compressed_shards
+            .extracted_raw_paths()
+            .par_matching_hits(&query)
+            .unwrap();
         assert_eq!(
             hits,
             [PersistedTargetHit {
@@ -5266,7 +6821,7 @@ mod tests {
             compressed_smiles_path,
             compressed_external_ids_path,
         ] {
-            std::fs::remove_file(path).unwrap();
+            remove_payload_and_manifest(path);
         }
     }
 
@@ -5285,6 +6840,7 @@ mod tests {
             "COC",
             "COCO",
             "C(O)(N)Cl",
+            "[!#1;$([#6]-[#8]),$([#6;R]-[#6;R]-[#6;R])]",
         ]
         .into_iter()
         .map(|smarts| QueryScreen::new(&crate::QueryMol::from_str(smarts).unwrap()))
@@ -5337,5 +6893,36 @@ mod tests {
             "smarts-rs-persisted-shard-{}-{suffix}.eps",
             std::process::id()
         ))
+    }
+
+    fn remove_payload_and_manifest(path: impl AsRef<Path>) {
+        let path = path.as_ref();
+        std::fs::remove_file(persisted_manifest_path_for_payload_path(path)).unwrap();
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(feature = "zstd")]
+    fn replace_manifest_value(path: impl AsRef<Path>, key: &str, replacement: &str) {
+        let manifest_path = persisted_manifest_path_for_payload_path(path);
+        let raw = std::fs::read_to_string(&manifest_path).unwrap();
+        let mut updated = String::new();
+        let mut replaced = false;
+        for line in raw.lines() {
+            if line
+                .split_once('\t')
+                .is_some_and(|(line_key, _)| line_key == key)
+            {
+                updated.push_str(key);
+                updated.push('\t');
+                updated.push_str(replacement);
+                updated.push('\n');
+                replaced = true;
+            } else {
+                updated.push_str(line);
+                updated.push('\n');
+            }
+        }
+        assert!(replaced, "manifest key {key} was not present");
+        std::fs::write(manifest_path, updated).unwrap();
     }
 }

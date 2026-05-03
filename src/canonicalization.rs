@@ -5652,19 +5652,18 @@ const fn bond_primitives_are_mutually_exclusive(left: BondPrimitive, right: Bond
     match (left, right) {
         (BondPrimitive::Any | BondPrimitive::Ring, _)
         | (_, BondPrimitive::Any | BondPrimitive::Ring) => false,
-        (BondPrimitive::Bond(left), BondPrimitive::Bond(right)) => {
-            bond_kind_class(left) != bond_kind_class(right)
-        }
+        (left, right) => bond_primitive_kind_class(left) != bond_primitive_kind_class(right),
     }
 }
 
-const fn bond_kind_class(bond: Bond) -> u8 {
-    match bond {
-        Bond::Single | Bond::Up | Bond::Down => 0,
-        Bond::Double => 1,
-        Bond::Triple => 2,
-        Bond::Aromatic => 3,
-        Bond::Quadruple => 4,
+const fn bond_primitive_kind_class(primitive: BondPrimitive) -> u8 {
+    match primitive {
+        BondPrimitive::Bond(Bond::Single | Bond::Up | Bond::Down) => 0,
+        BondPrimitive::Bond(Bond::Double) => 1,
+        BondPrimitive::Bond(Bond::Triple) => 2,
+        BondPrimitive::Aromatic => 3,
+        BondPrimitive::Bond(Bond::Quadruple) => 4,
+        BondPrimitive::Any | BondPrimitive::Ring => 5,
     }
 }
 

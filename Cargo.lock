@@ -264,9 +264,9 @@ checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 
 [[package]]
 name = "elements_rs"
-version = "0.2.3"
+version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "31d19502a92c5b52707f78efd0ceaf92a75171a8661d55ab5bfa01f6383c8d8d"
+checksum = "4bd188e809697c6ab48177f32792f1d29f41451e7956336b0ba939adfde120aa"
 dependencies = [
  "serde",
  "strum",
@@ -352,7 +352,7 @@ checksum = "e6d5a32815ae3f33302d95fdcb2ce17862f8c65363dcfd29360480ba1001fc9c"
 [[package]]
 name = "geometric-traits"
 version = "0.1.0"
-source = "git+https://github.com/earth-metabolome-initiative/geometric-traits?branch=main#eec1488c592e8299a30096208ed9c439a1dd40de"
+source = "git+https://github.com/earth-metabolome-initiative/geometric-traits?branch=main#6f1bc412e34c3e698877bab976124041f8043b75"
 dependencies = [
  "bitvec",
  "hashbrown",
@@ -521,6 +521,17 @@ dependencies = [
  "thiserror 2.0.18",
  "widestring",
  "windows",
+]
+
+[[package]]
+name = "molecular-formulas"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f50760a98089095da7db7c128617b704d2e257ac942dd37b44387d138b63c24e"
+dependencies = [
+ "elements_rs",
+ "num-traits",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -819,11 +830,12 @@ dependencies = [
 [[package]]
 name = "smiles-parser"
 version = "0.1.0"
-source = "git+https://github.com/earth-metabolome-initiative/smiles-parser?branch=main#7ff01a959320ab1caba5149165dc03a210c3d755"
+source = "git+https://github.com/earth-metabolome-initiative/smiles-parser?branch=main#64f6fdbcd6d8e06a7b8c115531cf59af31da384f"
 dependencies = [
  "elements_rs",
  "geometric-traits",
  "hashbrown",
+ "molecular-formulas",
  "smallvec",
  "thiserror 2.0.18",
 ]

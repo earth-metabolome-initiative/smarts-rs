@@ -196,6 +196,8 @@ pub enum BondExprTree {
 pub enum BondPrimitive {
     /// Concrete directional or order-specific bond kinds reused from `smiles-parser`.
     Bond(Bond),
+    /// Aromatic bond `:`.
+    Aromatic,
     /// Any bond `~`.
     Any,
     /// Ring bond `@`.
@@ -474,6 +476,7 @@ impl fmt::Display for BondPrimitive {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Bond(bond) => bond.fmt(f),
+            Self::Aromatic => f.write_str(":"),
             Self::Any => f.write_str("~"),
             Self::Ring => f.write_str("@"),
         }
@@ -955,7 +958,7 @@ const fn bond_primitive_order_key(primitive: BondPrimitive) -> u8 {
         BondPrimitive::Bond(Bond::Double) => 1,
         BondPrimitive::Bond(Bond::Triple) => 2,
         BondPrimitive::Bond(Bond::Quadruple) => 3,
-        BondPrimitive::Bond(Bond::Aromatic) => 4,
+        BondPrimitive::Aromatic => 4,
         BondPrimitive::Bond(Bond::Up) => 5,
         BondPrimitive::Bond(Bond::Down) => 6,
         BondPrimitive::Any => 7,
@@ -1598,7 +1601,7 @@ mod tests {
             (
                 BondExprTree::LowAnd(vec![
                     BondExprTree::Primitive(BondPrimitive::Bond(Bond::Double)),
-                    BondExprTree::Primitive(BondPrimitive::Bond(Bond::Aromatic)),
+                    BondExprTree::Primitive(BondPrimitive::Aromatic),
                 ])
                 .to_string(),
                 "=;:",

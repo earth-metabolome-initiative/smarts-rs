@@ -23,7 +23,7 @@ zstd = ["std", "epserde", "dep:zstd"]
 workspace = true
 
 [dependencies]
-elements_rs = { version = "0.2.3", default-features = false }
+elements_rs = { version = "0.2.6", default-features = false }
 epserde = { version = "0.12.6", default-features = false, features = ["derive", "mmap", "std"], optional = true }
 geometric-traits = { git = "https://github.com/earth-metabolome-initiative/geometric-traits", branch = "main", default-features = false, features = ["alloc"] }
 indicatif = { version = "0.18.4", optional = true }
@@ -36,7 +36,7 @@ zstd = { version = "0.13.3", features = ["zstdmt"], optional = true }
 
 [dev-dependencies]
 criterion = "0.8.2"
-elements_rs = "0.2.3"
+elements_rs = "0.2.6"
 geometric-traits = { git = "https://github.com/earth-metabolome-initiative/geometric-traits", branch = "main" }
 rayon = "1.11.0"
 serde = { version = "1.0.228", features = ["derive"] }

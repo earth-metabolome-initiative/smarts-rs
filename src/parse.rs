@@ -322,7 +322,7 @@ impl<'a> Parser<'a> {
             '-' => BondPrimitive::Bond(Bond::Single),
             '=' => BondPrimitive::Bond(Bond::Double),
             '#' => BondPrimitive::Bond(Bond::Triple),
-            ':' => BondPrimitive::Bond(Bond::Aromatic),
+            ':' => BondPrimitive::Aromatic,
             '~' => BondPrimitive::Any,
             '@' => BondPrimitive::Ring,
             '/' => BondPrimitive::Bond(Bond::Up),

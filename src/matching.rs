@@ -1505,9 +1505,8 @@ fn ensure_supported_bond_tree(tree: &BondExprTree) -> Result<(), SmartsMatchErro
 
 const fn ensure_supported_bond_primitive(primitive: BondPrimitive) -> Result<(), SmartsMatchError> {
     match primitive {
-        BondPrimitive::Bond(
-            Bond::Single | Bond::Double | Bond::Triple | Bond::Aromatic | Bond::Up | Bond::Down,
-        )
+        BondPrimitive::Bond(Bond::Single | Bond::Double | Bond::Triple | Bond::Up | Bond::Down)
+        | BondPrimitive::Aromatic
         | BondPrimitive::Any
         | BondPrimitive::Ring => Ok(()),
         BondPrimitive::Bond(Bond::Quadruple) => Err(unsupported_bond_primitive("$")),
@@ -1919,7 +1918,7 @@ const fn bond_primitive_state_mask(primitive: BondPrimitive) -> u16 {
         BondPrimitive::Bond(Bond::Single | Bond::Up | Bond::Down) => single_like_bond_state_mask(),
         BondPrimitive::Bond(Bond::Double) => bond_label_state_mask(BondLabel::Double),
         BondPrimitive::Bond(Bond::Triple) => bond_label_state_mask(BondLabel::Triple),
-        BondPrimitive::Bond(Bond::Aromatic) => bond_label_state_mask(BondLabel::Aromatic),
+        BondPrimitive::Aromatic => bond_label_state_mask(BondLabel::Aromatic),
         BondPrimitive::Bond(Bond::Quadruple) => 0,
         BondPrimitive::Any => BOND_STATE_MASK_ALL,
         BondPrimitive::Ring => ring_bond_state_mask(),
