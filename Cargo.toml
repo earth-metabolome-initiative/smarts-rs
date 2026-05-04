@@ -95,6 +95,7 @@ redundant_pub_crate = "deny"
 use_self = "deny"
 useless_let_if_seq = "deny"
 module_name_repetitions = "allow"
+multiple_crate_versions = "allow"
 
 [profile.release]
 codegen-units = 1

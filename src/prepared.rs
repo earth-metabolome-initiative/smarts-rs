@@ -402,7 +402,7 @@ impl PreparedTarget {
             || self
                 .target
                 .edge_for_node_pair((left_atom, right_atom))
-                .is_some_and(|edge| edge.4)
+                .is_some_and(smiles_parser::bond::bond_edge::BondEdge::is_aromatic)
     }
 
     /// Returns whether the provided atom is aromatic under the RDKit-default
@@ -900,7 +900,7 @@ fn hybridization_code(target: &Smiles, aromaticity: &AromaticityAssignment, atom
     let mut double_bonds = 0u8;
     let mut has_triple = false;
     for edge in target.edges_for_node(atom_id) {
-        match normalized_bond(edge.2) {
+        match normalized_bond(edge.bond()) {
             Bond::Double => double_bonds = double_bonds.saturating_add(1),
             Bond::Triple | Bond::Quadruple => has_triple = true,
             Bond::Single | Bond::Up | Bond::Down => {}
@@ -932,7 +932,7 @@ fn atom_has_conjugated_lone_pair(
     }
 
     target.edges_for_node(atom_id).any(|edge| {
-        normalized_bond(edge.2) == Bond::Single
+        normalized_bond(edge.bond()) == Bond::Single
             && bond_edge_other(edge, atom_id).is_some_and(|neighbor_id| {
                 neighbor_supports_conjugation(target, aromaticity, atom_id, neighbor_id)
             })
@@ -949,7 +949,7 @@ fn neighbor_supports_conjugation(
         || target.edges_for_node(neighbor_id).any(|edge| {
             bond_edge_other(edge, neighbor_id).is_some_and(|other_id| other_id != atom_id)
                 && matches!(
-                    normalized_bond(edge.2),
+                    normalized_bond(edge.bond()),
                     Bond::Double | Bond::Triple | Bond::Quadruple
                 )
         })
@@ -1077,7 +1077,7 @@ fn effective_formal_charge(
         && target.edges_for_node(atom_id).count() == 1
         && target.edges_for_node(atom_id).any(|edge| {
             bond_edge_other(edge, atom_id).is_some_and(|neighbor_atom| {
-                rdkit_like_oxyhalogen_terminal_oxo_bond(target, atom_id, neighbor_atom, edge.2)
+                rdkit_like_oxyhalogen_terminal_oxo_bond(target, atom_id, neighbor_atom, edge.bond())
             })
         })
     {
@@ -1104,7 +1104,7 @@ fn effective_formal_charge(
                     aromaticity,
                     atom_id,
                     neighbor_atom,
-                    edge.2,
+                    edge.bond(),
                 )
             })
         })
@@ -1120,7 +1120,7 @@ fn terminal_oxyhalogen_oxo_bond_count(target: &Smiles, atom_id: AtomId) -> usize
         .edges_for_node(atom_id)
         .filter(|edge| {
             bond_edge_other(*edge, atom_id).is_some_and(|neighbor_atom| {
-                rdkit_like_oxyhalogen_terminal_oxo_bond(target, atom_id, neighbor_atom, edge.2)
+                rdkit_like_oxyhalogen_terminal_oxo_bond(target, atom_id, neighbor_atom, edge.bond())
             })
         })
         .count()
@@ -1161,7 +1161,7 @@ fn rdkit_like_phosphorus_terminal_oxo_bond(
             continue;
         }
 
-        match normalized_bond(edge.2) {
+        match normalized_bond(edge.bond()) {
             Bond::Double => {
                 if other_double_neighbor.is_some() {
                     return false;
@@ -1248,7 +1248,7 @@ fn terminal_phosphorus_oxo_bond_count(
                     aromaticity,
                     atom_id,
                     neighbor_atom,
-                    edge.2,
+                    edge.bond(),
                 )
             })
         })
@@ -1409,8 +1409,14 @@ fn effective_neighbor_cache(
             if atom_id >= other_atom {
                 continue;
             }
-            let label =
-                effective_bond_label(target, aromaticity, atom_id, other_atom, edge.2, edge.4);
+            let label = effective_bond_label(
+                target,
+                aromaticity,
+                atom_id,
+                other_atom,
+                edge.bond(),
+                edge.is_aromatic(),
+            );
             neighbors[atom_id].push((other_atom, label));
             neighbors[other_atom].push((atom_id, label));
         }
@@ -1814,7 +1820,10 @@ mod tests {
         let alkyl_hypochlorite = Smiles::from_str("Cl(=O)C").unwrap();
         let alkyl_hypochlorite_aromaticity =
             alkyl_hypochlorite.aromaticity_assignment_for(AromaticityPolicy::RdkitDefault);
-        let raw_cl_o = alkyl_hypochlorite.edge_for_node_pair((0, 1)).unwrap().2;
+        let raw_cl_o = alkyl_hypochlorite
+            .edge_for_node_pair((0, 1))
+            .unwrap()
+            .bond();
 
         assert_eq!(
             identify_terminal_oxyhalogen_pair(&alkyl_hypochlorite, 0, 1),
@@ -1866,7 +1875,7 @@ mod tests {
         let duplicate_double = Smiles::from_str("COP(=O)(=N)=C").unwrap();
         let duplicate_double_aromaticity =
             duplicate_double.aromaticity_assignment_for(AromaticityPolicy::RdkitDefault);
-        let duplicate_double_bond = duplicate_double.edge_for_node_pair((1, 2)).unwrap().2;
+        let duplicate_double_bond = duplicate_double.edge_for_node_pair((1, 2)).unwrap().bond();
         assert!(!rdkit_like_phosphorus_terminal_oxo_bond(
             &duplicate_double,
             &duplicate_double_aromaticity,
@@ -1878,7 +1887,7 @@ mod tests {
         let triple_neighbor = Smiles::from_str("COP(=O)#N").unwrap();
         let triple_neighbor_aromaticity =
             triple_neighbor.aromaticity_assignment_for(AromaticityPolicy::RdkitDefault);
-        let triple_neighbor_bond = triple_neighbor.edge_for_node_pair((2, 3)).unwrap().2;
+        let triple_neighbor_bond = triple_neighbor.edge_for_node_pair((2, 3)).unwrap().bond();
         assert!(!rdkit_like_phosphorus_terminal_oxo_bond(
             &triple_neighbor,
             &triple_neighbor_aromaticity,
@@ -1890,8 +1899,10 @@ mod tests {
         let empty_single_neighbors = Smiles::from_str("P(=O)=NC").unwrap();
         let empty_single_neighbors_aromaticity =
             empty_single_neighbors.aromaticity_assignment_for(AromaticityPolicy::RdkitDefault);
-        let empty_single_neighbors_bond =
-            empty_single_neighbors.edge_for_node_pair((0, 1)).unwrap().2;
+        let empty_single_neighbors_bond = empty_single_neighbors
+            .edge_for_node_pair((0, 1))
+            .unwrap()
+            .bond();
         assert!(!rdkit_like_phosphorus_terminal_oxo_bond(
             &empty_single_neighbors,
             &empty_single_neighbors_aromaticity,
@@ -1903,7 +1914,7 @@ mod tests {
         let sulfur_partner = Smiles::from_str("CP(=O)(=S)C").unwrap();
         let sulfur_partner_aromaticity =
             sulfur_partner.aromaticity_assignment_for(AromaticityPolicy::RdkitDefault);
-        let sulfur_partner_bond = sulfur_partner.edge_for_node_pair((1, 2)).unwrap().2;
+        let sulfur_partner_bond = sulfur_partner.edge_for_node_pair((1, 2)).unwrap().bond();
         assert!(!rdkit_like_phosphorus_terminal_oxo_bond(
             &sulfur_partner,
             &sulfur_partner_aromaticity,
@@ -1915,7 +1926,10 @@ mod tests {
         let substituted_imidate = Smiles::from_str("CP(=O)(=NC)C").unwrap();
         let substituted_imidate_aromaticity =
             substituted_imidate.aromaticity_assignment_for(AromaticityPolicy::RdkitDefault);
-        let substituted_imidate_bond = substituted_imidate.edge_for_node_pair((1, 2)).unwrap().2;
+        let substituted_imidate_bond = substituted_imidate
+            .edge_for_node_pair((1, 2))
+            .unwrap()
+            .bond();
         assert!(rdkit_like_phosphorus_terminal_oxo_bond(
             &substituted_imidate,
             &substituted_imidate_aromaticity,
@@ -1927,7 +1941,7 @@ mod tests {
         let substituted_ylide = Smiles::from_str("CP(=O)(=CC)C").unwrap();
         let substituted_ylide_aromaticity =
             substituted_ylide.aromaticity_assignment_for(AromaticityPolicy::RdkitDefault);
-        let substituted_ylide_bond = substituted_ylide.edge_for_node_pair((1, 2)).unwrap().2;
+        let substituted_ylide_bond = substituted_ylide.edge_for_node_pair((1, 2)).unwrap().bond();
         assert!(rdkit_like_phosphorus_terminal_oxo_bond(
             &substituted_ylide,
             &substituted_ylide_aromaticity,

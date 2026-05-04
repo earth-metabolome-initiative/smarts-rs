@@ -8,7 +8,10 @@ use std::{
     path::PathBuf,
 };
 
-use smiles_parser::{bond::Bond, Smiles};
+use smiles_parser::{
+    bond::{bond_edge::bond_edge_other, Bond},
+    Smiles,
+};
 
 const INPUT_TSV: &str = "corpus/benchmark/smarts-evolution-example-smiles-v0.tsv";
 const OUTPUT_SMARTS: &str = "corpus/benchmark/smarts-evolution-complex-queries-v0.smarts";
@@ -296,11 +299,13 @@ fn collect_paths(
 
     if atom_ids.len() < max_path_atoms {
         for edge in smiles.edges_for_node(atom_id) {
-            let next = if edge.0 == atom_id { edge.1 } else { edge.0 };
+            let Some(next) = bond_edge_other(edge, atom_id) else {
+                continue;
+            };
             if visited[next] {
                 continue;
             }
-            bond_tokens.push(bond_smarts(edge.2, edge.4));
+            bond_tokens.push(bond_smarts(edge.bond(), edge.is_aromatic()));
             collect_paths(
                 smiles,
                 ring_membership,
@@ -330,8 +335,12 @@ fn collect_branch_pairs(
         for right_index in (left_index + 1)..neighbors.len() {
             let left = neighbors[left_index];
             let right = neighbors[right_index];
-            let left_id = if left.0 == center { left.1 } else { left.0 };
-            let right_id = if right.0 == center { right.1 } else { right.0 };
+            let Some(left_id) = bond_edge_other(left, center) else {
+                continue;
+            };
+            let Some(right_id) = bond_edge_other(right, center) else {
+                continue;
+            };
             if left_id == right_id {
                 continue;
             }
@@ -340,18 +349,18 @@ fn collect_branch_pairs(
                 ring_membership,
                 center,
                 left_id,
-                bond_smarts(left.2, left.4),
+                bond_smarts(left.bond(), left.is_aromatic()),
                 right_id,
-                bond_smarts(right.2, right.4),
+                bond_smarts(right.bond(), right.is_aromatic()),
             );
             let reverse = branch_pair_smarts(
                 smiles,
                 ring_membership,
                 center,
                 right_id,
-                bond_smarts(right.2, right.4),
+                bond_smarts(right.bond(), right.is_aromatic()),
                 left_id,
-                bond_smarts(left.2, left.4),
+                bond_smarts(left.bond(), left.is_aromatic()),
             );
             candidates.insert(forward.min(reverse));
         }
@@ -379,18 +388,20 @@ fn collect_carboxylate_tail_candidates(
     let mut tail_neighbors = Vec::new();
 
     for edge in smiles.edges_for_node(center) {
-        let neighbor = if edge.0 == center { edge.1 } else { edge.0 };
+        let Some(neighbor) = bond_edge_other(edge, center) else {
+            continue;
+        };
         let atomic_number = smiles
             .node_by_id(neighbor)
             .and_then(smiles_parser::atom::Atom::element)
             .map_or(0, u8::from);
-        match (edge.2, atomic_number) {
+        match (edge.bond(), atomic_number) {
             (Bond::Double, 8) => double_oxygen_neighbors.push(neighbor),
             (bond, 8) if is_single_like_bond(bond) => {
-                single_oxygen_neighbors.push((neighbor, bond_smarts(bond, edge.4)));
+                single_oxygen_neighbors.push((neighbor, bond_smarts(bond, edge.is_aromatic())));
             }
             (bond, 6) if is_single_like_bond(bond) => {
-                tail_neighbors.push((neighbor, bond_smarts(bond, edge.4)));
+                tail_neighbors.push((neighbor, bond_smarts(bond, edge.is_aromatic())));
             }
             _ => {}
         }
@@ -469,11 +480,13 @@ fn collect_carboxylate_tail_paths(
 
     if tail_atoms.len() < max_tail_atoms {
         for edge in smiles.edges_for_node(atom_id) {
-            let next = if edge.0 == atom_id { edge.1 } else { edge.0 };
+            let Some(next) = bond_edge_other(edge, atom_id) else {
+                continue;
+            };
             if visited[next] {
                 continue;
             }
-            tail_bonds.push(bond_smarts(edge.2, edge.4));
+            tail_bonds.push(bond_smarts(edge.bond(), edge.is_aromatic()));
             collect_carboxylate_tail_paths(
                 smiles,
                 ring_membership,
