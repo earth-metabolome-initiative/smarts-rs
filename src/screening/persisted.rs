@@ -947,6 +947,17 @@ pub struct PersistedTargetHit {
     pub external_id: Option<u64>,
 }
 
+/// Exact SMARTS hit with the matched target SMILES borrowed from a persisted sidecar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PersistedTargetRecordHit<'a> {
+    /// Global target id within the indexed target corpus.
+    pub target_id: usize,
+    /// Matched target SMILES from the target-SMILES sidecar.
+    pub target_smiles: &'a str,
+    /// Optional caller-provided external target id.
+    pub external_id: Option<u64>,
+}
+
 /// Builder for storing one persisted target-index shard.
 #[cfg(feature = "zstd")]
 #[derive(Debug, Clone, Copy)]
@@ -1764,6 +1775,39 @@ impl PersistedTargetCorpusIndexShardPaths {
         Ok(hit_count)
     }
 
+    /// Visits exact SMARTS hits with their target SMILES across all raw queryable shard paths.
+    ///
+    /// This is the streaming form to use when callers need the matched SMILES
+    /// payload without collecting all hits or re-reading sidecars externally.
+    /// The `target_smiles` field passed to `visit` is borrowed from the mapped
+    /// shard sidecar and is valid only for that callback invocation.
+    ///
+    /// Returns the number of exact hits visited.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any manifest is missing or incompatible, if any
+    /// shard or target sidecar cannot be memory-mapped, if sidecar metadata
+    /// does not match the index shard, if a candidate target SMILES cannot be
+    /// parsed, or if `visit` returns an error.
+    pub fn try_for_each_matching_record_hit(
+        &self,
+        query: &CompiledQuery,
+        mut visit: impl for<'a> FnMut(
+            PersistedTargetRecordHit<'a>,
+        )
+            -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>>,
+    ) -> Result<usize, Box<dyn std::error::Error + Send + Sync + 'static>> {
+        self.validate_queryable_manifests()?;
+        let mut hit_count = 0usize;
+        for path in &self.paths {
+            hit_count = hit_count.saturating_add(matching_record_hits_for_raw_shard_with(
+                path, query, &mut visit,
+            )?);
+        }
+        Ok(hit_count)
+    }
+
     /// Collects exact SMARTS hits across all raw queryable shard paths in parallel after manifest validation.
     ///
     /// This screens each persisted index shard first, then runs exact SMARTS
@@ -1914,6 +1958,42 @@ impl PersistedTargetCorpusIndexShardPaths {
         for path in &self.paths {
             hit_count = hit_count.saturating_add(unsafe {
                 matching_hits_for_raw_shard_unchecked_with(path, query, &mut visit)?
+            });
+        }
+        Ok(hit_count)
+    }
+
+    /// Visits exact SMARTS hits with their target SMILES across all raw queryable shard paths.
+    ///
+    /// This is the streaming form to use when callers need the matched SMILES
+    /// payload without collecting all hits or re-reading sidecars externally.
+    /// The `target_smiles` field passed to `visit` is borrowed from the mapped
+    /// shard sidecar and is valid only for that callback invocation.
+    ///
+    /// Returns the number of exact hits visited.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any shard or target sidecar cannot be memory-mapped,
+    /// if sidecar metadata does not match the index shard, if a candidate
+    /// target SMILES cannot be parsed, or if `visit` returns an error.
+    ///
+    /// # Safety
+    ///
+    /// Raw shard and sidecar files must be trusted epserde payloads produced by
+    /// a compatible version of this crate and epserde.
+    pub unsafe fn try_for_each_matching_record_hit_unchecked(
+        &self,
+        query: &CompiledQuery,
+        mut visit: impl for<'a> FnMut(
+            PersistedTargetRecordHit<'a>,
+        )
+            -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>>,
+    ) -> Result<usize, Box<dyn std::error::Error + Send + Sync + 'static>> {
+        let mut hit_count = 0usize;
+        for path in &self.paths {
+            hit_count = hit_count.saturating_add(unsafe {
+                matching_record_hits_for_raw_shard_unchecked_with(path, query, &mut visit)?
             });
         }
         Ok(hit_count)
@@ -2406,6 +2486,22 @@ fn matching_hits_for_raw_shard_with(
         PersistedTargetHit,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>>,
 ) -> Result<usize, Box<dyn std::error::Error + Send + Sync + 'static>> {
+    matching_record_hits_for_raw_shard_with(path, query, &mut |hit| {
+        visit(PersistedTargetHit {
+            target_id: hit.target_id,
+            external_id: hit.external_id,
+        })
+    })
+}
+
+fn matching_record_hits_for_raw_shard_with(
+    path: impl AsRef<Path>,
+    query: &CompiledQuery,
+    visit: &mut impl for<'a> FnMut(
+        PersistedTargetRecordHit<'a>,
+    )
+        -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>>,
+) -> Result<usize, Box<dyn std::error::Error + Send + Sync + 'static>> {
     let path = path.as_ref();
     let mapped_index = PersistedTargetCorpusIndexShard::mmap(path, deser::Flags::empty())?;
     let smiles_path = persisted_target_smiles_path_for_index_shard_path(path);
@@ -2419,7 +2515,7 @@ fn matching_hits_for_raw_shard_with(
     } else {
         None
     };
-    matching_hits_for_loaded_shard_with(
+    matching_record_hits_for_loaded_shard_with(
         path,
         mapped_index.uncase(),
         mapped_smiles.uncase(),
@@ -2450,6 +2546,24 @@ unsafe fn matching_hits_for_raw_shard_unchecked_with(
         PersistedTargetHit,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>>,
 ) -> Result<usize, Box<dyn std::error::Error + Send + Sync + 'static>> {
+    unsafe {
+        matching_record_hits_for_raw_shard_unchecked_with(path, query, &mut |hit| {
+            visit(PersistedTargetHit {
+                target_id: hit.target_id,
+                external_id: hit.external_id,
+            })
+        })
+    }
+}
+
+unsafe fn matching_record_hits_for_raw_shard_unchecked_with(
+    path: impl AsRef<Path>,
+    query: &CompiledQuery,
+    visit: &mut impl for<'a> FnMut(
+        PersistedTargetRecordHit<'a>,
+    )
+        -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>>,
+) -> Result<usize, Box<dyn std::error::Error + Send + Sync + 'static>> {
     let path = path.as_ref();
     let mapped_index =
         unsafe { PersistedTargetCorpusIndexShard::mmap_unchecked(path, deser::Flags::empty())? };
@@ -2464,7 +2578,7 @@ unsafe fn matching_hits_for_raw_shard_unchecked_with(
     } else {
         None
     };
-    matching_hits_for_loaded_shard_with(
+    matching_record_hits_for_loaded_shard_with(
         path,
         mapped_index.uncase(),
         mapped_smiles.uncase(),
@@ -2474,7 +2588,7 @@ unsafe fn matching_hits_for_raw_shard_unchecked_with(
     )
 }
 
-fn matching_hits_for_loaded_shard_with<
+fn matching_record_hits_for_loaded_shard_with<
     ScalarCounts,
     AtomPropertyCounts,
     Edge,
@@ -2494,9 +2608,10 @@ fn matching_hits_for_loaded_shard_with<
     smiles: &PersistedTargetSmilesShard,
     external_ids: Option<&PersistedExternalIdShard>,
     query: &CompiledQuery,
-    visit: &mut impl FnMut(
-        PersistedTargetHit,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>>,
+    visit: &mut impl for<'a> FnMut(
+        PersistedTargetRecordHit<'a>,
+    )
+        -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>>,
 ) -> Result<usize, Box<dyn std::error::Error + Send + Sync + 'static>>
 where
     ScalarCounts: PersistedScalarCountIndexesAccess,
@@ -2564,8 +2679,9 @@ where
             ))
         })?);
         if query.matches_with_scratch(&target, &mut match_scratch) {
-            visit(PersistedTargetHit {
+            visit(PersistedTargetRecordHit {
                 target_id,
+                target_smiles,
                 external_id: external_ids.and_then(|ids| ids.external_id(local_target_id)),
             })?;
             hit_count = hit_count.saturating_add(1);
@@ -6761,6 +6877,24 @@ mod tests {
             .unwrap();
         assert_eq!(streamed_count, hits.len());
         assert_eq!(streamed_hits, hits);
+
+        let mut streamed_record_hits = Vec::new();
+        let streamed_record_count =
+            PersistedTargetCorpusIndexShardPaths::from_paths([path.clone()])
+                .try_for_each_matching_record_hit(&query, |hit| {
+                    streamed_record_hits.push((
+                        hit.target_id,
+                        String::from(hit.target_smiles),
+                        hit.external_id,
+                    ));
+                    Ok(())
+                })
+                .unwrap();
+        assert_eq!(streamed_record_count, hits.len());
+        assert_eq!(
+            streamed_record_hits,
+            [(18_usize, String::from("CC=O"), Some(102_u64))]
+        );
 
         remove_payload_and_manifest(persisted_target_smiles_path_for_index_shard_path(&path));
         remove_payload_and_manifest(persisted_external_ids_path_for_index_shard_path(&path));
