@@ -51,7 +51,7 @@ use crate::{
     matching::{CompiledQuery, MatchScratch},
     prepared::PreparedTarget,
 };
-use smiles_parser::Smiles;
+use smiles_parser::{Smiles, SmilesError};
 
 #[cfg(feature = "zstd")]
 use PersistedTargetCorpusIndexShardBuildEvent::{Finished, Started};
@@ -958,6 +958,18 @@ pub struct PersistedTargetRecordHit<'a> {
     pub external_id: Option<u64>,
 }
 
+/// Policy for malformed target SMILES encountered while querying persisted shards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PersistedTargetSmilesParsePolicy {
+    /// Return an error when any candidate target SMILES cannot be parsed.
+    Error,
+    /// Skip candidate target SMILES that contain wildcard atoms.
+    ///
+    /// Other parse errors still return an error. This is useful for `PubChem`
+    /// shards that retain a small number of upstream `*` records.
+    SkipWildcard,
+}
+
 /// Builder for storing one persisted target-index shard.
 #[cfg(feature = "zstd")]
 #[derive(Debug, Clone, Copy)]
@@ -1798,11 +1810,45 @@ impl PersistedTargetCorpusIndexShardPaths {
         )
             -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>>,
     ) -> Result<usize, Box<dyn std::error::Error + Send + Sync + 'static>> {
+        self.try_for_each_matching_record_hit_with_target_smiles_parse_policy(
+            query,
+            PersistedTargetSmilesParsePolicy::Error,
+            &mut visit,
+        )
+    }
+
+    /// Visits exact SMARTS hits with their target SMILES and a target-parse policy.
+    ///
+    /// This is equivalent to [`Self::try_for_each_matching_record_hit`], but
+    /// lets callers opt into skipping wildcard target SMILES when querying
+    /// trusted shards built from upstream corpora that contain those records.
+    ///
+    /// Returns the number of exact hits visited.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any manifest is missing or incompatible, if any
+    /// shard or target sidecar cannot be memory-mapped, if sidecar metadata
+    /// does not match the index shard, if a candidate target SMILES cannot be
+    /// parsed under `target_smiles_parse_policy`, or if `visit` returns an
+    /// error.
+    pub fn try_for_each_matching_record_hit_with_target_smiles_parse_policy(
+        &self,
+        query: &CompiledQuery,
+        target_smiles_parse_policy: PersistedTargetSmilesParsePolicy,
+        mut visit: impl for<'a> FnMut(
+            PersistedTargetRecordHit<'a>,
+        )
+            -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>>,
+    ) -> Result<usize, Box<dyn std::error::Error + Send + Sync + 'static>> {
         self.validate_queryable_manifests()?;
         let mut hit_count = 0usize;
         for path in &self.paths {
             hit_count = hit_count.saturating_add(matching_record_hits_for_raw_shard_with(
-                path, query, &mut visit,
+                path,
+                query,
+                target_smiles_parse_policy,
+                &mut visit,
             )?);
         }
         Ok(hit_count)
@@ -1990,10 +2036,52 @@ impl PersistedTargetCorpusIndexShardPaths {
         )
             -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>>,
     ) -> Result<usize, Box<dyn std::error::Error + Send + Sync + 'static>> {
+        unsafe {
+            self.try_for_each_matching_record_hit_unchecked_with_target_smiles_parse_policy(
+                query,
+                PersistedTargetSmilesParsePolicy::Error,
+                &mut visit,
+            )
+        }
+    }
+
+    /// Visits exact SMARTS hits with their target SMILES and a target-parse policy.
+    ///
+    /// This is equivalent to [`Self::try_for_each_matching_record_hit_unchecked`],
+    /// but lets callers opt into skipping wildcard target SMILES when querying
+    /// trusted shards built from upstream corpora that contain those records.
+    ///
+    /// Returns the number of exact hits visited.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any shard or target sidecar cannot be memory-mapped,
+    /// if sidecar metadata does not match the index shard, if a candidate
+    /// target SMILES cannot be parsed under `target_smiles_parse_policy`, or if
+    /// `visit` returns an error.
+    ///
+    /// # Safety
+    ///
+    /// Raw shard and sidecar files must be trusted epserde payloads produced by
+    /// a compatible version of this crate and epserde.
+    pub unsafe fn try_for_each_matching_record_hit_unchecked_with_target_smiles_parse_policy(
+        &self,
+        query: &CompiledQuery,
+        target_smiles_parse_policy: PersistedTargetSmilesParsePolicy,
+        mut visit: impl for<'a> FnMut(
+            PersistedTargetRecordHit<'a>,
+        )
+            -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>>,
+    ) -> Result<usize, Box<dyn std::error::Error + Send + Sync + 'static>> {
         let mut hit_count = 0usize;
         for path in &self.paths {
             hit_count = hit_count.saturating_add(unsafe {
-                matching_record_hits_for_raw_shard_unchecked_with(path, query, &mut visit)?
+                matching_record_hits_for_raw_shard_unchecked_with(
+                    path,
+                    query,
+                    target_smiles_parse_policy,
+                    &mut visit,
+                )?
             });
         }
         Ok(hit_count)
@@ -2486,17 +2574,23 @@ fn matching_hits_for_raw_shard_with(
         PersistedTargetHit,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>>,
 ) -> Result<usize, Box<dyn std::error::Error + Send + Sync + 'static>> {
-    matching_record_hits_for_raw_shard_with(path, query, &mut |hit| {
-        visit(PersistedTargetHit {
-            target_id: hit.target_id,
-            external_id: hit.external_id,
-        })
-    })
+    matching_record_hits_for_raw_shard_with(
+        path,
+        query,
+        PersistedTargetSmilesParsePolicy::Error,
+        &mut |hit| {
+            visit(PersistedTargetHit {
+                target_id: hit.target_id,
+                external_id: hit.external_id,
+            })
+        },
+    )
 }
 
 fn matching_record_hits_for_raw_shard_with(
     path: impl AsRef<Path>,
     query: &CompiledQuery,
+    target_smiles_parse_policy: PersistedTargetSmilesParsePolicy,
     visit: &mut impl for<'a> FnMut(
         PersistedTargetRecordHit<'a>,
     )
@@ -2521,6 +2615,7 @@ fn matching_record_hits_for_raw_shard_with(
         mapped_smiles.uncase(),
         mapped_external_ids.as_ref().map(deser::MemCase::uncase),
         query,
+        target_smiles_parse_policy,
         visit,
     )
 }
@@ -2547,18 +2642,24 @@ unsafe fn matching_hits_for_raw_shard_unchecked_with(
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>>,
 ) -> Result<usize, Box<dyn std::error::Error + Send + Sync + 'static>> {
     unsafe {
-        matching_record_hits_for_raw_shard_unchecked_with(path, query, &mut |hit| {
-            visit(PersistedTargetHit {
-                target_id: hit.target_id,
-                external_id: hit.external_id,
-            })
-        })
+        matching_record_hits_for_raw_shard_unchecked_with(
+            path,
+            query,
+            PersistedTargetSmilesParsePolicy::Error,
+            &mut |hit| {
+                visit(PersistedTargetHit {
+                    target_id: hit.target_id,
+                    external_id: hit.external_id,
+                })
+            },
+        )
     }
 }
 
 unsafe fn matching_record_hits_for_raw_shard_unchecked_with(
     path: impl AsRef<Path>,
     query: &CompiledQuery,
+    target_smiles_parse_policy: PersistedTargetSmilesParsePolicy,
     visit: &mut impl for<'a> FnMut(
         PersistedTargetRecordHit<'a>,
     )
@@ -2584,6 +2685,7 @@ unsafe fn matching_record_hits_for_raw_shard_unchecked_with(
         mapped_smiles.uncase(),
         mapped_external_ids.as_ref().map(deser::MemCase::uncase),
         query,
+        target_smiles_parse_policy,
         visit,
     )
 }
@@ -2608,6 +2710,7 @@ fn matching_record_hits_for_loaded_shard_with<
     smiles: &PersistedTargetSmilesShard,
     external_ids: Option<&PersistedExternalIdShard>,
     query: &CompiledQuery,
+    target_smiles_parse_policy: PersistedTargetSmilesParsePolicy,
     visit: &mut impl for<'a> FnMut(
         PersistedTargetRecordHit<'a>,
     )
@@ -2673,11 +2776,20 @@ where
                 persisted_target_smiles_path_for_index_shard_path(path).display()
             ))
         })?;
-        let target = PreparedTarget::new(Smiles::from_str(target_smiles).map_err(|error| {
-            invalid_data_error(format!(
-                "persisted target SMILES for target id {target_id} failed to parse: {error}"
-            ))
-        })?);
+        let target = match Smiles::from_str(target_smiles) {
+            Ok(smiles) => PreparedTarget::new(smiles),
+            Err(error)
+                if target_smiles_parse_policy == PersistedTargetSmilesParsePolicy::SkipWildcard
+                    && error.smiles_error() == SmilesError::WildcardAtomNotAllowed =>
+            {
+                continue;
+            }
+            Err(error) => {
+                return Err(invalid_data_error(format!(
+                    "persisted target SMILES for target id {target_id} failed to parse: {error}"
+                )));
+            }
+        };
         if query.matches_with_scratch(&target, &mut match_scratch) {
             visit(PersistedTargetRecordHit {
                 target_id,
@@ -6895,6 +7007,61 @@ mod tests {
             streamed_record_hits,
             [(18_usize, String::from("CC=O"), Some(102_u64))]
         );
+
+        remove_payload_and_manifest(persisted_target_smiles_path_for_index_shard_path(&path));
+        remove_payload_and_manifest(persisted_external_ids_path_for_index_shard_path(&path));
+        remove_payload_and_manifest(path);
+    }
+
+    #[cfg(feature = "zstd")]
+    #[test]
+    fn persisted_queryable_shard_can_skip_wildcard_target_smiles() {
+        let indexed_smiles = ["CCO", "CC=O", "COC"]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>();
+        let target_smiles = ["CCO", "*", "COC"]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>();
+        let targets = indexed_smiles
+            .iter()
+            .map(|smiles| PreparedTarget::new(Smiles::from_str(smiles).unwrap()))
+            .collect::<Vec<_>>();
+        let external_ids = [101_u64, 102, 103];
+        let path = persisted_shard_temp_path();
+
+        unsafe {
+            PersistedTargetCorpusIndexShardBuilder::new(&targets)
+                .base_target_id(17)
+                .target_smiles(&target_smiles)
+                .external_ids(&external_ids)
+                .store_queryable_unchecked(&path)
+                .unwrap();
+        }
+
+        let query = CompiledQuery::new(crate::QueryMol::from_str("[#6]=[#8]").unwrap()).unwrap();
+        let error = PersistedTargetCorpusIndexShardPaths::from_paths([path.clone()])
+            .try_for_each_matching_record_hit(&query, |_hit| Ok(()))
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("Wildcard atom not allowed"),
+            "unexpected error: {error}"
+        );
+
+        let mut streamed_record_hits = Vec::new();
+        let skipped_count = PersistedTargetCorpusIndexShardPaths::from_paths([path.clone()])
+            .try_for_each_matching_record_hit_with_target_smiles_parse_policy(
+                &query,
+                PersistedTargetSmilesParsePolicy::SkipWildcard,
+                |hit| {
+                    streamed_record_hits.push(hit.target_id);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(skipped_count, 0);
+        assert!(streamed_record_hits.is_empty());
 
         remove_payload_and_manifest(persisted_target_smiles_path_for_index_shard_path(&path));
         remove_payload_and_manifest(persisted_external_ids_path_for_index_shard_path(&path));
