@@ -222,11 +222,13 @@ mod tests {
     use elements_rs::Element;
 
     use crate::query::{
-        AtomExpr, AtomPrimitive, BondExpr, BracketExpr, BracketExprTree, ComponentGroupId,
-        QueryAtom, QueryBond, QueryMol,
+        AtomExpr, AtomPrimitive, BondExpr, BondExprTree, BondPrimitive, BracketExpr,
+        BracketExprTree, ComponentGroupId, QueryAtom, QueryBond, QueryMol,
     };
 
-    use super::{recursive_depth, validate_recursive_depth, QueryValidationError};
+    use super::{
+        recursive_depth, validate_bond_expr_tree, validate_recursive_depth, QueryValidationError,
+    };
 
     fn atom(id: usize, component: usize, expr: AtomExpr) -> QueryAtom {
         QueryAtom {
@@ -452,6 +454,95 @@ mod tests {
                 depth: 2,
                 max_depth: 1,
             })
+        );
+    }
+
+    #[test]
+    fn query_validation_rejects_component_table_bond_and_endpoint_inconsistencies() {
+        let carbon = || AtomExpr::Bare {
+            element: Element::C,
+            aromatic: false,
+        };
+
+        // Component-group table length must match the component count.
+        let bad_group_table =
+            QueryMol::from_parts(vec![atom(0, 0, carbon())], Vec::new(), 1, Vec::new());
+        assert_eq!(
+            bad_group_table.validate(),
+            Err(QueryValidationError::InvalidComponentGroupTable)
+        );
+
+        // Bond ids must be dense and match their position.
+        let non_dense_bonds = QueryMol::from_parts(
+            vec![atom(0, 0, carbon()), atom(1, 0, carbon())],
+            vec![bond(1, 0, 1, BondExpr::Elided)],
+            1,
+            vec![None],
+        );
+        assert_eq!(
+            non_dense_bonds.validate(),
+            Err(QueryValidationError::NonDenseBondIds)
+        );
+
+        // A bond whose source endpoint is out of range is rejected.
+        let bad_source_endpoint = QueryMol::from_parts(
+            vec![atom(0, 0, carbon())],
+            vec![bond(0, 5, 0, BondExpr::Elided)],
+            1,
+            vec![None],
+        );
+        assert_eq!(
+            bad_source_endpoint.validate(),
+            Err(QueryValidationError::BondEndpointOutOfRange)
+        );
+    }
+
+    #[test]
+    fn validation_and_depth_walk_boolean_bracket_trees() {
+        // Negation, disjunction, and both conjunction precedences all validate
+        // and report depth 0 without any nested recursive query.
+        for smarts in ["[!C]", "[C,N]", "[C;R]", "[C&R]"] {
+            let query = smarts.parse::<QueryMol>().unwrap();
+            assert_eq!(query.validate(), Ok(()), "{smarts} should validate");
+            assert_eq!(recursive_depth(&query), 0, "{smarts} has no recursion");
+        }
+
+        // Recursive queries inside a disjunction still validate and count depth.
+        let recursive_or = "[$(CO),$(CN)]".parse::<QueryMol>().unwrap();
+        assert_eq!(recursive_or.validate(), Ok(()));
+        assert_eq!(recursive_depth(&recursive_or), 1);
+    }
+
+    #[test]
+    fn validate_bond_expr_tree_accepts_every_node_kind() {
+        assert_eq!(
+            validate_bond_expr_tree(&BondExprTree::Primitive(BondPrimitive::Any)),
+            Ok(())
+        );
+        assert_eq!(
+            validate_bond_expr_tree(&BondExprTree::Not(Box::new(BondExprTree::Primitive(
+                BondPrimitive::Any
+            )))),
+            Ok(())
+        );
+        assert_eq!(
+            validate_bond_expr_tree(&BondExprTree::HighAnd(vec![
+                BondExprTree::Primitive(BondPrimitive::Any),
+                BondExprTree::Primitive(BondPrimitive::Ring),
+            ])),
+            Ok(())
+        );
+        assert_eq!(
+            validate_bond_expr_tree(&BondExprTree::Or(vec![BondExprTree::Primitive(
+                BondPrimitive::Aromatic
+            )])),
+            Ok(())
+        );
+        assert_eq!(
+            validate_bond_expr_tree(&BondExprTree::LowAnd(vec![BondExprTree::Primitive(
+                BondPrimitive::Any
+            )])),
+            Ok(())
         );
     }
 }

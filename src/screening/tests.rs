@@ -1124,3 +1124,100 @@ fn index_never_filters_scalar_matches_from_frozen_fixtures() {
         }
     }
 }
+
+#[test]
+fn candidate_id_iteration_spans_full_and_partial_bitset_words() {
+    // More than 64 targets forces the candidate-bit iterator to walk at least
+    // one full 64-bit word plus a trailing partial word. Even-indexed targets
+    // carry oxygen; odd-indexed ones do not.
+    let prepared_targets = (0..70usize)
+        .map(|i| {
+            let smiles = if i % 2 == 0 { "CCO" } else { "CC" };
+            PreparedTarget::new(Smiles::from_str(smiles).unwrap())
+        })
+        .collect::<alloc::vec::Vec<_>>();
+    let index = TargetCorpusIndex::new(&prepared_targets);
+
+    let query = QueryScreen::new(&QueryMol::from_str("[#8]").unwrap());
+    let candidates = index.candidate_ids(&query);
+
+    let expected = (0..70usize)
+        .filter(|i| i % 2 == 0)
+        .collect::<alloc::vec::Vec<_>>();
+    assert_eq!(candidates, expected);
+    assert!(
+        candidates.iter().any(|&id| id >= 64),
+        "candidates must reach beyond the first 64-bit word"
+    );
+}
+
+#[cfg(feature = "mem_dbg")]
+#[test]
+fn target_corpus_index_memory_stats_account_for_every_index_component() {
+    use mem_dbg::{MemSize, SizeFlags};
+
+    let prepared_targets = [
+        "c1ccccc1",
+        "C1CCCCC1",
+        "CC(=O)O",
+        "CCN",
+        "C#N",
+        "ClC(Cl)Cl",
+        "c1ccncc1",
+        "O=C(O)c1ccccc1",
+        "CC(C)(C)O",
+        "C1CC1",
+    ]
+    .into_iter()
+    .map(|smiles| PreparedTarget::new(Smiles::from_str(smiles).unwrap()))
+    .collect::<alloc::vec::Vec<_>>();
+
+    // `new` builds the full local-feature indexes but drops retained screens.
+    let index = TargetCorpusIndex::new(&prepared_targets);
+    let stats = index.memory_stats();
+
+    assert_eq!(stats.struct_size, size_of::<TargetCorpusIndex>());
+    assert!(stats.scalar_count_indexes > 0);
+    assert!(stats.atom_property_count_indexes > 0);
+    assert!(stats.edge_postings > 0);
+    assert!(stats.edge_masks > 0);
+    assert!(stats.path3_postings > 0);
+    assert!(stats.path4_postings > 0);
+    assert!(stats.star3_postings > 0);
+    // `new` drops retained screens, so that component contributes nothing here.
+    assert_eq!(stats.retained_screens, 0);
+    assert!(stats.total() > stats.struct_size);
+    // The custom `MemSize` impl reports the same aggregate as `memory_stats`.
+    assert_eq!(index.mem_size(SizeFlags::default()), stats.total());
+
+    // `from_screens` retains per-target screens, exercising the retained-screen
+    // heap accounting and the BTree map size heuristic.
+    let screens = prepared_targets
+        .iter()
+        .map(TargetScreen::new)
+        .collect::<alloc::vec::Vec<_>>();
+    let retained = TargetCorpusIndex::from_screens(screens);
+    let retained_stats = retained.memory_stats();
+    assert!(retained_stats.retained_screens > 0);
+    assert_eq!(
+        retained.mem_size(SizeFlags::default()),
+        retained_stats.total()
+    );
+
+    // The sharded aggregate is the sum of its shards' accounted bytes.
+    let sharded =
+        ShardedTargetCorpusIndex::from_prepared_target_chunks(prepared_targets.chunks(4)).unwrap();
+    let sharded_stats = sharded.memory_stats();
+    let shard_total: usize = sharded
+        .shards()
+        .iter()
+        .map(|shard| shard.index().memory_stats().total())
+        .sum();
+    // The sharded aggregate adds the wrapper struct and shard-array bytes on top
+    // of every inner shard's accounted bytes.
+    assert!(sharded_stats.total() > shard_total);
+    assert_eq!(
+        sharded.mem_size(SizeFlags::default()),
+        sharded_stats.total()
+    );
+}

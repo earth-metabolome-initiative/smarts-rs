@@ -50,6 +50,9 @@ jobs:
       - name: Check links
         uses: lycheeverse/lychee-action@v2
         with:
+          # Pin >=0.24.0: 0.23.0 panics in CI with a tokio SendError instead of
+          # reporting link results (lychee #2091, fixed by #2074).
+          lycheeVersion: v0.24.2
           args: --no-progress README.md docs/
 
   coverage:

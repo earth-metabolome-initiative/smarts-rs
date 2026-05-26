@@ -7246,6 +7246,170 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "zstd")]
+    #[test]
+    fn persisted_shard_matches_runtime_path_and_star_feature_filters() {
+        let targets = [
+            "CCCCCC",    // long chain: many path3 and path4 features
+            "CC(C)CC",   // branched aliphatic carbon
+            "CCN(CC)CC", // star3 environment around nitrogen
+            "CCOCC",     // heteroatom-interrupted chain
+            "c1ccccc1",  // aromatic ring
+            "C1CCCCC1",  // aliphatic ring
+            "CC(=O)OC",  // ester with a branch and a double bond
+        ]
+        .into_iter()
+        .map(|smiles| PreparedTarget::new(Smiles::from_str(smiles).unwrap()))
+        .collect::<Vec<_>>();
+        let runtime_index = TargetCorpusIndex::new(&targets);
+        let runtime_shard = TargetCorpusIndexShard::new(17, runtime_index);
+        let path = persisted_shard_temp_path();
+
+        unsafe {
+            PersistedTargetCorpusIndexShardBuilder::new(&targets)
+                .base_target_id(17)
+                .store_unchecked(&path)
+                .unwrap();
+        }
+
+        let persisted_paths = PersistedTargetCorpusIndexShardPaths::from_paths([path.clone()]);
+        for smarts in [
+            "CCC",       // three-atom path
+            "CCCC",      // four-atom path (forward and reverse orientations)
+            "CC(C)C",    // star around a central carbon
+            "CCOC",      // heteroatom-bearing path
+            "CC(=O)O",   // branch with a double bond
+            "C-C-C-C-C", // five-atom chain
+            "CN(C)C",    // star around a central nitrogen
+        ] {
+            let query = QueryScreen::new(&crate::QueryMol::from_str(smarts).unwrap());
+            let expected = runtime_shard
+                .index()
+                .candidate_ids(&query)
+                .into_iter()
+                .map(|target_id| runtime_shard.base_target_id() + target_id)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                persisted_paths.candidate_ids(&query).unwrap(),
+                expected,
+                "persisted candidates diverged from runtime for {smarts}"
+            );
+        }
+
+        remove_payload_and_manifest(path);
+    }
+
+    #[cfg(feature = "zstd")]
+    #[test]
+    fn persisted_queryable_shard_unchecked_variants_match_checked_results() {
+        let target_smiles = ["CCO", "CC=O", "COC"]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>();
+        let targets = target_smiles
+            .iter()
+            .map(|smiles| PreparedTarget::new(Smiles::from_str(smiles).unwrap()))
+            .collect::<Vec<_>>();
+        let external_ids = [101_u64, 102, 103];
+        let path = persisted_shard_temp_path();
+
+        unsafe {
+            PersistedTargetCorpusIndexShardBuilder::new(&targets)
+                .base_target_id(17)
+                .target_smiles(&target_smiles)
+                .external_ids(&external_ids)
+                .store_queryable_unchecked(&path)
+                .unwrap();
+        }
+
+        let paths = PersistedTargetCorpusIndexShardPaths::from_paths([path.clone()]);
+        let screen = QueryScreen::new(&crate::QueryMol::from_str("CO").unwrap());
+        let compiled = CompiledQuery::new(crate::QueryMol::from_str("[#6]=[#8]").unwrap()).unwrap();
+
+        // The checked accessors validate manifests; the unchecked variants skip
+        // that step but must return identical results for trusted shards.
+        let checked_count = paths.candidate_count(&screen).unwrap();
+        let checked_ids = paths.candidate_ids(&screen).unwrap();
+        let checked_hits = paths.matching_hits(&compiled).unwrap();
+        assert_eq!(
+            checked_hits,
+            [PersistedTargetHit {
+                target_id: 18,
+                external_id: Some(102)
+            }]
+        );
+
+        unsafe {
+            assert_eq!(
+                paths.candidate_count_unchecked(&screen).unwrap(),
+                checked_count
+            );
+            assert_eq!(paths.candidate_ids_unchecked(&screen).unwrap(), checked_ids);
+            assert_eq!(
+                paths.matching_hits_unchecked(&compiled).unwrap(),
+                checked_hits
+            );
+
+            #[cfg(feature = "rayon")]
+            {
+                assert_eq!(
+                    paths.par_candidate_count_unchecked(&screen).unwrap(),
+                    checked_count
+                );
+                assert_eq!(
+                    paths.par_candidate_ids_unchecked(&screen).unwrap(),
+                    checked_ids
+                );
+                assert_eq!(
+                    paths.par_matching_hits_unchecked(&compiled).unwrap(),
+                    checked_hits
+                );
+            }
+
+            let mut streamed = Vec::new();
+            let streamed_count = paths
+                .try_for_each_matching_hit_unchecked(&compiled, |hit| {
+                    streamed.push(hit);
+                    Ok(())
+                })
+                .unwrap();
+            assert_eq!(streamed_count, checked_hits.len());
+            assert_eq!(streamed, checked_hits);
+
+            let mut records = Vec::new();
+            let record_count = paths
+                .try_for_each_matching_record_hit_unchecked(&compiled, |hit| {
+                    records.push((
+                        hit.target_id,
+                        String::from(hit.target_smiles),
+                        hit.external_id,
+                    ));
+                    Ok(())
+                })
+                .unwrap();
+            assert_eq!(record_count, checked_hits.len());
+            assert_eq!(records, [(18_usize, String::from("CC=O"), Some(102_u64))]);
+
+            let mut policy_records = Vec::new();
+            let policy_count = paths
+                .try_for_each_matching_record_hit_unchecked_with_target_smiles_parse_policy(
+                    &compiled,
+                    PersistedTargetSmilesParsePolicy::SkipWildcard,
+                    |hit| {
+                        policy_records.push(hit.target_id);
+                        Ok(())
+                    },
+                )
+                .unwrap();
+            assert_eq!(policy_count, checked_hits.len());
+            assert_eq!(policy_records, [18_usize]);
+        }
+
+        remove_payload_and_manifest(persisted_target_smiles_path_for_index_shard_path(&path));
+        remove_payload_and_manifest(persisted_external_ids_path_for_index_shard_path(&path));
+        remove_payload_and_manifest(path);
+    }
+
     fn persisted_candidate_targets() -> Vec<PreparedTarget> {
         ["CCO", "COC", "CC(C)C", "C1CCCCC1", "CC(O)(N)Cl"]
             .into_iter()
