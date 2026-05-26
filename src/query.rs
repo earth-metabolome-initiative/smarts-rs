@@ -358,6 +358,31 @@ impl QueryMol {
         self.atoms.is_empty()
     }
 
+    /// Returns the byte length of this query's SMARTS rendering.
+    ///
+    /// The result is always equal to `self.to_string().len()`, but it is
+    /// computed without allocating the rendered string. Rendering is driven
+    /// through the same [`fmt::Display`] path used by `to_string`, so the
+    /// length can never drift from the canonical rendering.
+    #[must_use]
+    pub fn smarts_len(&self) -> usize {
+        use core::fmt::Write;
+
+        struct LenCounter(usize);
+
+        impl Write for LenCounter {
+            fn write_str(&mut self, s: &str) -> fmt::Result {
+                self.0 += s.len();
+                Ok(())
+            }
+        }
+
+        let mut counter = LenCounter(0);
+        // Writing into a counting sink never fails, so the result is ignored.
+        let _ = write!(counter, "{self}");
+        counter.0
+    }
+
     /// Returns the neighboring atom ids for one atom.
     #[inline]
     #[must_use]
