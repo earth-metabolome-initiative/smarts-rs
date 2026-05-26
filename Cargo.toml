@@ -62,6 +62,10 @@ harness = false
 name = "pathological_matching"
 harness = false
 
+[[bench]]
+name = "smarts_len"
+harness = false
+
 [workspace]
 members = ["."]
 exclude = ["fuzz"]
