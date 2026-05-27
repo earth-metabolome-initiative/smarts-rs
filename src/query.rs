@@ -2022,6 +2022,18 @@ mod tests {
             return;
         }
 
+        // The child renders deeply nested structures and then `mem::forget`s
+        // them on purpose: dropping a 50k-deep recursive tree would overflow the
+        // stack, which is the opposite of what this test exercises. Under
+        // AddressSanitizer that deliberate leak would otherwise fail the child,
+        // so disable only leak detection for the child while keeping every other
+        // memory-error check (and leak detection in all other tests) intact.
+        let mut child_asan_options = std::env::var("ASAN_OPTIONS").unwrap_or_default();
+        if !child_asan_options.is_empty() {
+            child_asan_options.push(':');
+        }
+        child_asan_options.push_str("detect_leaks=0");
+
         for mode in [
             "bracket-not",
             "bond-not",
@@ -2034,6 +2046,7 @@ mod tests {
                 .arg("--nocapture")
                 .arg("--test-threads=1")
                 .env(CHILD_ENV, mode)
+                .env("ASAN_OPTIONS", &child_asan_options)
                 .output()
                 .unwrap();
 
