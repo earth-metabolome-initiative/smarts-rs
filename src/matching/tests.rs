@@ -9,6 +9,7 @@ use super::{
     CompiledQuery, ComponentEmbedding, ComponentEmbeddingSet, ComponentMatcher, ComponentPlanEntry,
     FreshSearchBuffers, MatchScratch, RecursiveMatchCache, NO_MATCH_LIMIT,
 };
+use super::{render_charge, render_target_stereo_atom};
 use super::{AtomFastPredicate, MatchLimitResult, MatchOutcomeLimitResult};
 use crate::error::SmartsMatchError;
 use crate::prepared::PreparedTarget;
@@ -1142,4 +1143,105 @@ fn semantic_double_bond_stereo_is_respected() {
         .unwrap()
         .matches("CC=CC")
         .unwrap());
+}
+
+#[test]
+fn render_charge_formats_each_sign_and_magnitude() {
+    assert_eq!(render_charge(0), "");
+    assert_eq!(render_charge(1), "+");
+    assert_eq!(render_charge(-1), "-");
+    assert_eq!(render_charge(2), "+2");
+    assert_eq!(render_charge(-2), "-2");
+    assert_eq!(render_charge(3), "+3");
+    assert_eq!(render_charge(-4), "-4");
+}
+
+#[test]
+fn render_target_stereo_atom_handles_plain_charged_isotope_and_aromatic_atoms() {
+    let plain = PreparedTarget::new(Smiles::from_str("CO").unwrap());
+    assert_eq!(render_target_stereo_atom(&plain, 0).as_deref(), Some("C"));
+
+    let aromatic = PreparedTarget::new(Smiles::from_str("c1ccccc1").unwrap());
+    assert_eq!(
+        render_target_stereo_atom(&aromatic, 0).as_deref(),
+        Some("c")
+    );
+
+    let anion = PreparedTarget::new(Smiles::from_str("[O-]C").unwrap());
+    assert_eq!(
+        render_target_stereo_atom(&anion, 0).as_deref(),
+        Some("[O-]")
+    );
+
+    let cation = PreparedTarget::new(Smiles::from_str("[NH4+]").unwrap());
+    assert_eq!(
+        render_target_stereo_atom(&cation, 0).as_deref(),
+        Some("[N+]")
+    );
+
+    let isotope = PreparedTarget::new(Smiles::from_str("[13C]C").unwrap());
+    assert_eq!(
+        render_target_stereo_atom(&isotope, 0).as_deref(),
+        Some("[13C]")
+    );
+
+    let multi_charge = PreparedTarget::new(Smiles::from_str("[Mg+2]").unwrap());
+    assert_eq!(
+        render_target_stereo_atom(&multi_charge, 0).as_deref(),
+        Some("[Mg+2]")
+    );
+}
+
+#[test]
+fn recursive_three_atom_queries_anchor_each_layout_position() {
+    // A recursive three-atom path query is matched with its root atom pinned to
+    // the host atom, exercising the anchored three-atom mapping search.
+    assert!(query_matches_smiles("[$(CCC)]", "CCC"));
+    assert!(query_matches_smiles("[$(CCC)]", "CCCC"));
+    assert!(!query_matches_smiles("[$(CCC)]", "CC"));
+
+    // A recursive three-atom branch (root is the central atom) anchors the
+    // center layout position.
+    assert!(query_matches_smiles("[$(C(C)C)]", "CC(C)C"));
+    assert!(query_matches_smiles("[$(C(O)N)]", "NC(O)C"));
+    assert!(!query_matches_smiles("[$(C(O)N)]", "CCC"));
+
+    // A recursive ether path anchored from a non-root host atom.
+    assert!(query_matches_smiles("O[$(COC)]", "OCOC"));
+}
+
+#[test]
+fn bondless_disconnected_components_search_matches_single_atom_tails() {
+    // A small multi-atom component plus single-atom (bondless) components routes
+    // through the disconnected-component search and its bondless atom matcher.
+    assert!(query_matches_smiles("CC.[#7].[#8]", "CCNO"));
+    assert!(query_matches_smiles("CC.[#7].[#8]", "CC.N.O"));
+    assert!(!query_matches_smiles("CC.[#7].[#8]", "CCN"));
+    assert!(!query_matches_smiles("CC.[#7].[#8]", "CCO"));
+}
+
+#[test]
+fn bondless_search_precomputes_candidates_on_large_targets() {
+    // A target of at least 64 atoms with rare bondless query atoms triggers the
+    // anchored-candidate precomputation path in the bondless search.
+    let mut large_target = String::from("CCN");
+    for _ in 0..60 {
+        large_target.push('C');
+    }
+    large_target.push('O');
+    let target = PreparedTarget::new(Smiles::from_str(&large_target).unwrap());
+    assert!(target.atom_count() >= 64);
+
+    let query = CompiledQuery::new(QueryMol::from_str("CC.[#7].[#8]").unwrap()).unwrap();
+    assert!(should_use_disconnected_component_search(&query));
+    assert!(query.matches(&target));
+
+    // The same query must reject a large target that lacks the oxygen tail.
+    let mut without_oxygen = String::from("CCN");
+    for _ in 0..61 {
+        without_oxygen.push('C');
+    }
+    let no_oxygen_target = PreparedTarget::new(Smiles::from_str(&without_oxygen).unwrap());
+    assert!(no_oxygen_target.atom_count() >= 64);
+    assert!(!query.matches(&no_oxygen_target));
 }

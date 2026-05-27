@@ -1126,6 +1126,76 @@ fn index_never_filters_scalar_matches_from_frozen_fixtures() {
 }
 
 #[test]
+fn sharded_corpus_index_error_displays_each_variant() {
+    use alloc::string::ToString;
+
+    let overflow = ShardedTargetCorpusIndexError::TargetIdOverflow {
+        shard_index: 2,
+        base_target_id: 9,
+        shard_len: 4,
+    };
+    assert_eq!(
+        overflow.to_string(),
+        "target id overflow in shard 2: base=9, len=4"
+    );
+
+    assert_eq!(
+        ShardedTargetCorpusIndexError::TargetCountOverflow.to_string(),
+        "sharded target count overflow"
+    );
+
+    let overlap = ShardedTargetCorpusIndexError::OverlappingShard {
+        shard_index: 1,
+        previous_end_target_id: 5,
+        shard_base_target_id: 3,
+    };
+    assert_eq!(
+        overlap.to_string(),
+        "shard 1 starts at 3, before previous shard end 5"
+    );
+}
+
+#[test]
+fn query_screen_feature_stats_count_required_signatures() {
+    let plain = QueryScreen::new(&QueryMol::from_str("C").unwrap());
+    let plain_stats = plain.feature_stats();
+    assert_eq!(plain_stats.edge_features, 0);
+    assert_eq!(plain_stats.path4_features, 0);
+    assert_eq!(plain_stats.star3_features, 0);
+    assert_eq!(plain_stats.alternative_screen_groups, 0);
+
+    // A four-atom branched skeleton induces edge, path, and star signatures.
+    let rich = QueryScreen::new(&QueryMol::from_str("CC(C)CO").unwrap());
+    let stats = rich.feature_stats();
+    assert!(stats.edge_features > 0);
+    assert!(stats.path3_features > 0);
+    assert!(stats.path4_features > 0 || stats.star3_features > 0);
+
+    // A recursive alternative populates the alternative-screen group counts.
+    let recursive = QueryScreen::new(&QueryMol::from_str("[$(CO),$(CN)]").unwrap());
+    let recursive_stats = recursive.feature_stats();
+    assert_eq!(recursive_stats.alternative_screen_groups, 1);
+    assert_eq!(recursive_stats.alternative_screens, 2);
+}
+
+#[test]
+fn corpus_index_matching_target_ids_wrappers_return_exact_hits() {
+    let targets = ["CCO", "CC=O", "c1ccccc1", "CCN"]
+        .into_iter()
+        .map(|smiles| PreparedTarget::new(Smiles::from_str(smiles).unwrap()))
+        .collect::<alloc::vec::Vec<_>>();
+    let index = TargetCorpusIndex::new(&targets);
+    let query = CompiledQuery::new(QueryMol::from_str("[#6]=[#8]").unwrap()).unwrap();
+
+    // Exercises the allocating wrapper and, transitively, matching_target_ids_into.
+    assert_eq!(index.matching_target_ids(&query, &targets), alloc::vec![1]);
+
+    let mut out = alloc::vec![999_usize];
+    index.matching_target_ids_into(&query, &targets, &mut out);
+    assert_eq!(out, alloc::vec![1]);
+}
+
+#[test]
 fn candidate_id_iteration_spans_full_and_partial_bitset_words() {
     // More than 64 targets forces the candidate-bit iterator to walk at least
     // one full 64-bit word plus a trailing partial word. Even-indexed targets

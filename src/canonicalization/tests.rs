@@ -1322,3 +1322,80 @@ fn canonicalize_recursive_charge_bundle_subcase_x4v5_rooting_converges() {
         canonical_string("[$(*[#7&X4&v5](*)(*)=[O&X1])]")
     );
 }
+
+#[test]
+fn canonicalize_simplifies_mutually_exclusive_numeric_property_conjunctions() {
+    // Conjoining two incompatible values of the same numeric property is a
+    // contradiction the simplifier resolves for each property kind.
+    for source in [
+        "[v2&v3]", // valence
+        "[z1&z2]", // hetero-neighbor count
+        "[Z1&Z2]", // aliphatic hetero-neighbor count
+        "[H1&H2]", // total hydrogen count
+        "[R1&R2]", // ring membership count
+        "[r5&r6]", // ring size
+        "[x2&x3]", // ring connectivity
+        "[^1&^3]", // hybridization
+        "[D1&D2]", // degree
+        "[X2&X4]", // connectivity
+    ] {
+        assert_canonical_roundtrips(source);
+    }
+}
+
+#[test]
+fn canonicalize_simplifies_negated_numeric_and_atomic_number_forms() {
+    for source in [
+        "[!D2]",
+        "[!v3]",
+        "[!H1]",
+        "[!R1]",
+        "[!r6]",
+        "[!x2]",
+        "[!^2]",
+        "[!z1]",
+        "[#6;!#7]",
+        "[!#6;!#7;!#8]",
+        "[#7,#8;!#6]",
+    ] {
+        assert_canonical_roundtrips(source);
+    }
+}
+
+#[test]
+fn canonicalize_inverts_negated_chirality_classes() {
+    for source in [
+        "[!@]", "[!@@]", "[C;!@]", "[!@TH1]", "[!@TH2]", "[!@AL1]", "[!@AL2]", "[!@,!@@]",
+    ] {
+        assert_canonical_roundtrips(source);
+    }
+}
+
+#[test]
+fn canonicalize_simplifies_isotope_disjunction_and_negation_forms() {
+    for source in [
+        "[12C,13C]",
+        "[!12C]",
+        "[12*,13*]",
+        "[12C,13C,14C]",
+        "[!12*]",
+        "[12CH3,13CH3]",
+    ] {
+        assert_canonical_roundtrips(source);
+    }
+}
+
+#[test]
+fn canonicalize_simplifies_disjunctive_and_crossed_bond_forms() {
+    for source in [
+        "C-,=C",
+        "C-,=,#C",
+        "C-,=CC-,=C",
+        "C=,:c",
+        "C-,=C-,=C-,=C",
+        "[#6]!-[#6]",
+        "[#6]-,=[#6]-,#[#6]",
+    ] {
+        assert_canonical_roundtrips(source);
+    }
+}
