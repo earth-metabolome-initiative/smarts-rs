@@ -107,3 +107,40 @@ jobs:
           use_oidc: true
           directory: coverage
           verbose: true
+
+  sanitizers:
+    name: AddressSanitizer
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # AddressSanitizer requires the unstable -Zsanitizer flag, so this job
+      # runs on nightly. It guards the unsafe epserde/mmap deserialization and
+      # *_unchecked APIs against memory errors and leaks.
+      - name: Install nightly Rust
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run tests under AddressSanitizer (with LeakSanitizer)
+        env:
+          # -Zsanitizer instruments only the --target build, never host build
+          # scripts or proc-macros, so an explicit --target is mandatory below.
+          # std is not rebuilt: ASAN replaces the global allocator at runtime,
+          # which is enough for LeakSanitizer to track every allocation.
+          RUSTFLAGS: "-Zsanitizer=address"
+          # LeakSanitizer is on by default on Linux; set it explicitly so the
+          # intent is visible. One test deliberately leaks deeply nested trees
+          # (dropping them would overflow the stack) and turns this off only for
+          # its own child process.
+          ASAN_OPTIONS: "detect_leaks=1"
+          RUST_BACKTRACE: "1"
+        run: >
+          cargo test
+          --tests
+          --all-features
+          --locked
+          --target x86_64-unknown-linux-gnu
