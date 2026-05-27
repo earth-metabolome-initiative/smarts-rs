@@ -48,9 +48,19 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Check links
-        uses: lycheeverse/lychee-action@v2
+        # Pinned to a master commit rather than a release tag on purpose. The
+        # latest release (v2.8.0) defaults to lychee 0.23.0, which panics in CI
+        # with a tokio SendError (lychee #2091, fixed by lychee #2074 in 0.24.x),
+        # and its install step only handles the old flat archive layout, so it
+        # cannot install any 0.24.x build (those nest the binary in a subfolder).
+        # This commit defaults to lychee 0.24.2 and auto-detects the nested
+        # binary (lychee-action #330). Revert to a tag once one ships with both.
+        uses: lycheeverse/lychee-action@6da1d14f3a43098a294b7696d93d938aa8d20fc0
         with:
-          args: --no-progress README.md docs/
+          # Glob every Markdown file. lychee 0.24.x rejects a bare directory
+          # argument, and this repo has no docs/ directory anyway. The quotes
+          # keep the shell from expanding the glob so lychee expands it itself.
+          args: --no-progress './**/*.md'
 
   coverage:
     name: Coverage

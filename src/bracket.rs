@@ -698,6 +698,38 @@ mod tests {
     }
 
     #[test]
+    fn parses_each_single_letter_bracket_primitive() {
+        use AtomPrimitive::{
+            AliphaticAny, AliphaticHeteroNeighbor, AromaticAny, AtomicNumber, Connectivity, Degree,
+            HeteroNeighbor, Hybridization, Hydrogen, RingConnectivity, RingMembership, RingSize,
+            Valence, Wildcard,
+        };
+
+        let primitive = |text: &str| match parse_bracket_text(text).unwrap().tree {
+            BracketExprTree::Primitive(primitive) => primitive,
+            other => panic!("{text} did not parse to a primitive: {other:?}"),
+        };
+
+        assert!(matches!(primitive("*"), Wildcard));
+        assert!(matches!(primitive("#6"), AtomicNumber(6)));
+        assert!(matches!(primitive("D2"), Degree(_)));
+        assert!(matches!(primitive("X3"), Connectivity(_)));
+        assert!(matches!(primitive("v4"), Valence(_)));
+        assert!(matches!(primitive("A"), AliphaticAny));
+        assert!(matches!(primitive("a"), AromaticAny));
+        assert!(matches!(
+            primitive("h1"),
+            Hydrogen(HydrogenKind::Implicit, _)
+        ));
+        assert!(matches!(primitive("R"), RingMembership(_)));
+        assert!(matches!(primitive("r5"), RingSize(_)));
+        assert!(matches!(primitive("x2"), RingConnectivity(_)));
+        assert!(matches!(primitive("^2"), Hybridization(_)));
+        assert!(matches!(primitive("z2"), HeteroNeighbor(_)));
+        assert!(matches!(primitive("Z1"), AliphaticHeteroNeighbor(_)));
+    }
+
+    #[test]
     fn parses_atomic_hydrogen_and_isotopes() {
         let hydrogen = parse_bracket_text("H").unwrap();
         let deuterium = parse_bracket_text("2H").unwrap();

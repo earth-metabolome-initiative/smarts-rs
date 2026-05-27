@@ -7246,6 +7246,320 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "zstd")]
+    #[test]
+    fn persisted_shard_matches_runtime_path_and_star_feature_filters() {
+        let targets = [
+            "CCCCCC",    // long chain: many path3 and path4 features
+            "CC(C)CC",   // branched aliphatic carbon
+            "CCN(CC)CC", // star3 environment around nitrogen
+            "CCOCC",     // heteroatom-interrupted chain
+            "c1ccccc1",  // aromatic ring
+            "C1CCCCC1",  // aliphatic ring
+            "CC(=O)OC",  // ester with a branch and a double bond
+        ]
+        .into_iter()
+        .map(|smiles| PreparedTarget::new(Smiles::from_str(smiles).unwrap()))
+        .collect::<Vec<_>>();
+        let runtime_index = TargetCorpusIndex::new(&targets);
+        let runtime_shard = TargetCorpusIndexShard::new(17, runtime_index);
+        let path = persisted_shard_temp_path();
+
+        unsafe {
+            PersistedTargetCorpusIndexShardBuilder::new(&targets)
+                .base_target_id(17)
+                .store_unchecked(&path)
+                .unwrap();
+        }
+
+        let persisted_paths = PersistedTargetCorpusIndexShardPaths::from_paths([path.clone()]);
+        for smarts in [
+            "CCC",       // three-atom path
+            "CCCC",      // four-atom path (forward and reverse orientations)
+            "CC(C)C",    // star around a central carbon
+            "CCOC",      // heteroatom-bearing path
+            "CC(=O)O",   // branch with a double bond
+            "C-C-C-C-C", // five-atom chain
+            "CN(C)C",    // star around a central nitrogen
+        ] {
+            let query = QueryScreen::new(&crate::QueryMol::from_str(smarts).unwrap());
+            let expected = runtime_shard
+                .index()
+                .candidate_ids(&query)
+                .into_iter()
+                .map(|target_id| runtime_shard.base_target_id() + target_id)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                persisted_paths.candidate_ids(&query).unwrap(),
+                expected,
+                "persisted candidates diverged from runtime for {smarts}"
+            );
+        }
+
+        remove_payload_and_manifest(path);
+    }
+
+    #[cfg(feature = "zstd")]
+    #[test]
+    fn persisted_queryable_shard_unchecked_variants_match_checked_results() {
+        let target_smiles = ["CCO", "CC=O", "COC"]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>();
+        let targets = target_smiles
+            .iter()
+            .map(|smiles| PreparedTarget::new(Smiles::from_str(smiles).unwrap()))
+            .collect::<Vec<_>>();
+        let external_ids = [101_u64, 102, 103];
+        let path = persisted_shard_temp_path();
+
+        unsafe {
+            PersistedTargetCorpusIndexShardBuilder::new(&targets)
+                .base_target_id(17)
+                .target_smiles(&target_smiles)
+                .external_ids(&external_ids)
+                .store_queryable_unchecked(&path)
+                .unwrap();
+        }
+
+        let paths = PersistedTargetCorpusIndexShardPaths::from_paths([path.clone()]);
+        let screen = QueryScreen::new(&crate::QueryMol::from_str("CO").unwrap());
+        let compiled = CompiledQuery::new(crate::QueryMol::from_str("[#6]=[#8]").unwrap()).unwrap();
+
+        // The checked accessors validate manifests; the unchecked variants skip
+        // that step but must return identical results for trusted shards.
+        let checked_count = paths.candidate_count(&screen).unwrap();
+        let checked_ids = paths.candidate_ids(&screen).unwrap();
+        let checked_hits = paths.matching_hits(&compiled).unwrap();
+        assert_eq!(
+            checked_hits,
+            [PersistedTargetHit {
+                target_id: 18,
+                external_id: Some(102)
+            }]
+        );
+
+        unsafe {
+            assert_eq!(
+                paths.candidate_count_unchecked(&screen).unwrap(),
+                checked_count
+            );
+            assert_eq!(paths.candidate_ids_unchecked(&screen).unwrap(), checked_ids);
+            assert_eq!(
+                paths.matching_hits_unchecked(&compiled).unwrap(),
+                checked_hits
+            );
+
+            #[cfg(feature = "rayon")]
+            {
+                assert_eq!(
+                    paths.par_candidate_count_unchecked(&screen).unwrap(),
+                    checked_count
+                );
+                assert_eq!(
+                    paths.par_candidate_ids_unchecked(&screen).unwrap(),
+                    checked_ids
+                );
+                assert_eq!(
+                    paths.par_matching_hits_unchecked(&compiled).unwrap(),
+                    checked_hits
+                );
+            }
+
+            let mut streamed = Vec::new();
+            let streamed_count = paths
+                .try_for_each_matching_hit_unchecked(&compiled, |hit| {
+                    streamed.push(hit);
+                    Ok(())
+                })
+                .unwrap();
+            assert_eq!(streamed_count, checked_hits.len());
+            assert_eq!(streamed, checked_hits);
+
+            let mut records = Vec::new();
+            let record_count = paths
+                .try_for_each_matching_record_hit_unchecked(&compiled, |hit| {
+                    records.push((
+                        hit.target_id,
+                        String::from(hit.target_smiles),
+                        hit.external_id,
+                    ));
+                    Ok(())
+                })
+                .unwrap();
+            assert_eq!(record_count, checked_hits.len());
+            assert_eq!(records, [(18_usize, String::from("CC=O"), Some(102_u64))]);
+
+            let mut policy_records = Vec::new();
+            let policy_count = paths
+                .try_for_each_matching_record_hit_unchecked_with_target_smiles_parse_policy(
+                    &compiled,
+                    PersistedTargetSmilesParsePolicy::SkipWildcard,
+                    |hit| {
+                        policy_records.push(hit.target_id);
+                        Ok(())
+                    },
+                )
+                .unwrap();
+            assert_eq!(policy_count, checked_hits.len());
+            assert_eq!(policy_records, [18_usize]);
+        }
+
+        remove_payload_and_manifest(persisted_target_smiles_path_for_index_shard_path(&path));
+        remove_payload_and_manifest(persisted_external_ids_path_for_index_shard_path(&path));
+        remove_payload_and_manifest(path);
+    }
+
+    #[cfg(feature = "zstd")]
+    #[test]
+    fn persisted_shard_matches_runtime_feature_count_and_bond_pair_filters() {
+        let targets = [
+            "COC",       // single ether path3
+            "COCOC",     // two overlapping COC path3 features
+            "COCOCOC",   // three COC path3 features
+            "CCOCO",     // four-atom path context
+            "C=CC=C",    // multiple bond-kind pairs
+            "C#CC=C",    // mixed triple/double bond pairs
+            "CC(C)(C)C", // star environment around a quaternary carbon
+            "c1ccccc1",  // aromatic ring (distinct edge/path features)
+        ]
+        .into_iter()
+        .map(|smiles| PreparedTarget::new(Smiles::from_str(smiles).unwrap()))
+        .collect::<Vec<_>>();
+        let runtime_index = TargetCorpusIndex::new(&targets);
+        let runtime_shard = TargetCorpusIndexShard::new(17, runtime_index);
+        let path = persisted_shard_temp_path();
+
+        unsafe {
+            PersistedTargetCorpusIndexShardBuilder::new(&targets)
+                .base_target_id(17)
+                .store_unchecked(&path)
+                .unwrap();
+        }
+
+        let persisted_paths = PersistedTargetCorpusIndexShardPaths::from_paths([path.clone()]);
+        for smarts in [
+            "COCOC",                   // path3 feature with required multiplicity 2
+            "COCO",                    // path4 feature filter
+            "[#6]-,=[#6]-,=[#6]",      // disjunctive bond-pair counts
+            "[#6;D1]-[#6;D3]-[#6;D1]", // path3 with exact-degree identity
+            "CC(C)C",                  // star3 feature around a branch point
+            "COCOCOC",                 // path3 multiplicity 3
+        ] {
+            let query = QueryScreen::new(&crate::QueryMol::from_str(smarts).unwrap());
+            let expected = runtime_shard
+                .index()
+                .candidate_ids(&query)
+                .into_iter()
+                .map(|target_id| runtime_shard.base_target_id() + target_id)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                persisted_paths.candidate_ids(&query).unwrap(),
+                expected,
+                "persisted candidates diverged from runtime for {smarts}"
+            );
+            assert_eq!(
+                persisted_paths.candidate_count(&query).unwrap(),
+                expected.len(),
+                "persisted candidate count diverged from runtime for {smarts}"
+            );
+        }
+
+        remove_payload_and_manifest(path);
+    }
+
+    #[test]
+    fn persisted_manifest_enum_from_str_round_trips_and_rejects_unknown() {
+        for kind in [
+            PersistedShardPayloadKind::TargetIndex,
+            PersistedShardPayloadKind::TargetSmiles,
+            PersistedShardPayloadKind::ExternalIds,
+        ] {
+            assert_eq!(
+                PersistedShardPayloadKind::from_str(kind.as_str()).unwrap(),
+                kind
+            );
+        }
+        let payload_error = PersistedShardPayloadKind::from_str("nope").unwrap_err();
+        assert_eq!(payload_error.kind(), ErrorKind::InvalidData);
+        assert!(payload_error.to_string().contains("payload kind"));
+
+        for compression in [
+            PersistedShardStoredCompression::None,
+            PersistedShardStoredCompression::Zstd,
+        ] {
+            assert_eq!(
+                PersistedShardStoredCompression::from_str(compression.as_str()).unwrap(),
+                compression
+            );
+        }
+        let compression_error = PersistedShardStoredCompression::from_str("lz4").unwrap_err();
+        assert_eq!(compression_error.kind(), ErrorKind::InvalidData);
+        assert!(compression_error.to_string().contains("compression"));
+    }
+
+    #[cfg(feature = "zstd")]
+    #[test]
+    fn persisted_shard_compression_reports_raw_extension_and_display() {
+        let none = PersistedShardCompression::None;
+        assert!(none.is_raw());
+        assert_eq!(none.file_extension(), "eps");
+        assert_eq!(none.to_string(), "none");
+
+        let zstd = PersistedShardCompression::Zstd {
+            level: 3,
+            worker_threads: 2,
+        };
+        assert!(!zstd.is_raw());
+        assert_eq!(zstd.file_extension(), "eps.zst");
+        assert_eq!(zstd.to_string(), "zstd(level=3, threads=2)");
+    }
+
+    #[cfg(feature = "zstd")]
+    #[test]
+    fn persisted_shard_store_error_wraps_io_and_serialization_sources() {
+        let io_error = PersistedShardStoreError::from(IoError::other("disk gone"));
+        assert!(io_error.to_string().contains("disk gone"));
+        assert!(std::error::Error::source(&io_error).is_some());
+
+        let invalid_input = invalid_store_input("bad input");
+        assert!(matches!(invalid_input, PersistedShardStoreError::Io(_)));
+        assert!(invalid_input.to_string().contains("bad input"));
+
+        let ser_error = PersistedShardStoreError::from(ser::Error::WriteError);
+        assert!(matches!(
+            ser_error,
+            PersistedShardStoreError::Serialization(_)
+        ));
+        assert!(!ser_error.to_string().is_empty());
+        assert!(std::error::Error::source(&ser_error).is_some());
+    }
+
+    #[cfg(feature = "zstd")]
+    #[test]
+    fn persisted_build_step_labels_and_event_target_count() {
+        use PersistedTargetCorpusIndexShardBuildEvent::{Finished, Started};
+        use PersistedTargetCorpusIndexShardBuildStep::{
+            BuildPersistedLayout, BuildRuntimeIndex, StorePayload,
+        };
+
+        assert_eq!(BuildRuntimeIndex.label(), "build runtime target index");
+        assert_eq!(BuildPersistedLayout.label(), "build persisted shard layout");
+        assert_eq!(StorePayload.label(), "store shard payload");
+
+        let started = Started {
+            step: BuildRuntimeIndex,
+            target_count: 42,
+        };
+        let finished = Finished {
+            step: StorePayload,
+            target_count: 7,
+            elapsed: Duration::from_millis(5),
+        };
+        assert_eq!(started.target_count(), 42);
+        assert_eq!(finished.target_count(), 7);
+    }
+
     fn persisted_candidate_targets() -> Vec<PreparedTarget> {
         ["CCO", "COC", "CC(C)C", "C1CCCCC1", "CC(O)(N)Cl"]
             .into_iter()

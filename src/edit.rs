@@ -2115,4 +2115,150 @@ mod tests {
             assert_query_roundtrip_valid(&final_query);
         }
     }
+
+    #[test]
+    fn normalize_flattens_nested_same_kind_collapses_singletons_and_rejects_empty() {
+        // A nested same-kind conjunction is flattened into its parent.
+        let mut nested_high_and = BracketExprTree::HighAnd(vec![
+            BracketExprTree::HighAnd(vec![
+                BracketExprTree::Primitive(AtomPrimitive::AtomicNumber(6)),
+                BracketExprTree::Primitive(AtomPrimitive::AtomicNumber(7)),
+            ]),
+            BracketExprTree::Primitive(AtomPrimitive::AtomicNumber(8)),
+        ]);
+        normalize_bracket_tree(&mut nested_high_and).unwrap();
+        assert_eq!(
+            nested_high_and,
+            BracketExprTree::HighAnd(vec![
+                BracketExprTree::Primitive(AtomPrimitive::AtomicNumber(6)),
+                BracketExprTree::Primitive(AtomPrimitive::AtomicNumber(7)),
+                BracketExprTree::Primitive(AtomPrimitive::AtomicNumber(8)),
+            ])
+        );
+
+        // A single-element n-ary collapses to its only child.
+        let mut singleton_or = BracketExprTree::Or(vec![BracketExprTree::Primitive(
+            AtomPrimitive::AtomicNumber(6),
+        )]);
+        normalize_bracket_tree(&mut singleton_or).unwrap();
+        assert_eq!(
+            singleton_or,
+            BracketExprTree::Primitive(AtomPrimitive::AtomicNumber(6))
+        );
+
+        // An empty n-ary is rejected.
+        let mut empty_low_and = BracketExprTree::LowAnd(Vec::new());
+        assert_eq!(
+            normalize_bracket_tree(&mut empty_low_and),
+            Err(EditError::EmptyExpressionTree)
+        );
+
+        // The same rules apply to bond trees, exercising the bond n-ary path.
+        let mut nested_bond_or = BondExprTree::Or(vec![
+            BondExprTree::Or(vec![
+                BondExprTree::Primitive(BondPrimitive::Bond(Bond::Single)),
+                BondExprTree::Primitive(BondPrimitive::Bond(Bond::Double)),
+            ]),
+            BondExprTree::Primitive(BondPrimitive::Ring),
+        ]);
+        normalize_bond_tree(&mut nested_bond_or).unwrap();
+        assert_eq!(
+            nested_bond_or,
+            BondExprTree::Or(vec![
+                BondExprTree::Primitive(BondPrimitive::Bond(Bond::Single)),
+                BondExprTree::Primitive(BondPrimitive::Bond(Bond::Double)),
+                BondExprTree::Primitive(BondPrimitive::Ring),
+            ])
+        );
+
+        let mut empty_bond = BondExprTree::HighAnd(Vec::new());
+        assert_eq!(
+            normalize_bond_tree(&mut empty_bond),
+            Err(EditError::EmptyExpressionTree)
+        );
+    }
+
+    #[test]
+    fn normalized_consuming_helper_returns_normalized_bracket() {
+        let normalized = BracketExpr {
+            tree: BracketExprTree::Or(vec![BracketExprTree::Primitive(
+                AtomPrimitive::AtomicNumber(6),
+            )]),
+            atom_map: Some(1),
+        }
+        .normalized()
+        .unwrap();
+        assert_eq!(
+            normalized.tree,
+            BracketExprTree::Primitive(AtomPrimitive::AtomicNumber(6))
+        );
+        assert_eq!(normalized.atom_map, Some(1));
+    }
+
+    #[test]
+    fn remove_primitive_rejects_invalid_index_last_child_and_non_primitive() {
+        // Removing an out-of-range child reports an invalid path.
+        let mut bracket = BracketExpr {
+            tree: BracketExprTree::HighAnd(vec![
+                BracketExprTree::Primitive(AtomPrimitive::AtomicNumber(6)),
+                BracketExprTree::Primitive(AtomPrimitive::AtomicNumber(7)),
+            ]),
+            atom_map: None,
+        };
+        assert_eq!(
+            remove_atom_primitive(&mut bracket, &ExprPath(vec![ExprPathSegment::Child(9)])),
+            Err(EditError::InvalidExprPath)
+        );
+
+        // Removing a non-primitive child reports ExpectedPrimitive.
+        let mut with_nested = BracketExpr {
+            tree: BracketExprTree::HighAnd(vec![
+                BracketExprTree::Primitive(AtomPrimitive::AtomicNumber(6)),
+                BracketExprTree::Not(Box::new(BracketExprTree::Primitive(AtomPrimitive::Charge(
+                    1,
+                )))),
+            ]),
+            atom_map: None,
+        };
+        assert_eq!(
+            remove_atom_primitive(&mut with_nested, &ExprPath(vec![ExprPathSegment::Child(1)])),
+            Err(EditError::ExpectedPrimitive)
+        );
+
+        // Removing the only child of a one-element n-ary is rejected.
+        let mut single_child = BracketExpr {
+            tree: BracketExprTree::Or(vec![BracketExprTree::Primitive(
+                AtomPrimitive::AtomicNumber(6),
+            )]),
+            atom_map: None,
+        };
+        assert_eq!(
+            remove_atom_primitive(
+                &mut single_child,
+                &ExprPath(vec![ExprPathSegment::Child(0)])
+            ),
+            Err(EditError::CannotRemoveLastExpression)
+        );
+
+        // The bond removal helper enforces the same constraints.
+        let mut single_bond = BondExprTree::Or(vec![BondExprTree::Primitive(BondPrimitive::Any)]);
+        assert_eq!(
+            remove_bond_primitive(&mut single_bond, &ExprPath(vec![ExprPathSegment::Child(0)])),
+            Err(EditError::CannotRemoveLastExpression)
+        );
+        let mut bond_index = BondExprTree::HighAnd(vec![
+            BondExprTree::Primitive(BondPrimitive::Any),
+            BondExprTree::Primitive(BondPrimitive::Ring),
+        ]);
+        assert_eq!(
+            remove_bond_primitive(&mut bond_index, &ExprPath(vec![ExprPathSegment::Child(7)])),
+            Err(EditError::InvalidExprPath)
+        );
+    }
+
+    #[test]
+    fn is_cycle_edge_returns_false_for_unknown_bond() {
+        let query = "CCC".parse::<QueryMol>().unwrap();
+        assert!(!query.is_cycle_edge(99));
+    }
 }

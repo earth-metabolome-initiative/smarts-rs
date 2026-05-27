@@ -1124,3 +1124,170 @@ fn index_never_filters_scalar_matches_from_frozen_fixtures() {
         }
     }
 }
+
+#[test]
+fn sharded_corpus_index_error_displays_each_variant() {
+    use alloc::string::ToString;
+
+    let overflow = ShardedTargetCorpusIndexError::TargetIdOverflow {
+        shard_index: 2,
+        base_target_id: 9,
+        shard_len: 4,
+    };
+    assert_eq!(
+        overflow.to_string(),
+        "target id overflow in shard 2: base=9, len=4"
+    );
+
+    assert_eq!(
+        ShardedTargetCorpusIndexError::TargetCountOverflow.to_string(),
+        "sharded target count overflow"
+    );
+
+    let overlap = ShardedTargetCorpusIndexError::OverlappingShard {
+        shard_index: 1,
+        previous_end_target_id: 5,
+        shard_base_target_id: 3,
+    };
+    assert_eq!(
+        overlap.to_string(),
+        "shard 1 starts at 3, before previous shard end 5"
+    );
+}
+
+#[test]
+fn query_screen_feature_stats_count_required_signatures() {
+    let plain = QueryScreen::new(&QueryMol::from_str("C").unwrap());
+    let plain_stats = plain.feature_stats();
+    assert_eq!(plain_stats.edge_features, 0);
+    assert_eq!(plain_stats.path4_features, 0);
+    assert_eq!(plain_stats.star3_features, 0);
+    assert_eq!(plain_stats.alternative_screen_groups, 0);
+
+    // A four-atom branched skeleton induces edge, path, and star signatures.
+    let rich = QueryScreen::new(&QueryMol::from_str("CC(C)CO").unwrap());
+    let stats = rich.feature_stats();
+    assert!(stats.edge_features > 0);
+    assert!(stats.path3_features > 0);
+    assert!(stats.path4_features > 0 || stats.star3_features > 0);
+
+    // A recursive alternative populates the alternative-screen group counts.
+    let recursive = QueryScreen::new(&QueryMol::from_str("[$(CO),$(CN)]").unwrap());
+    let recursive_stats = recursive.feature_stats();
+    assert_eq!(recursive_stats.alternative_screen_groups, 1);
+    assert_eq!(recursive_stats.alternative_screens, 2);
+}
+
+#[test]
+fn corpus_index_matching_target_ids_wrappers_return_exact_hits() {
+    let targets = ["CCO", "CC=O", "c1ccccc1", "CCN"]
+        .into_iter()
+        .map(|smiles| PreparedTarget::new(Smiles::from_str(smiles).unwrap()))
+        .collect::<alloc::vec::Vec<_>>();
+    let index = TargetCorpusIndex::new(&targets);
+    let query = CompiledQuery::new(QueryMol::from_str("[#6]=[#8]").unwrap()).unwrap();
+
+    // Exercises the allocating wrapper and, transitively, matching_target_ids_into.
+    assert_eq!(index.matching_target_ids(&query, &targets), alloc::vec![1]);
+
+    let mut out = alloc::vec![999_usize];
+    index.matching_target_ids_into(&query, &targets, &mut out);
+    assert_eq!(out, alloc::vec![1]);
+}
+
+#[test]
+fn candidate_id_iteration_spans_full_and_partial_bitset_words() {
+    // More than 64 targets forces the candidate-bit iterator to walk at least
+    // one full 64-bit word plus a trailing partial word. Even-indexed targets
+    // carry oxygen; odd-indexed ones do not.
+    let prepared_targets = (0..70usize)
+        .map(|i| {
+            let smiles = if i % 2 == 0 { "CCO" } else { "CC" };
+            PreparedTarget::new(Smiles::from_str(smiles).unwrap())
+        })
+        .collect::<alloc::vec::Vec<_>>();
+    let index = TargetCorpusIndex::new(&prepared_targets);
+
+    let query = QueryScreen::new(&QueryMol::from_str("[#8]").unwrap());
+    let candidates = index.candidate_ids(&query);
+
+    let expected = (0..70usize)
+        .filter(|i| i % 2 == 0)
+        .collect::<alloc::vec::Vec<_>>();
+    assert_eq!(candidates, expected);
+    assert!(
+        candidates.iter().any(|&id| id >= 64),
+        "candidates must reach beyond the first 64-bit word"
+    );
+}
+
+#[cfg(feature = "mem_dbg")]
+#[test]
+fn target_corpus_index_memory_stats_account_for_every_index_component() {
+    use mem_dbg::{MemSize, SizeFlags};
+
+    let prepared_targets = [
+        "c1ccccc1",
+        "C1CCCCC1",
+        "CC(=O)O",
+        "CCN",
+        "C#N",
+        "ClC(Cl)Cl",
+        "c1ccncc1",
+        "O=C(O)c1ccccc1",
+        "CC(C)(C)O",
+        "C1CC1",
+    ]
+    .into_iter()
+    .map(|smiles| PreparedTarget::new(Smiles::from_str(smiles).unwrap()))
+    .collect::<alloc::vec::Vec<_>>();
+
+    // `new` builds the full local-feature indexes but drops retained screens.
+    let index = TargetCorpusIndex::new(&prepared_targets);
+    let stats = index.memory_stats();
+
+    assert_eq!(stats.struct_size, size_of::<TargetCorpusIndex>());
+    assert!(stats.scalar_count_indexes > 0);
+    assert!(stats.atom_property_count_indexes > 0);
+    assert!(stats.edge_postings > 0);
+    assert!(stats.edge_masks > 0);
+    assert!(stats.path3_postings > 0);
+    assert!(stats.path4_postings > 0);
+    assert!(stats.star3_postings > 0);
+    // `new` drops retained screens, so that component contributes nothing here.
+    assert_eq!(stats.retained_screens, 0);
+    assert!(stats.total() > stats.struct_size);
+    // The custom `MemSize` impl reports the same aggregate as `memory_stats`.
+    assert_eq!(index.mem_size(SizeFlags::default()), stats.total());
+
+    // `from_screens` retains per-target screens, exercising the retained-screen
+    // heap accounting and the BTree map size heuristic.
+    let screens = prepared_targets
+        .iter()
+        .map(TargetScreen::new)
+        .collect::<alloc::vec::Vec<_>>();
+    let retained = TargetCorpusIndex::from_screens(screens);
+    let retained_stats = retained.memory_stats();
+    assert!(retained_stats.retained_screens > 0);
+    assert_eq!(
+        retained.mem_size(SizeFlags::default()),
+        retained_stats.total()
+    );
+
+    // The sharded aggregate is the sum of its shards' accounted bytes.
+    let sharded =
+        ShardedTargetCorpusIndex::from_prepared_target_chunks(prepared_targets.chunks(4)).unwrap();
+    let sharded_stats = sharded.memory_stats();
+    let shard_total: usize = sharded
+        .shards()
+        .iter()
+        .map(|shard| shard.index().memory_stats().total())
+        .sum();
+    // The sharded aggregate adds the wrapper struct and shard-array bytes on top
+    // of every inner shard's accounted bytes.
+    assert!(sharded_stats.total() > shard_total);
+    assert_eq!(
+        sharded.mem_size(SizeFlags::default()),
+        sharded_stats.total()
+    );
+}
