@@ -62,8 +62,29 @@ jobs:
           # keep the shell from expanding the glob so lychee expands it itself.
           args: --no-progress './**/*.md'
 
-  coverage:
-    name: Coverage
+  audit:
+    name: Dependency Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      # Scans Cargo.lock against the RustSec advisory database. --deny warnings
+      # promotes unmaintained, yanked, and unsound notices to hard failures so
+      # the gate matches the rest of the project's deny-level posture. Document
+      # any unavoidable exception in .cargo/audit.toml with a rationale rather
+      # than relaxing this flag.
+      - name: Audit dependencies
+        run: cargo audit --deny warnings
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -144,3 +165,46 @@ jobs:
           --all-features
           --locked
           --target x86_64-unknown-linux-gnu
+
+  mutants:
+    name: Mutation Testing (PR diff)
+    runs-on: ubuntu-latest
+    # A full run mutates ~5700 sites, each rebuilding and rerunning the whole
+    # suite, which is far too slow for CI. Restrict to pull requests and mutate
+    # only the lines the PR changed, so cost scales with the size of the diff.
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # cargo-mutants --in-diff needs the base branch to diff against, and
+          # fetch-depth 0 pulls every branch and tag so origin/<base> resolves.
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-mutants
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants
+
+      - name: Compute PR diff
+        run: git diff "origin/${{ github.base_ref }}...HEAD" > pr.diff
+
+      # Surviving mutants (mutations no test caught) fail the job, flagging
+      # changed lines that lack test coverage. --all-features matches the suite
+      # the other jobs run so feature-gated code is exercised too.
+      - name: Run mutants on changed lines
+        run: cargo mutants --no-shuffle --in-diff pr.diff --all-features
+
+      - name: Upload mutants report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-out
+          path: mutants.out
