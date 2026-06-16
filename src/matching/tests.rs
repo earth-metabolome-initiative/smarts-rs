@@ -1245,3 +1245,57 @@ fn bondless_search_precomputes_candidates_on_large_targets() {
     assert!(no_oxygen_target.atom_count() >= 64);
     assert!(!query.matches(&no_oxygen_target));
 }
+
+// A single primitive in a bracket compiles to a fast atom predicate, while an
+// `Or` disjunction (`[X,#8]`) falls back to the general slow-path matcher. Both
+// paths implement the same semantics, so each predicate is exercised on both.
+// `#8` (oxygen) is an inert second alternative: none of the carbon/nitrogen
+// targets below match it, so the result is decided entirely by the first
+// alternative under test.
+
+#[test]
+fn isotope_primitive_requires_element_mass_and_aromaticity() {
+    // A positive isotope match must hold, and each of the three constraints
+    // (element, mass number, aromaticity) must be load-bearing on its own.
+    for q in ["[13C]", "[13C,#8]"] {
+        assert!(query_matches_smiles(q, "[13C]"), "{q} should match [13C]");
+        // Wrong mass number (right element).
+        assert!(!query_matches_smiles(q, "[12C]"), "{q} vs [12C]");
+        // No isotope label at all on the target.
+        assert!(!query_matches_smiles(q, "C"), "{q} vs C");
+        // Right mass number, wrong element.
+        assert!(!query_matches_smiles(q, "[13N]"), "{q} vs [13N]");
+        // An aliphatic isotope query must not match an aromatic isotope atom.
+        assert!(!query_matches_smiles(q, "c1cc[13cH]cc1"), "{q} vs aromatic");
+    }
+    // The aromatic spelling matches the aromatic isotope atom, on both paths.
+    assert!(query_matches_smiles("[13c]", "c1cc[13cH]cc1"));
+    assert!(query_matches_smiles("[13c,#8]", "c1cc[13cH]cc1"));
+}
+
+#[test]
+fn isotope_wildcard_primitive_matches_only_the_requested_mass() {
+    for q in ["[13*]", "[13*,#8]"] {
+        // `[<mass>*]` matches any element but pins the isotope mass number.
+        assert!(query_matches_smiles(q, "[13C]"), "{q} vs [13C]");
+        assert!(!query_matches_smiles(q, "[12C]"), "{q} vs [12C]");
+        assert!(!query_matches_smiles(q, "C"), "{q} vs C");
+    }
+    for q in ["[0*]", "[0*,#8]"] {
+        // `[0*]` matches only atoms that carry no isotope label.
+        assert!(query_matches_smiles(q, "C"), "{q} vs C");
+        assert!(!query_matches_smiles(q, "[13C]"), "{q} vs [13C]");
+    }
+}
+
+#[test]
+fn aliphatic_any_primitive_rejects_aromatic_atoms() {
+    // `[A]` matches an aliphatic atom but never an aromatic one. This pins both
+    // the "is an atom" and "is not aromatic" halves of the aliphatic-any
+    // predicate, on both the fast and slow paths.
+    for q in ["[A]", "[A,#8]"] {
+        assert!(query_matches_smiles(q, "C"), "{q} vs C");
+        assert!(!query_matches_smiles(q, "c1ccccc1"), "{q} vs benzene");
+    }
+    assert!(query_matches_smiles("[a]", "c1ccccc1"));
+}
