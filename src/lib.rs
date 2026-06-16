@@ -889,6 +889,22 @@ mod tests {
     }
 
     #[test]
+    fn rejects_dollar_not_followed_by_recursive_group() {
+        // A `$` inside a bracket atom only starts a recursive query when it is
+        // immediately followed by `(`. Any other `$` is an unexpected character,
+        // not the start of a (malformed) recursive group, so it must report the
+        // `$` itself rather than running off the end looking for a closing `)`.
+        for input in ["[$x]", "[$]", "[$C]", "[$5]"] {
+            let err = parse_smarts(input).unwrap_err();
+            assert_eq!(
+                err.kind(),
+                SmartsParseErrorKind::UnexpectedCharacter('$'),
+                "unexpected parse result for {input}"
+            );
+        }
+    }
+
+    #[test]
     fn rejects_whitespace_inside_bracket_atoms() {
         let err = parse_smarts("[C ; H1]").unwrap_err();
         assert_eq!(err.kind(), SmartsParseErrorKind::UnexpectedCharacter(' '));

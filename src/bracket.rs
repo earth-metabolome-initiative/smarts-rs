@@ -201,46 +201,20 @@ impl<'a> BracketParser<'a> {
                 AtomPrimitive::Valence(self.parse_optional_numeric_query()?)
             }
             'A' => {
-                if let Some((element, aromatic, width)) =
-                    parse_supported_bracket_element(self.remaining())
-                {
-                    if width > 1 {
-                        self.pos += width;
-                        AtomPrimitive::Symbol { element, aromatic }
-                    } else {
-                        self.pos += 1;
-                        AtomPrimitive::AliphaticAny
-                    }
-                } else {
-                    self.pos += 1;
-                    AtomPrimitive::AliphaticAny
-                }
+                // Multi-letter element symbols starting with `A` (`Al`, `As`, ...)
+                // are already consumed by the leading `parse_supported_bracket_element`
+                // check above, and `A` on its own is not an element, so reaching
+                // here always means the aliphatic-any wildcard.
+                self.pos += 1;
+                AtomPrimitive::AliphaticAny
             }
             'a' => {
-                if let Some((element, aromatic, width)) =
-                    parse_supported_bracket_element(self.remaining())
-                {
-                    self.pos += width;
-                    AtomPrimitive::Symbol { element, aromatic }
-                } else {
-                    self.pos += 1;
-                    AtomPrimitive::AromaticAny
-                }
+                // As with `A`: aromatic multi-letter symbols (`as`, `se`) are handled
+                // above and bare `a` is not an element, so this is aromatic-any.
+                self.pos += 1;
+                AtomPrimitive::AromaticAny
             }
-            'H' => {
-                if let Some((element, aromatic, width)) =
-                    parse_supported_bracket_element(self.remaining())
-                {
-                    if width > 1 {
-                        self.pos += width;
-                        AtomPrimitive::Symbol { element, aromatic }
-                    } else {
-                        self.parse_single_h_primitive(allow_hydrogen_symbol)?
-                    }
-                } else {
-                    self.parse_single_h_primitive(allow_hydrogen_symbol)?
-                }
-            }
+            'H' => self.parse_single_h_primitive(allow_hydrogen_symbol)?,
             'h' => {
                 self.pos += 1;
                 AtomPrimitive::Hydrogen(
@@ -249,20 +223,11 @@ impl<'a> BracketParser<'a> {
                 )
             }
             'R' => {
-                if let Some((element, aromatic, width)) =
-                    parse_supported_bracket_element(self.remaining())
-                {
-                    if width > 1 {
-                        self.pos += width;
-                        AtomPrimitive::Symbol { element, aromatic }
-                    } else {
-                        self.pos += 1;
-                        AtomPrimitive::RingMembership(self.parse_optional_numeric_query()?)
-                    }
-                } else {
-                    self.pos += 1;
-                    AtomPrimitive::RingMembership(self.parse_optional_numeric_query()?)
-                }
+                // Multi-letter element symbols starting with `R` (`Rb`, `Re`, ...)
+                // are consumed by the leading element check above, and `R` alone is
+                // not an element, so this is always a ring-membership primitive.
+                self.pos += 1;
+                AtomPrimitive::RingMembership(self.parse_optional_numeric_query()?)
             }
             'r' => {
                 self.pos += 1;
@@ -1279,5 +1244,21 @@ mod tests {
 
         let plain_symbol = BracketParser::new("C");
         assert!(!plain_symbol.h_is_atomic_hydrogen_context());
+
+        // `h_is_atomic_hydrogen_context` must walk an entire run of repeated charge
+        // signs (as in `[H++]`/`[H--]`), not just a single sign. A scan that failed
+        // to advance over each repeated sign would never terminate.
+        assert!(BracketParser::new("++").h_is_atomic_hydrogen_context());
+        assert!(BracketParser::new("--").h_is_atomic_hydrogen_context());
+    }
+
+    #[test]
+    fn full_parse_consumes_closing_brace_of_numeric_range() {
+        // Parsing the whole bracket expression (not just the numeric query in
+        // isolation) exercises consuming the closing `}` of a `{n}`/`{m-n}` range:
+        // if the `}` were left unconsumed it would be re-read as a stray token and
+        // fail the parse.
+        assert_eq!(parse_bracket_text("x{2}").unwrap().to_string(), "x2");
+        assert_eq!(parse_bracket_text("D{1-3}").unwrap().to_string(), "D{1-3}");
     }
 }

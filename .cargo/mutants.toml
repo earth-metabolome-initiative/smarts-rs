@@ -1,0 +1,30 @@
+# cargo-mutants configuration.
+#
+# `exclude_re` lists mutants that survive the test suite but are *equivalent
+# mutants*: the mutation produces a program indistinguishable from the original,
+# so no test can possibly catch it. Each entry documents why. These are matched
+# against the names shown by `cargo mutants --list`.
+#
+# This is intentionally a tiny, audited allowlist. Do not add an entry just to
+# silence a survivor: a survivor normally means a missing test. Only equivalent
+# (provably unkillable) mutants belong here, each with a rationale.
+exclude_re = [
+    # parse_charge: `let sign = if peek == '+' { 1 } else { -1 };` then
+    # `if sign > 0 { '+' } else { '-' }`. `sign` is only ever +1 or -1, so
+    # `sign >= 0` selects exactly the same branch as `sign > 0`. Equivalent.
+    # Line-qualified on purpose: parse_charge has another `> with >=` mutant
+    # (`repeated > 0`) that IS catchable and must keep being tested.
+    'bracket\.rs:379:\d+: replace > with >= in BracketParser<.*>::parse_charge',
+
+    # next_char_is_ascii_digit -> false: its only caller,
+    # h_is_atomic_hydrogen_context, already returns false for a digit byte via
+    # its later `next != b'+' && next != b'-'` check. Forcing this helper to
+    # always return false therefore changes no observable behavior. Equivalent.
+    'replace BracketParser<.*>::next_char_is_ascii_digit -> bool with false',
+
+    # h_is_atomic_hydrogen_context: `let mut index = self.pos + 1;` vs
+    # `self.pos * 1`. The byte at self.pos is the sign char, which the scan loop
+    # skips unconditionally (`if ch == next { continue }`), so starting at
+    # self.pos instead of self.pos + 1 scans the identical suffix. Equivalent.
+    'replace \+ with \* in BracketParser<.*>::h_is_atomic_hydrogen_context',
+]
