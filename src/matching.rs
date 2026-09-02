@@ -202,17 +202,17 @@ impl<L: MatchLimiter> SearchContext<'_, L> {
     }
 
     #[inline]
-    fn target_atom_is_used(&self, target_atom: usize) -> bool {
+    const fn target_atom_is_used(&self, target_atom: usize) -> bool {
         self.used_target_atoms[target_atom] == self.used_target_generation
     }
 
     #[inline]
-    fn mark_target_atom_used(&mut self, target_atom: usize) {
+    const fn mark_target_atom_used(&mut self, target_atom: usize) {
         self.used_target_atoms[target_atom] = self.used_target_generation;
     }
 
     #[inline]
-    fn unmark_target_atom_used(&mut self, target_atom: usize) {
+    const fn unmark_target_atom_used(&mut self, target_atom: usize) {
         self.used_target_atoms[target_atom] = 0;
     }
 }
@@ -4516,7 +4516,7 @@ fn bind_component_embedding_group(
     previous
 }
 
-fn unbind_component_embedding_group(
+const fn unbind_component_embedding_group(
     group: Option<usize>,
     previous_target_component: Option<usize>,
     group_targets: &mut [Option<usize>],

@@ -5950,7 +5950,10 @@ fn normalize_directional_double_bond_pairs(query: &QueryMol) -> QueryMol {
     )
 }
 
-fn canonical_directional_edge_key(bond: &QueryBond, preorder_indices: &[usize]) -> (usize, usize) {
+const fn canonical_directional_edge_key(
+    bond: &QueryBond,
+    preorder_indices: &[usize],
+) -> (usize, usize) {
     let left = preorder_indices[bond.src];
     let right = preorder_indices[bond.dst];
     if left <= right {

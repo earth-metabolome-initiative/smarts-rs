@@ -138,7 +138,7 @@ pub(super) const fn bitset_word_count(target_count: usize) -> usize {
     target_count.div_ceil(u64::BITS as usize)
 }
 
-pub(super) fn set_bit(words: &mut [u64], target_id: usize) {
+pub(super) const fn set_bit(words: &mut [u64], target_id: usize) {
     let word = target_id / u64::BITS as usize;
     let bit = target_id % u64::BITS as usize;
     words[word] |= 1u64 << bit;
