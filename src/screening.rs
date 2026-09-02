@@ -4870,7 +4870,7 @@ fn accumulate_feature_id_mask_counts<T>(
     }
 }
 
-fn bitset_contains(words: &[u64], bit: usize) -> bool {
+const fn bitset_contains(words: &[u64], bit: usize) -> bool {
     let word = bit / u64::BITS as usize;
     let offset = bit % u64::BITS as usize;
     (words[word] & (1u64 << offset)) != 0

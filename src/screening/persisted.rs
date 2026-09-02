@@ -6012,8 +6012,10 @@ fn collect_matching_persisted_atom_features(
     out.extend(
         domain
             .persisted_features()
-            .chunks_exact(ATOM_FEATURE_WIDTH_USIZE)
-            .filter_map(decode_atom_feature)
+            .as_chunks::<ATOM_FEATURE_WIDTH_USIZE>()
+            .0
+            .iter()
+            .filter_map(|chunk| decode_atom_feature(chunk))
             .filter(|&feature| atom_feature_satisfies_query(feature, query)),
     );
 }
@@ -6032,8 +6034,10 @@ fn collect_matching_persisted_bond_features(
     out.extend(
         domain
             .persisted_features()
-            .chunks_exact(BOND_FEATURE_WIDTH_USIZE)
-            .filter_map(decode_bond_feature)
+            .as_chunks::<BOND_FEATURE_WIDTH_USIZE>()
+            .0
+            .iter()
+            .filter_map(|chunk| decode_bond_feature(chunk))
             .filter(|&feature| bond_feature_satisfies_query(feature, query)),
     );
 }
