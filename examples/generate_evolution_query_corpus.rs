@@ -8,7 +8,7 @@ use std::{
     path::PathBuf,
 };
 
-use smiles_parser::{
+use smiles_rs::{
     bond::{bond_edge::bond_edge_other, Bond},
     Smiles,
 };
@@ -280,7 +280,7 @@ fn molecule_candidates(smiles: &Smiles, max_path_atoms: usize) -> HashSet<String
 #[allow(clippy::too_many_arguments)]
 fn collect_paths(
     smiles: &Smiles,
-    ring_membership: &smiles_parser::smiles::RingMembership,
+    ring_membership: &smiles_rs::smiles::RingMembership,
     atom_id: usize,
     max_path_atoms: usize,
     visited: &mut [bool],
@@ -326,7 +326,7 @@ fn collect_paths(
 
 fn collect_branch_pairs(
     smiles: &Smiles,
-    ring_membership: &smiles_parser::smiles::RingMembership,
+    ring_membership: &smiles_rs::smiles::RingMembership,
     center: usize,
     candidates: &mut HashSet<String>,
 ) {
@@ -369,14 +369,14 @@ fn collect_branch_pairs(
 
 fn collect_carboxylate_tail_candidates(
     smiles: &Smiles,
-    ring_membership: &smiles_parser::smiles::RingMembership,
+    ring_membership: &smiles_rs::smiles::RingMembership,
     center: usize,
     max_tail_atoms: usize,
     candidates: &mut HashSet<String>,
 ) {
     if smiles
         .node_by_id(center)
-        .and_then(smiles_parser::atom::Atom::element)
+        .and_then(smiles_rs::atom::Atom::element)
         .map(u8::from)
         != Some(6)
     {
@@ -393,7 +393,7 @@ fn collect_carboxylate_tail_candidates(
         };
         let atomic_number = smiles
             .node_by_id(neighbor)
-            .and_then(smiles_parser::atom::Atom::element)
+            .and_then(smiles_rs::atom::Atom::element)
             .map_or(0, u8::from);
         match (edge.bond(), atomic_number) {
             (Bond::Double, 8) => double_oxygen_neighbors.push(neighbor),
@@ -441,7 +441,7 @@ fn collect_carboxylate_tail_candidates(
 #[allow(clippy::too_many_arguments)]
 fn collect_carboxylate_tail_paths(
     smiles: &Smiles,
-    ring_membership: &smiles_parser::smiles::RingMembership,
+    ring_membership: &smiles_rs::smiles::RingMembership,
     atom_id: usize,
     max_tail_atoms: usize,
     visited: &mut [bool],
@@ -455,7 +455,7 @@ fn collect_carboxylate_tail_paths(
 ) {
     let atomic_number = smiles
         .node_by_id(atom_id)
-        .and_then(smiles_parser::atom::Atom::element)
+        .and_then(smiles_rs::atom::Atom::element)
         .map_or(0, u8::from);
     if atomic_number != 6 {
         return;
@@ -512,7 +512,7 @@ fn collect_carboxylate_tail_paths(
 #[allow(clippy::too_many_arguments)]
 fn carboxylate_tail_smarts(
     smiles: &Smiles,
-    ring_membership: &smiles_parser::smiles::RingMembership,
+    ring_membership: &smiles_rs::smiles::RingMembership,
     tail_atoms: &[usize],
     tail_bonds: &[&str],
     center: usize,
@@ -544,7 +544,7 @@ const fn is_single_like_bond(bond: Bond) -> bool {
 
 fn branch_pair_smarts(
     smiles: &Smiles,
-    ring_membership: &smiles_parser::smiles::RingMembership,
+    ring_membership: &smiles_rs::smiles::RingMembership,
     center: usize,
     branch_atom: usize,
     branch_bond: &str,
@@ -563,7 +563,7 @@ fn branch_pair_smarts(
 
 fn canonical_path_smarts(
     smiles: &Smiles,
-    ring_membership: &smiles_parser::smiles::RingMembership,
+    ring_membership: &smiles_rs::smiles::RingMembership,
     atom_ids: &[usize],
     bond_tokens: &[&str],
 ) -> String {
@@ -582,7 +582,7 @@ fn canonical_path_smarts(
 
 fn path_smarts(
     smiles: &Smiles,
-    ring_membership: &smiles_parser::smiles::RingMembership,
+    ring_membership: &smiles_rs::smiles::RingMembership,
     atom_ids: &[usize],
     bond_tokens: &[&str],
 ) -> String {
@@ -596,7 +596,7 @@ fn path_smarts(
 
 fn atom_smarts(
     smiles: &Smiles,
-    ring_membership: &smiles_parser::smiles::RingMembership,
+    ring_membership: &smiles_rs::smiles::RingMembership,
     atom_id: usize,
 ) -> String {
     let atom = smiles.node_by_id(atom_id).unwrap();

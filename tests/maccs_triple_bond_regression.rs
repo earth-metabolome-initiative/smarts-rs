@@ -4,7 +4,7 @@ use core::str::FromStr;
 use std::boxed::Box;
 
 use smarts_rs::{CompiledQuery, PreparedTarget, QueryMol};
-use smiles_parser::Smiles;
+use smiles_rs::Smiles;
 
 const MACCS_KEY_17_COUNTEREXAMPLE: &str = concat!(
     "CC[C@@H]1[C@@H](N1)C(=O)N(C)CC(=O)N(C)C(=C(C)C)C(=O)N[C@H]2CC3=CC(=CC(=C3)O)",

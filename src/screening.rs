@@ -17,7 +17,7 @@
 //!     CompiledQuery, MatchScratch, PreparedTarget, QueryMol, QueryScreen, TargetCorpusIndex,
 //!     TargetCorpusScratch,
 //! };
-//! use smiles_parser::Smiles;
+//! use smiles_rs::Smiles;
 //!
 //! let targets = ["CCO", "CCCC", "CC=O", "CCN"]
 //!     .into_iter()
@@ -69,7 +69,7 @@ use crate::{
 use elements_rs::Element;
 #[cfg(feature = "rayon")]
 use rayon::prelude::*;
-use smiles_parser::bond::Bond;
+use smiles_rs::bond::Bond;
 
 use crate::{prepared::PreparedTarget, target::BondLabel};
 
@@ -845,7 +845,7 @@ impl TargetScreen {
         for atom_id in 0..target.atom_count() {
             let element = target
                 .atom(atom_id)
-                .and_then(smiles_parser::atom::Atom::element);
+                .and_then(smiles_rs::atom::Atom::element);
             if let Some(element) = element {
                 *element_counts.entry(element).or_insert(0) += 1;
             }
@@ -1658,7 +1658,7 @@ struct AtomPropertyScreenCountIndexes {
 ///     CompiledQuery, MatchScratch, PreparedTarget, QueryMol, QueryScreen, TargetCorpusIndex,
 ///     TargetCorpusScratch,
 /// };
-/// use smiles_parser::Smiles;
+/// use smiles_rs::Smiles;
 ///
 /// let targets = ["CCO", "CCCC", "CC=O", "CCN"]
 ///     .into_iter()

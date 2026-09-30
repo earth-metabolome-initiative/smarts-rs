@@ -2,7 +2,7 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
-use smiles_parser::bond::Bond;
+use smiles_rs::bond::Bond;
 
 use crate::bracket::{parse_bracket_text, BracketParseError, BracketParseErrorKind};
 use crate::error::UnsupportedFeature;

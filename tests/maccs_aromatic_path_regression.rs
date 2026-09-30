@@ -3,7 +3,7 @@
 use core::str::FromStr;
 
 use smarts_rs::{target::BondLabel, CompiledQuery, PreparedTarget, QueryMol};
-use smiles_parser::Smiles;
+use smiles_rs::Smiles;
 
 const MACCS_KEY_144_COUNTEREXAMPLE: &str = "CC.CC.CC.C/C=C\\1/C=CC=C/C1=C/C=C";
 

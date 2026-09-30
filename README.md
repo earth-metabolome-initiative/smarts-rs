@@ -16,7 +16,7 @@ once and reused against prepared targets.
 use core::str::FromStr;
 
 use smarts_rs::{CompiledQuery, PreparedTarget, QueryMol};
-use smiles_parser::Smiles;
+use smiles_rs::Smiles;
 
 let query = QueryMol::from_str("[#6]-[#8]").unwrap();
 assert_eq!(query.atom_count(), 2);
@@ -45,7 +45,7 @@ host-provided clock instead of relying on Rust's unsupported wasm `Instant`.
 use core::str::FromStr;
 
 use smarts_rs::{CompiledQuery, MatchLimitResult, MatchScratch, PreparedTarget, QueryMol};
-use smiles_parser::Smiles;
+use smiles_rs::Smiles;
 
 let query = CompiledQuery::new(QueryMol::from_str("[#6]-[#8]").unwrap()).unwrap();
 let target = PreparedTarget::new(Smiles::from_str("CCO").unwrap());
@@ -95,7 +95,7 @@ use smarts_rs::{
     CompiledQuery, MatchScratch, PreparedTarget, QueryMol, QueryScreen, TargetCorpusIndex,
     TargetCorpusScratch,
 };
-use smiles_parser::Smiles;
+use smiles_rs::Smiles;
 
 let targets = ["CCO", "CCCC", "CC=O", "CCN"]
     .into_iter()

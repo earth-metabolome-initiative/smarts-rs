@@ -16,7 +16,7 @@ use crate::{
     BracketExprTree, HydrogenKind, NumericQuery, QueryMol,
 };
 use elements_rs::{AtomicNumber, Element, ElementVariant, MassNumber};
-use smiles_parser::{
+use smiles_rs::{
     atom::{bracketed::chirality::Chirality, Atom},
     bond::Bond,
     DoubleBondStereoConfig, Smiles,
@@ -992,7 +992,7 @@ fn prepare_target_smiles(target: &str) -> Result<PreparedTarget, SmartsMatchErro
 impl QueryMol {
     /// Match this SMARTS query against a target `SMILES` string.
     ///
-    /// Target molecules are parsed through `smiles-parser` and prepared with
+    /// Target molecules are parsed through `smiles-rs` and prepared with
     /// RDKit-default aromaticity, degree, implicit-hydrogen,
     /// total-hydrogen, and effective bond-label caches before matching.
     ///

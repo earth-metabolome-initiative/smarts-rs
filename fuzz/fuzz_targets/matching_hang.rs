@@ -11,7 +11,7 @@ use smarts_rs::{
     parse_smarts, CompiledQuery, MatchScratch, PreparedTarget, QueryMol, QueryScreen,
     TargetCorpusScratch,
 };
-use smiles_parser::Smiles;
+use smiles_rs::Smiles;
 
 struct MatchRun<'a> {
     compiled: &'a CompiledQuery,

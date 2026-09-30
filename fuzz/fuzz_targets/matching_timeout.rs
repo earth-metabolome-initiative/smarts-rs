@@ -13,7 +13,7 @@ use smarts_rs::{
     parse_smarts, CompiledQuery, MatchLimitResult, MatchScratch, PreparedTarget, QueryMol,
     QueryScreen, TargetCorpusScratch,
 };
-use smiles_parser::Smiles;
+use smiles_rs::Smiles;
 
 const MATCH_TIME_LIMIT: Duration = Duration::from_secs(30);
 

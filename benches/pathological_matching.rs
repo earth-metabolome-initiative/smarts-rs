@@ -9,7 +9,7 @@ use smarts_rs::{
     CompiledQuery, MatchScratch, PreparedTarget, QueryMol, QueryScreen, TargetCandidateSet,
     TargetCorpusIndex, TargetCorpusScratch,
 };
-use smiles_parser::Smiles;
+use smiles_rs::Smiles;
 
 const TARGET_FIXTURE: &str = "corpus/benchmark/smarts-evolution-example-smiles-v0.tsv";
 const LOGGED_SLOW_TARGET_LIMIT: usize = 4096;

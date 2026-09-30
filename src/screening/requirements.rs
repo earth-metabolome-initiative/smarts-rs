@@ -3,7 +3,7 @@ use crate::{
     NumericQuery,
 };
 use elements_rs::{Element, ElementVariant};
-use smiles_parser::bond::Bond;
+use smiles_rs::bond::Bond;
 
 use super::features::RequiredBondKind;
 

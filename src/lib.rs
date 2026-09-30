@@ -63,7 +63,7 @@ pub use screening::{
     TargetCandidateSet, TargetCorpusIndex, TargetCorpusIndexShard, TargetCorpusIndexStats,
     TargetCorpusScratch, TargetScreen,
 };
-pub use smiles_parser::atom::bracketed::chirality::Chirality;
+pub use smiles_rs::atom::bracketed::chirality::Chirality;
 pub use target::{AtomLabel, BondLabel, MoleculeTarget, Neighbor};
 pub use validate::{recursive_depth, validate_recursive_depth, QueryValidationError};
 
@@ -102,7 +102,7 @@ mod tests {
     use super::*;
     use alloc::{boxed::Box, collections::BTreeMap, format, string::ToString, vec, vec::Vec};
     use elements_rs::{Element, Isotope};
-    use smiles_parser::bond::Bond;
+    use smiles_rs::bond::Bond;
 
     fn assert_same_query_structure(left: &QueryMol, right: &QueryMol) {
         assert_eq!(left.atom_count(), right.atom_count());

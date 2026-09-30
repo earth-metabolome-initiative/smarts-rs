@@ -13,7 +13,7 @@ use geometric_traits::{
     prelude::CanonicalLabeling,
     traits::EdgesBuilder,
 };
-use smiles_parser::{atom::bracketed::chirality::Chirality, bond::Bond};
+use smiles_rs::{atom::bracketed::chirality::Chirality, bond::Bond};
 
 use crate::{
     edit::normalize_bond_tree,

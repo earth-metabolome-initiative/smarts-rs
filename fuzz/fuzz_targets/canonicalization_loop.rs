@@ -8,7 +8,7 @@ use smarts_rs::{
     parse_smarts, AtomExpr, AtomPrimitive, BondExpr, BondExprTree, BondPrimitive, BracketExprTree,
     QueryAtom, QueryBond, QueryCanonicalLabeling, QueryMol,
 };
-use smiles_parser::bond::Bond;
+use smiles_rs::bond::Bond;
 
 const PHASE_SLOW_LIMIT: Duration = Duration::from_millis(250);
 const QUERY_LIMITS: QueryBudgetLimits = QueryBudgetLimits {

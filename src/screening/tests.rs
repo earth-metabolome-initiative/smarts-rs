@@ -3,7 +3,7 @@ use core::str::FromStr;
 
 use crate::QueryMol;
 use serde::Deserialize;
-use smiles_parser::Smiles;
+use smiles_rs::Smiles;
 
 use super::{
     count_slice_get, AtomFeature, BondCountScreen, EdgeBondFeature, EdgeFeature,
