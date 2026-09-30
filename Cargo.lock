@@ -406,21 +406,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "geometric-traits"
-version = "0.1.0"
-source = "git+https://github.com/earth-metabolome-initiative/geometric-traits?branch=main#2d8742268bab6b58536ebd2b41e2878720f4123c"
-dependencies = [
- "barnes-hut-tree",
- "bitvec",
- "hashbrown 0.17.1",
- "lender",
- "multi_ranged",
- "num-traits",
- "rand",
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "getrandom"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -910,7 +895,7 @@ dependencies = [
  "criterion",
  "elements_rs",
  "epserde",
- "geometric-traits 0.1.0 (git+https://github.com/earth-metabolome-initiative/geometric-traits?branch=main)",
+ "geometric-traits",
  "indicatif",
  "mem_dbg",
  "rayon",
@@ -927,7 +912,7 @@ version = "0.1.4"
 source = "git+https://github.com/earth-metabolome-initiative/smiles-rs?branch=main#a63f868558b15b153be23ac561efe896466c81a6"
 dependencies = [
  "elements_rs",
- "geometric-traits 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "geometric-traits",
  "hashbrown 0.17.1",
  "molecular-formulas",
  "smallvec",
