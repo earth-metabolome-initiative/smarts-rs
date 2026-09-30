@@ -6,7 +6,7 @@ use std::{fs, hint::black_box, path::PathBuf, time::Duration};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use serde::Deserialize;
 use smarts_rs::{CompiledQuery, PreparedTarget, QueryMol};
-use smiles_parser::Smiles;
+use smiles_rs::Smiles;
 
 const TARGET_BATCH_SIZE: usize = 30_000;
 

@@ -8,7 +8,7 @@ use alloc::{
 use core::str::FromStr;
 
 use elements_rs::Element;
-use smiles_parser::bond::Bond;
+use smiles_rs::bond::Bond;
 
 use super::QueryCanonicalLabeling;
 use crate::{AtomExpr, BondExpr, BondExprTree, BondPrimitive, QueryAtom, QueryBond, QueryMol};

@@ -12,7 +12,7 @@ use smarts_rs::{
     AtomExpr, AtomPrimitive, BondExpr, BondExprTree, BondPrimitive, BracketExpr, BracketExprTree,
     QueryAtom, QueryBond, QueryMol,
 };
-use smiles_parser::bond::Bond;
+use smiles_rs::bond::Bond;
 
 #[test]
 fn corpus_smarts_satisfy_canonicalization_invariants() {

@@ -3,7 +3,7 @@
 use core::str::FromStr;
 
 use smarts_rs::{CompiledQuery, PreparedTarget, QueryMol};
-use smiles_parser::Smiles;
+use smiles_rs::Smiles;
 
 const MACCS_KEY_136_COUNTEREXAMPLE: &str = concat!(
     "CCN1/C(=C/C=C/C2=[N+](C3=CC=CC=C3C=C2)CC)/C=CC4=CC=CC=C41.",

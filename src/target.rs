@@ -1,7 +1,7 @@
 //! Target graph traits and chemistry labels used by the matcher.
 
 use elements_rs::Element;
-use smiles_parser::bond::Bond;
+use smiles_rs::bond::Bond;
 
 /// Dense atom identifier used by the matcher.
 pub type AtomId = usize;
@@ -128,7 +128,7 @@ pub trait MoleculeTarget {
 #[cfg(test)]
 mod tests {
     use elements_rs::Element;
-    use smiles_parser::bond::Bond;
+    use smiles_rs::bond::Bond;
 
     use super::{AtomId, AtomLabel, BondLabel, MoleculeTarget, Neighbor};
 

@@ -4,7 +4,7 @@
 use core::str::FromStr;
 
 use smarts_rs::{CompiledQuery, PreparedTarget, QueryMol};
-use smiles_parser::Smiles;
+use smiles_rs::Smiles;
 
 const EXTRA_136_MISSING_49_ROW_24345: &str = "OI(=O)=O";
 const EXTRA_136_ROW_24619: &str = "[O-]I(=O)=O.[O-]I(=O)=O.[Ca+2]";

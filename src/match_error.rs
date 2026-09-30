@@ -13,7 +13,7 @@ pub enum SmartsMatchError {
     InvalidTargetSmiles {
         /// Underlying SMILES parse error kind.
         #[source]
-        source: smiles_parser::SmilesError,
+        source: smiles_rs::SmilesError,
         /// Byte start offset for the error.
         start: usize,
         /// Byte end offset for the error.

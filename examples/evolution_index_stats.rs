@@ -7,7 +7,7 @@ use smarts_rs::QueryMol;
 use smarts_rs::{
     QueryScreen, TargetCorpusIndex, TargetCorpusIndexStats, TargetCorpusScratch, TargetScreen,
 };
-use smiles_parser::Smiles;
+use smiles_rs::Smiles;
 
 const TARGET_FIXTURE: &str = "corpus/benchmark/smarts-evolution-example-smiles-v0.tsv";
 const QUERY_FIXTURES: [(&str, &str); 2] = [

@@ -7,7 +7,7 @@ use alloc::{
     vec::Vec,
 };
 use elements_rs::{AtomicNumber, Element};
-use smiles_parser::{
+use smiles_rs::{
     atom::{bracketed::chirality::Chirality, Atom},
     bond::{bond_edge::bond_edge_other, Bond},
     AromaticityAssignment, AromaticityPolicy, DoubleBondStereoConfig, RingMembership, Smiles,
@@ -402,7 +402,7 @@ impl PreparedTarget {
             || self
                 .target
                 .edge_for_node_pair((left_atom, right_atom))
-                .is_some_and(smiles_parser::bond::bond_edge::BondEdge::is_aromatic)
+                .is_some_and(smiles_rs::bond::bond_edge::BondEdge::is_aromatic)
     }
 
     /// Returns whether the provided atom is aromatic under the RDKit-default
@@ -1462,7 +1462,7 @@ mod tests {
     use alloc::string::ToString;
     use alloc::{vec, vec::Vec};
     use elements_rs::Element;
-    use smiles_parser::{atom::Atom, AromaticityPolicy, Smiles};
+    use smiles_rs::{atom::Atom, AromaticityPolicy, Smiles};
 
     use super::{
         connected_component_ids, effective_formal_charge, hybridization_code,
@@ -1732,11 +1732,11 @@ mod tests {
         assert!(left.tetrahedral_chirality(1).is_some());
         assert_eq!(
             trans.double_bond_stereo_config(1, 2),
-            Some(smiles_parser::DoubleBondStereoConfig::E)
+            Some(smiles_rs::DoubleBondStereoConfig::E)
         );
         assert_eq!(
             cis.double_bond_stereo_config(1, 2),
-            Some(smiles_parser::DoubleBondStereoConfig::Z)
+            Some(smiles_rs::DoubleBondStereoConfig::Z)
         );
         assert_eq!(plain.double_bond_stereo_config(1, 2), None);
     }

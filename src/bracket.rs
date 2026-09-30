@@ -1,6 +1,6 @@
 use alloc::{boxed::Box, vec, vec::Vec};
 use elements_rs::Isotope;
-use smiles_parser::atom::bracketed::chirality::Chirality;
+use smiles_rs::atom::bracketed::chirality::Chirality;
 use thiserror::Error;
 
 use crate::parse::parse_smarts;
@@ -399,7 +399,7 @@ impl<'a> BracketParser<'a> {
 
     fn parse_chiral_permutation(
         &mut self,
-        constructor: fn(u8) -> Result<Chirality, smiles_parser::SmilesError>,
+        constructor: fn(u8) -> Result<Chirality, smiles_rs::SmilesError>,
     ) -> Result<Chirality, BracketParseError> {
         let value = self.parse_optional_u8()?.unwrap_or(1);
         constructor(value).map_err(|_| self.error(BracketParseErrorKind::UnsupportedPrimitive))

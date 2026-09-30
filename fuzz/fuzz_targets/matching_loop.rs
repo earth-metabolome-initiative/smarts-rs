@@ -4,7 +4,7 @@ use libfuzzer_sys::fuzz_target;
 use smarts_rs::{
     parse_smarts, AtomExpr, CompiledQuery, PreparedTarget, SmartsMatchError,
 };
-use smiles_parser::Smiles;
+use smiles_rs::Smiles;
 
 fn split_input(data: &[u8]) -> (&[u8], &[u8]) {
     let split_at = data

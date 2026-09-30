@@ -3,7 +3,7 @@
 use core::str::FromStr;
 
 use smarts_rs::{CompiledQuery, PreparedTarget, QueryMol};
-use smiles_parser::Smiles;
+use smiles_rs::Smiles;
 
 const SMILES: &str = "[H][C@@]1(C[C@@H]([C@H](O1)CO[Si](C2=CC=CC=C2)(C3=CC=CC=C3)C(C)(C)C)CI)[3H]";
 

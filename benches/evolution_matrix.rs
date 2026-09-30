@@ -10,7 +10,7 @@ use smarts_rs::{
     CompiledQuery, MatchScratch, PreparedTarget, QueryMol, QueryScreen, TargetCandidateSet,
     TargetCorpusIndex, TargetCorpusScratch,
 };
-use smiles_parser::Smiles;
+use smiles_rs::Smiles;
 
 const COMPLEX_QUERY_FIXTURE: &str = "corpus/benchmark/smarts-evolution-complex-queries-v0.smarts";
 const LARGE_COMPLEX_QUERY_FIXTURE: &str =

@@ -1,7 +1,7 @@
 use alloc::{format, string::String, vec, vec::Vec};
 use core::str::FromStr;
 
-use smiles_parser::Smiles;
+use smiles_rs::Smiles;
 
 use super::{
     component_constraints_match, component_embedding_assignment_exists, select_next_query_atom,

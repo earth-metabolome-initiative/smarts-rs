@@ -51,7 +51,7 @@ use crate::{
     matching::{CompiledQuery, MatchScratch},
     prepared::PreparedTarget,
 };
-use smiles_parser::{Smiles, SmilesError};
+use smiles_rs::{Smiles, SmilesError};
 
 #[cfg(feature = "zstd")]
 use PersistedTargetCorpusIndexShardBuildEvent::{Finished, Started};
@@ -6610,7 +6610,7 @@ mod tests {
     use alloc::{format, string::ToString};
     use epserde::deser::Flags;
     use epserde::prelude::*;
-    use smiles_parser::Smiles;
+    use smiles_rs::Smiles;
 
     use super::*;
     use crate::{prepared::PreparedTarget, screening::TargetCorpusIndexShard};

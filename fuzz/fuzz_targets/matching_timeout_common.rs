@@ -4,7 +4,7 @@ use std::{
 };
 
 use smarts_rs::{PreparedTarget, QueryMol, TargetCorpusIndex};
-use smiles_parser::Smiles;
+use smiles_rs::Smiles;
 
 pub const MAX_INPUT_LEN: usize = 768;
 pub const MAX_QUERY_LEN: usize = 512;

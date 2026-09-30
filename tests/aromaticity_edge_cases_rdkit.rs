@@ -3,7 +3,7 @@
 use core::str::FromStr;
 
 use smarts_rs::{CompiledQuery, PreparedTarget, QueryMol};
-use smiles_parser::Smiles;
+use smiles_rs::Smiles;
 
 #[derive(Debug, Clone, Copy)]
 struct AromaticityCase {

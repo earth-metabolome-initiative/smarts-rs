@@ -1268,7 +1268,7 @@ fn rebuild_component_groups(
 mod tests {
     use alloc::{boxed::Box, format, string::ToString, vec, vec::Vec};
     use elements_rs::Element;
-    use smiles_parser::bond::Bond;
+    use smiles_rs::bond::Bond;
 
     use crate::{
         AtomExpr, AtomPrimitive, BondExpr, BondExprTree, BondPrimitive, BracketExpr,

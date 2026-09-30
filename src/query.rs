@@ -6,7 +6,7 @@ use alloc::{
 };
 use core::fmt;
 use elements_rs::{Element, ElementVariant, Isotope, MassNumber};
-use smiles_parser::{atom::bracketed::chirality::Chirality, bond::Bond};
+use smiles_rs::{atom::bracketed::chirality::Chirality, bond::Bond};
 
 /// Dense atom identifier inside one parsed SMARTS query.
 pub type AtomId = usize;
@@ -194,7 +194,7 @@ pub enum BondExprTree {
 /// One primitive bond predicate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BondPrimitive {
-    /// Concrete directional or order-specific bond kinds reused from `smiles-parser`.
+    /// Concrete directional or order-specific bond kinds reused from `smiles-rs`.
     Bond(Bond),
     /// Aromatic bond `:`.
     Aromatic,
