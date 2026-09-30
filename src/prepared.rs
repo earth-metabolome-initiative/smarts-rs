@@ -1601,6 +1601,20 @@ mod tests {
     }
 
     #[test]
+    fn prepared_target_reports_perceived_and_written_aromatic_bonds() {
+        let benzene = PreparedTarget::new(Smiles::from_str("c1ccccc1").unwrap());
+        assert!(benzene.is_aromatic_bond(0, 1));
+
+        let written = PreparedTarget::new(Smiles::from_str("C:C").unwrap());
+        assert!(!written.is_aromatic(0));
+        assert!(written.is_aromatic_bond(0, 1));
+
+        let ethanol = PreparedTarget::new(Smiles::from_str("CCO").unwrap());
+        assert!(!ethanol.is_aromatic_bond(0, 1));
+        assert!(!ethanol.is_aromatic_bond(0, 2));
+    }
+
+    #[test]
     fn prepared_target_caches_ring_properties() {
         let target = Smiles::from_str("c1ccc2ccccc2c1").unwrap();
         let prepared = PreparedTarget::new(target);
