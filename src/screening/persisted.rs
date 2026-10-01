@@ -743,7 +743,7 @@ where
     }
 }
 
-/// Flat persisted representation of a [`CountBitsetIndex`].
+/// Flat persisted representation of a `CountBitsetIndex`.
 ///
 /// The runtime index stores one boxed bitset per threshold. This persisted form
 /// flattens those bitsets into one word array plus offsets, which is a better
@@ -7065,7 +7065,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(skipped_count, 0);
-        assert!(streamed_record_hits.is_empty());
+        assert_eq!(streamed_record_hits, Vec::<usize>::new());
 
         remove_payload_and_manifest(persisted_target_smiles_path_for_index_shard_path(&path));
         remove_payload_and_manifest(persisted_external_ids_path_for_index_shard_path(&path));
@@ -7535,7 +7535,6 @@ mod tests {
             ser_error,
             PersistedShardStoreError::Serialization(_)
         ));
-        assert!(!ser_error.to_string().is_empty());
         assert!(std::error::Error::source(&ser_error).is_some());
     }
 

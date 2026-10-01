@@ -129,3 +129,5 @@ Published archives contain the library sources, README, license, and Cargo metad
 ## Fuzzing
 
 Committed starting inputs live in `fuzz/seeds/<target>/`. `scripts/run_fuzz_tmux.sh` reads these seeds and writes generated inputs to the ignored `fuzz/corpus/` directories. `ClusterFuzzLite` requires a nonempty seed corpus for every target.
+
+`ClusterFuzzLite` stores generated corpora on the dedicated `fuzz-corpus` branch.
