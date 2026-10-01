@@ -1513,13 +1513,16 @@ mod tests {
     fn prepared_target_indexes_common_atom_domains() {
         let prepared = PreparedTarget::new(Smiles::from_str("CCO.c1ccccc1").unwrap());
 
-        assert!(prepared.atom_ids_with_isotope_mass_number(13).is_empty());
+        assert_eq!(
+            prepared.atom_ids_with_isotope_mass_number(13),
+            &[] as &[usize]
+        );
         assert_eq!(
             prepared.atom_ids_with_atomic_number(6),
             &[0, 1, 3, 4, 5, 6, 7, 8]
         );
         assert_eq!(prepared.atom_ids_with_atomic_number(8), &[2]);
-        assert!(prepared.atom_ids_with_atomic_number(9).is_empty());
+        assert_eq!(prepared.atom_ids_with_atomic_number(9), &[] as &[usize]);
         assert_eq!(prepared.atom_ids_with_degree(1), &[0, 2]);
         assert_eq!(prepared.atom_ids_with_degree(2), &[1, 3, 4, 5, 6, 7, 8]);
         assert_eq!(prepared.atom_ids_with_connectivity(2), &[2]);
