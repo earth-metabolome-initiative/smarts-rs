@@ -121,3 +121,7 @@ let hits = candidates
 
 assert_eq!(hits, vec![2]);
 ```
+
+## Fuzzing
+
+Committed starting inputs live in `fuzz/seeds/<target>/`. `scripts/run_fuzz_tmux.sh` reads these seeds and writes generated inputs to the ignored `fuzz/corpus/` directories. `ClusterFuzzLite` requires a nonempty seed corpus for every target.
