@@ -1833,6 +1833,15 @@ mod tests {
     }
 
     #[test]
+    fn prepared_target_normalizes_hydrogenated_chlorine_oxide_like_rdkit() {
+        let prepared = PreparedTarget::new(Smiles::from_str("[ClH]=O").unwrap());
+
+        assert_eq!(prepared.bond(0, 1), Some(BondLabel::Single));
+        assert_eq!(prepared.formal_charge(0), Some(1));
+        assert_eq!(prepared.formal_charge(1), Some(-1));
+    }
+
+    #[test]
     fn prepared_helper_paths_cover_remaining_normalization_branches() {
         let alkyl_hypochlorite = Smiles::from_str("Cl(=O)C").unwrap();
         let alkyl_hypochlorite_aromaticity =
