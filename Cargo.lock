@@ -908,8 +908,9 @@ dependencies = [
 
 [[package]]
 name = "smiles-rs"
-version = "0.1.4"
-source = "git+https://github.com/earth-metabolome-initiative/smiles-rs?branch=main#a63f868558b15b153be23ac561efe896466c81a6"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82c668a36ecf662d466a0e4fd965cd5c2fa7220c421ea1d8ebf26a515a312290"
 dependencies = [
  "elements_rs",
  "geometric-traits",
