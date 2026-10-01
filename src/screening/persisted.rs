@@ -743,7 +743,7 @@ where
     }
 }
 
-/// Flat persisted representation of a [`CountBitsetIndex`].
+/// Flat persisted representation of a `CountBitsetIndex`.
 ///
 /// The runtime index stores one boxed bitset per threshold. This persisted form
 /// flattens those bitsets into one word array plus offsets, which is a better
