@@ -8,6 +8,7 @@ description = "SMARTS parsing, canonicalization, and substructure matching"
 readme = "README.md"
 keywords = ["smarts", "chemistry", "substructure"]
 categories = ["parser-implementations", "science"]
+include = ["/src/**", "/README.md", "/LICENSE"]
 
 [features]
 default = []

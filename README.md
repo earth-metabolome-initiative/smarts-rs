@@ -121,3 +121,7 @@ let hits = candidates
 
 assert_eq!(hits, vec![2]);
 ```
+
+## Package contents
+
+Published archives contain the library sources, README, license, and Cargo metadata. Integration tests, corpora, benchmarks, examples, and development tooling are available in the repository.
