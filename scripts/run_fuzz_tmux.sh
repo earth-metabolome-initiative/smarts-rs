@@ -89,9 +89,7 @@ harness_corpus_dir() {
       printf '%s' "corpus/matching_timeout"
       ;;
     *)
-      if [[ -d "$FUZZ_DIR/corpus/$harness" ]]; then
-        printf '%s' "corpus/$harness"
-      fi
+      printf '%s' "corpus/$harness"
       ;;
   esac
 }
@@ -170,9 +168,9 @@ build_pane_command() {
   local pane_args=("${LIBFUZZER_ARGS[@]}")
 
   corpus_dir=$(harness_corpus_dir "$harness")
-  if [[ -n "$corpus_dir" ]]; then
-    cargo_cmd+=("$corpus_dir")
-  fi
+  mkdir -p "$FUZZ_DIR/$corpus_dir"
+  # new inputs land in the ignored working corpus, the committed seeds stay read-only
+  cargo_cmd+=("$corpus_dir" "seeds/$harness")
 
   if [[ "$USER_SET_LIBFUZZER_ARGS" == false ]]; then
     case "$harness" in
