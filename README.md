@@ -122,6 +122,10 @@ let hits = candidates
 assert_eq!(hits, vec![2]);
 ```
 
+## Package contents
+
+Published archives contain the library sources, README, license, and Cargo metadata. Integration tests, corpora, benchmarks, examples, and development tooling are available in the repository.
+
 ## Fuzzing
 
 Committed starting inputs live in `fuzz/seeds/<target>/`. `scripts/run_fuzz_tmux.sh` reads these seeds and writes generated inputs to the ignored `fuzz/corpus/` directories. `ClusterFuzzLite` requires a nonempty seed corpus for every target.
