@@ -1,0 +1,62 @@
+[
+  {
+    "name": "directional-highand-left-e-forward",
+    "smarts": "F/&\\C=C/F",
+    "smiles": "F/C=C/F",
+    "use_chirality": true
+  },
+  {
+    "name": "directional-highand-left-e-reversed-forward",
+    "smarts": "F/&\\C=C/F",
+    "smiles": "F\\C=C\\F",
+    "use_chirality": true
+  },
+  {
+    "name": "directional-highand-left-e-rejects-z-forward",
+    "smarts": "F/&\\C=C/F",
+    "smiles": "F/C=C\\F",
+    "use_chirality": true
+  },
+  {
+    "name": "directional-highand-left-e-rejects-z-reversed-forward",
+    "smarts": "F/&\\C=C/F",
+    "smiles": "F\\C=C/F",
+    "use_chirality": true
+  },
+  {
+    "name": "directional-highand-left-e-rejects-unspecified",
+    "smarts": "F/&\\C=C/F",
+    "smiles": "FC=CF",
+    "use_chirality": true
+  },
+  {
+    "name": "directional-highand-left-z-forward",
+    "smarts": "F\\&/C=C/F",
+    "smiles": "F/C=C\\F",
+    "use_chirality": true
+  },
+  {
+    "name": "directional-highand-left-z-reversed-forward",
+    "smarts": "F\\&/C=C/F",
+    "smiles": "F\\C=C/F",
+    "use_chirality": true
+  },
+  {
+    "name": "directional-highand-left-z-rejects-e-forward",
+    "smarts": "F\\&/C=C/F",
+    "smiles": "F/C=C/F",
+    "use_chirality": true
+  },
+  {
+    "name": "directional-highand-left-z-rejects-e-reversed-forward",
+    "smarts": "F\\&/C=C/F",
+    "smiles": "F\\C=C\\F",
+    "use_chirality": true
+  },
+  {
+    "name": "directional-highand-left-z-rejects-unspecified",
+    "smarts": "F\\&/C=C/F",
+    "smiles": "FC=CF",
+    "use_chirality": true
+  }
+]

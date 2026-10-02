@@ -1,0 +1,146 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust Checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Run clippy
+        run: cargo clippy --workspace --all-targets --all-features --locked
+
+      - name: Run tests
+        run: cargo test --workspace --all-features --locked
+
+  links:
+    name: Link Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check links
+        # Pinned to a master commit rather than a release tag on purpose. The
+        # latest release (v2.8.0) defaults to lychee 0.23.0, which panics in CI
+        # with a tokio SendError (lychee #2091, fixed by lychee #2074 in 0.24.x),
+        # and its install step only handles the old flat archive layout, so it
+        # cannot install any 0.24.x build (those nest the binary in a subfolder).
+        # This commit defaults to lychee 0.24.2 and auto-detects the nested
+        # binary (lychee-action #330). Revert to a tag once one ships with both.
+        uses: lycheeverse/lychee-action@649b0e4890508ea3e11ea6b3ee35ce899a25afd5
+        with:
+          # Glob every Markdown file. lychee 0.24.x rejects a bare directory
+          # argument, and this repo has no docs/ directory anyway. The quotes
+          # keep the shell from expanding the glob so lychee expands it itself.
+          args: --no-progress './**/*.md'
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - name: Install cargo-tarpaulin
+        uses: taiki-e/install-action@76c2e6406e52637deed7160d77bded76bd83e06e # v2
+        with:
+          tool: cargo-tarpaulin
+
+      - name: Run coverage
+        run: >
+          cargo tarpaulin
+          --workspace
+          --all-features
+          --engine llvm
+          --exclude-files 'fuzz/*'
+          --fail-under 90
+          --out Xml
+          --output-dir coverage
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-xml
+          path: coverage/
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          use_oidc: true
+          directory: coverage
+          verbose: true
+
+  sanitizers:
+    name: AddressSanitizer
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # AddressSanitizer requires the unstable -Zsanitizer flag, so this job
+      # runs on nightly. It guards the unsafe epserde/mmap deserialization and
+      # *_unchecked APIs against memory errors and leaks.
+      - name: Install nightly Rust
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - name: Run tests under AddressSanitizer (with LeakSanitizer)
+        env:
+          # -Zsanitizer instruments only the --target build, never host build
+          # scripts or proc-macros, so an explicit --target is mandatory below.
+          # std is not rebuilt: ASAN replaces the global allocator at runtime,
+          # which is enough for LeakSanitizer to track every allocation.
+          RUSTFLAGS: "-Zsanitizer=address"
+          # LeakSanitizer is on by default on Linux; set it explicitly so the
+          # intent is visible. One test deliberately leaks deeply nested trees
+          # (dropping them would overflow the stack) and turns this off only for
+          # its own child process.
+          ASAN_OPTIONS: "detect_leaks=1"
+          RUST_BACKTRACE: "1"
+        run: >
+          cargo test
+          --tests
+          --all-features
+          --locked
+          --target x86_64-unknown-linux-gnu

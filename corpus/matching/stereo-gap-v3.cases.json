@@ -1,0 +1,92 @@
+[
+  {
+    "name": "nontetrahedral-sp3-does-not-constrain-forward",
+    "smarts": "[C@SP3](F)(Cl)Br",
+    "smiles": "F[C@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "nontetrahedral-sp3-does-not-constrain-opposite",
+    "smarts": "[C@SP3](F)(Cl)Br",
+    "smiles": "F[C@@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "nontetrahedral-sp3-does-not-constrain-achiral",
+    "smarts": "[C@SP3](F)(Cl)Br",
+    "smiles": "FC(Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "nontetrahedral-tb1-does-not-constrain-forward",
+    "smarts": "[C@TB1](F)(Cl)Br",
+    "smiles": "F[C@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "nontetrahedral-tb1-does-not-constrain-opposite",
+    "smarts": "[C@TB1](F)(Cl)Br",
+    "smiles": "F[C@@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "nontetrahedral-tb1-does-not-constrain-achiral",
+    "smarts": "[C@TB1](F)(Cl)Br",
+    "smiles": "FC(Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "nontetrahedral-tb20-does-not-constrain-forward",
+    "smarts": "[C@TB20](F)(Cl)Br",
+    "smiles": "F[C@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "nontetrahedral-tb20-does-not-constrain-opposite",
+    "smarts": "[C@TB20](F)(Cl)Br",
+    "smiles": "F[C@@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "nontetrahedral-tb20-does-not-constrain-achiral",
+    "smarts": "[C@TB20](F)(Cl)Br",
+    "smiles": "FC(Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "nontetrahedral-oh1-does-not-constrain-forward",
+    "smarts": "[C@OH1](F)(Cl)Br",
+    "smiles": "F[C@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "nontetrahedral-oh1-does-not-constrain-opposite",
+    "smarts": "[C@OH1](F)(Cl)Br",
+    "smiles": "F[C@@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "nontetrahedral-oh1-does-not-constrain-achiral",
+    "smarts": "[C@OH1](F)(Cl)Br",
+    "smiles": "FC(Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "nontetrahedral-oh30-does-not-constrain-forward",
+    "smarts": "[C@OH30](F)(Cl)Br",
+    "smiles": "F[C@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "nontetrahedral-oh30-does-not-constrain-opposite",
+    "smarts": "[C@OH30](F)(Cl)Br",
+    "smiles": "F[C@@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "nontetrahedral-oh30-does-not-constrain-achiral",
+    "smarts": "[C@OH30](F)(Cl)Br",
+    "smiles": "FC(Cl)Br",
+    "use_chirality": true
+  }
+]

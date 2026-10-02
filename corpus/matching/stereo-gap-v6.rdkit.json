@@ -1,0 +1,58 @@
+[
+  {
+    "name": "directional-not-left-e-rejects-e-forward",
+    "smarts": "F/!\\C=C/F",
+    "smiles": "F/C=C/F",
+    "use_chirality": true,
+    "expected_match": false
+  },
+  {
+    "name": "directional-not-left-e-rejects-e-reversed-forward",
+    "smarts": "F/!\\C=C/F",
+    "smiles": "F\\C=C\\F",
+    "use_chirality": true,
+    "expected_match": false
+  },
+  {
+    "name": "directional-not-left-e-rejects-z-forward",
+    "smarts": "F/!\\C=C/F",
+    "smiles": "F/C=C\\F",
+    "use_chirality": true,
+    "expected_match": false
+  },
+  {
+    "name": "directional-not-left-e-rejects-unspecified",
+    "smarts": "F/!\\C=C/F",
+    "smiles": "FC=CF",
+    "use_chirality": true,
+    "expected_match": false
+  },
+  {
+    "name": "directional-not-left-z-rejects-z-forward",
+    "smarts": "F\\!/C=C/F",
+    "smiles": "F/C=C\\F",
+    "use_chirality": true,
+    "expected_match": false
+  },
+  {
+    "name": "directional-not-left-z-rejects-z-reversed-forward",
+    "smarts": "F\\!/C=C/F",
+    "smiles": "F\\C=C/F",
+    "use_chirality": true,
+    "expected_match": false
+  },
+  {
+    "name": "directional-not-left-z-rejects-e-forward",
+    "smarts": "F\\!/C=C/F",
+    "smiles": "F/C=C/F",
+    "use_chirality": true,
+    "expected_match": false
+  },
+  {
+    "name": "directional-not-left-z-rejects-unspecified",
+    "smarts": "F\\!/C=C/F",
+    "smiles": "FC=CF",
+    "use_chirality": true,
+    "expected_match": false
+  }
+]

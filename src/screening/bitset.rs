@@ -1,0 +1,221 @@
+use alloc::{boxed::Box, vec, vec::Vec};
+
+use super::{compact_target_id, TargetId};
+
+type CountValue = u32;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct CountBitsetIndex {
+    thresholds: Box<[CountValue]>,
+    bitsets: Box<[Box<[u64]>]>,
+    populations: Box<[usize]>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct RequiredCountFilter<'a> {
+    pub(super) population: usize,
+    pub(super) source: &'a [u64],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct CachedFeatureMask {
+    pub(super) population: usize,
+    pub(super) words: Box<[u64]>,
+}
+
+impl CountBitsetIndex {
+    #[cfg(feature = "epserde")]
+    pub(super) fn thresholds(&self) -> &[CountValue] {
+        &self.thresholds
+    }
+
+    #[cfg(feature = "epserde")]
+    pub(super) fn bitsets(&self) -> &[Box<[u64]>] {
+        &self.bitsets
+    }
+
+    #[cfg(feature = "epserde")]
+    pub(super) fn populations(&self) -> &[usize] {
+        &self.populations
+    }
+
+    #[cfg(feature = "mem_dbg")]
+    pub(super) fn heap_size(&self) -> usize {
+        size_of_val(self.thresholds.as_ref())
+            + size_of_val(self.bitsets.as_ref())
+            + self
+                .bitsets
+                .iter()
+                .map(|bitset| size_of_val(bitset.as_ref()))
+                .sum::<usize>()
+            + size_of_val(self.populations.as_ref())
+    }
+
+    pub(super) fn from_compact_counts<I>(target_count: usize, counts: I) -> Self
+    where
+        I: IntoIterator<Item = u32>,
+    {
+        Self::from_nonzero_compact_counts(
+            target_count,
+            counts
+                .into_iter()
+                .enumerate()
+                .map(|(target_id, count)| (count, compact_target_id(target_id))),
+        )
+    }
+
+    pub(super) fn from_nonzero_compact_counts<I>(target_count: usize, counts: I) -> Self
+    where
+        I: IntoIterator<Item = (u32, TargetId)>,
+    {
+        let target_counts = counts
+            .into_iter()
+            .filter(|&(count, _)| count > 0)
+            .collect::<Vec<_>>();
+        Self::from_nonzero_target_counts(target_count, target_counts)
+    }
+
+    fn from_nonzero_target_counts(
+        target_count: usize,
+        mut target_counts: Vec<(CountValue, TargetId)>,
+    ) -> Self {
+        let word_count = bitset_word_count(target_count);
+        target_counts.sort_unstable_by_key(|&(count, _)| core::cmp::Reverse(count));
+
+        let mut thresholds = Vec::new();
+        for &(count, _) in &target_counts {
+            if thresholds
+                .last()
+                .is_none_or(|&threshold| threshold != count)
+            {
+                thresholds.push(count);
+            }
+        }
+        let mut words = vec![0u64; word_count];
+        let mut population = 0usize;
+        let mut cursor = 0usize;
+        let mut bitsets = Vec::with_capacity(thresholds.len());
+        let mut populations = Vec::with_capacity(thresholds.len());
+        for &threshold in &thresholds {
+            while cursor < target_counts.len() && target_counts[cursor].0 >= threshold {
+                set_bit(&mut words, target_counts[cursor].1 as usize);
+                population += 1;
+                cursor += 1;
+            }
+            bitsets.push(words.clone().into_boxed_slice());
+            populations.push(population);
+        }
+        bitsets.reverse();
+        populations.reverse();
+        thresholds.reverse();
+
+        Self {
+            thresholds: thresholds.into_boxed_slice(),
+            bitsets: bitsets.into_boxed_slice(),
+            populations: populations.into_boxed_slice(),
+        }
+    }
+
+    fn threshold_index_for_at_least(&self, required: usize) -> Option<usize> {
+        let required = CountValue::try_from(required).ok()?;
+        let index = self
+            .thresholds
+            .partition_point(|&threshold| threshold < required);
+        self.bitsets.get(index)?;
+        Some(index)
+    }
+
+    pub(super) fn filter_for_at_least(&self, required: usize) -> Option<RequiredCountFilter<'_>> {
+        let index = self.threshold_index_for_at_least(required)?;
+        Some(RequiredCountFilter {
+            population: self.populations.get(index).copied()?,
+            source: self.bitsets.get(index)?.as_ref(),
+        })
+    }
+}
+
+pub(super) const fn bitset_word_count(target_count: usize) -> usize {
+    target_count.div_ceil(u64::BITS as usize)
+}
+
+pub(super) const fn set_bit(words: &mut [u64], target_id: usize) {
+    let word = target_id / u64::BITS as usize;
+    let bit = target_id % u64::BITS as usize;
+    words[word] |= 1u64 << bit;
+}
+
+pub(super) fn ensure_zeroed_words(words: &mut Vec<u64>, word_count: usize) {
+    if words.len() == word_count {
+        words.fill(0);
+    } else {
+        words.clear();
+        words.resize(word_count, 0);
+    }
+}
+
+pub(super) fn intersect_source(
+    candidate_mask: &mut [u64],
+    has_active_candidate: &mut bool,
+    source: &[u64],
+) -> bool {
+    if *has_active_candidate {
+        for (candidate_word, source_word) in candidate_mask.iter_mut().zip(source) {
+            *candidate_word &= source_word;
+        }
+    } else {
+        candidate_mask.copy_from_slice(source);
+        *has_active_candidate = true;
+    }
+    candidate_mask.iter().any(|&word| word != 0)
+}
+
+pub(super) fn intersect_source_with_population(
+    candidate_mask: &mut [u64],
+    has_active_candidate: &mut bool,
+    source: &[u64],
+    source_population: usize,
+) -> Option<usize> {
+    if *has_active_candidate {
+        let mut population = 0usize;
+        for (candidate_word, &source_word) in candidate_mask.iter_mut().zip(source) {
+            *candidate_word &= source_word;
+            population += candidate_word.count_ones() as usize;
+        }
+        (population != 0).then_some(population)
+    } else {
+        candidate_mask.copy_from_slice(source);
+        *has_active_candidate = true;
+        (source_population != 0).then_some(source_population)
+    }
+}
+
+pub(super) fn for_each_set_bit<F>(candidate_mask: &[u64], target_count: usize, mut f: F)
+where
+    F: FnMut(usize),
+{
+    let word_bits = u64::BITS as usize;
+    let full_word_count = (target_count / word_bits).min(candidate_mask.len());
+    for (word_index, &word) in candidate_mask.iter().take(full_word_count).enumerate() {
+        let mut remaining = word;
+        while remaining != 0 {
+            let bit = remaining.trailing_zeros() as usize;
+            f(word_index * word_bits + bit);
+            remaining &= remaining - 1;
+        }
+    }
+
+    let remaining_bits = target_count % word_bits;
+    if remaining_bits == 0 {
+        return;
+    }
+    let Some(&last_word) = candidate_mask.get(full_word_count) else {
+        return;
+    };
+
+    let mut remaining = last_word & ((1u64 << remaining_bits) - 1);
+    while remaining != 0 {
+        let bit = remaining.trailing_zeros() as usize;
+        f(full_word_count * word_bits + bit);
+        remaining &= remaining - 1;
+    }
+}

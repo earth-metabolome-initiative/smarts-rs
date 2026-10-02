@@ -1,0 +1,69 @@
+[package]
+name = "smarts-rs-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+smarts-rs = { path = "..", features = ["std"] }
+smiles-rs = "0.1.5"
+
+[[bin]]
+name = "parse_display_loop"
+path = "fuzz_targets/parse_display_loop.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "bracket_parse_loop"
+path = "fuzz_targets/bracket_parse_loop.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "parse_bracket_atom"
+path = "fuzz_targets/parse_bracket_atom.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "recursive_smarts_lowering"
+path = "fuzz_targets/recursive_smarts_lowering.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "matching_loop"
+path = "fuzz_targets/matching_loop.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "matching_timeout"
+path = "fuzz_targets/matching_timeout.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "matching_hang"
+path = "fuzz_targets/matching_hang.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "canonicalization_loop"
+path = "fuzz_targets/canonicalization_loop.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "canonicalization_large_loop"
+path = "fuzz_targets/canonicalization_large_loop.rs"
+test = false
+doc = false

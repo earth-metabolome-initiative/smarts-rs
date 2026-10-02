@@ -1,0 +1,359 @@
+[
+  {
+    "name": "connectivity four matches methane",
+    "smarts": "[X4]",
+    "smiles": "C",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "connectivity three rejects methane",
+    "smarts": "[X3]",
+    "smiles": "C",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "connectivity two matches water oxygen",
+    "smarts": "[X2]",
+    "smiles": "O",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "connectivity one rejects water oxygen",
+    "smarts": "[X1]",
+    "smiles": "O",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "connectivity zero matches sodium cation",
+    "smarts": "[X0]",
+    "smiles": "[Na+]",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "connectivity one rejects sodium cation",
+    "smarts": "[X1]",
+    "smiles": "[Na+]",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "connectivity zero upper bounded range matches sodium cation",
+    "smarts": "[X{-0}]",
+    "smiles": "[Na+]",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "connectivity four matches ammonium",
+    "smarts": "[X4]",
+    "smiles": "[NH4+]",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "connectivity three rejects ammonium",
+    "smarts": "[X3]",
+    "smiles": "[NH4+]",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "connectivity three matches aromatic carbon",
+    "smarts": "[X3]",
+    "smiles": "c1ccccc1",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "connectivity two rejects aromatic carbon",
+    "smarts": "[X2]",
+    "smiles": "c1ccccc1",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "connectivity three matches aromatic pyridine nitrogen",
+    "smarts": "[n&X3]",
+    "smiles": "c1ncccc1",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "connectivity two rejects aromatic pyridine nitrogen",
+    "smarts": "[n&X2]",
+    "smiles": "c1ncccc1",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "connectivity bounded range matches water oxygen",
+    "smarts": "[X{1-2}]",
+    "smiles": "O",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "connectivity three matches pyrrolic nitrogen",
+    "smarts": "[nH&X3]",
+    "smiles": "[nH]1cccc1",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "connectivity two rejects pyrrolic nitrogen",
+    "smarts": "[nH&X2]",
+    "smiles": "[nH]1cccc1",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "omitted connectivity count means one for nitrile nitrogen",
+    "smarts": "[N&X]",
+    "smiles": "C#N",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "omitted connectivity count rejects methane carbon",
+    "smarts": "[C&X]",
+    "smiles": "C",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "valence four matches methane",
+    "smarts": "[v4]",
+    "smiles": "C",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "valence three rejects methane",
+    "smarts": "[v3]",
+    "smiles": "C",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "valence two matches water oxygen",
+    "smarts": "[v2]",
+    "smiles": "O",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "valence zero matches sodium cation",
+    "smarts": "[v0]",
+    "smiles": "[Na+]",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "valence one rejects sodium cation",
+    "smarts": "[v1]",
+    "smiles": "[Na+]",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "valence zero upper bounded range matches sodium cation",
+    "smarts": "[v{-0}]",
+    "smiles": "[Na+]",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "valence four matches ammonium",
+    "smarts": "[v4]",
+    "smiles": "[NH4+]",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "valence three rejects ammonium",
+    "smarts": "[v3]",
+    "smiles": "[NH4+]",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "valence four matches aromatic carbon",
+    "smarts": "[v4]",
+    "smiles": "c1ccccc1",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "valence three rejects aromatic carbon",
+    "smarts": "[v3]",
+    "smiles": "c1ccccc1",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "valence lower bounded range matches methane",
+    "smarts": "[v{4-}]",
+    "smiles": "C",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "valence three matches aromatic pyridine nitrogen",
+    "smarts": "[n&v3]",
+    "smiles": "c1ncccc1",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "valence two rejects aromatic pyridine nitrogen",
+    "smarts": "[n&v2]",
+    "smiles": "c1ncccc1",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "valence three matches pyrrolic nitrogen",
+    "smarts": "[nH&v3]",
+    "smiles": "[nH]1cccc1",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "valence two rejects pyrrolic nitrogen",
+    "smarts": "[nH&v2]",
+    "smiles": "[nH]1cccc1",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "valence five matches phosphoric acid phosphorus",
+    "smarts": "[P&v5]",
+    "smiles": "P(=O)(O)(O)O",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "valence four rejects phosphoric acid phosphorus",
+    "smarts": "[P&v4]",
+    "smiles": "P(=O)(O)(O)O",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "omitted valence count means one for chloride",
+    "smarts": "[Cl&v]",
+    "smiles": "CCCl",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "omitted valence count rejects methane carbon",
+    "smarts": "[C&v]",
+    "smiles": "C",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "degree bounded range matches ethanol",
+    "smarts": "[D{1-2}]",
+    "smiles": "CCO",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "degree upper bounded range matches ethanol",
+    "smarts": "[D{-1}]",
+    "smiles": "CCO",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "degree lower bounded range rejects ethanol",
+    "smarts": "[D{3-}]",
+    "smiles": "CCO",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "implicit hydrogen lower bounded range matches benzene",
+    "smarts": "[h{1-}]",
+    "smiles": "c1ccccc1",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "implicit hydrogen upper bounded range rejects benzene",
+    "smarts": "[h{-0}]",
+    "smiles": "c1ccccc1",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "connectivity four carbon to connectivity two oxygen matches ethanol",
+    "smarts": "[X4]-[X2]",
+    "smiles": "CCO",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "connectivity four carbon to connectivity two oxygen rejects acetaldehyde",
+    "smarts": "[X4]-[X2]",
+    "smiles": "CC=O",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "connectivity three carbon to connectivity two oxygen matches acetaldehyde",
+    "smarts": "[X3]=[X2]",
+    "smiles": "CC=O",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "valence four carbon single bonded to valence two oxygen matches ethanol",
+    "smarts": "[v4]-[v2]",
+    "smiles": "CCO",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "valence four carbon double bonded to valence two oxygen matches acetaldehyde",
+    "smarts": "[v4]=[v2]",
+    "smiles": "CC=O",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "valence three carbon double bonded to valence two oxygen rejects acetaldehyde",
+    "smarts": "[v3]=[v2]",
+    "smiles": "CC=O",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "connectivity and valence both match aromatic carbon",
+    "smarts": "[c&X3&v4]",
+    "smiles": "c1ccccc1",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "connectivity and valence both match ammonium",
+    "smarts": "[N+&X4&v4]",
+    "smiles": "[NH4+]",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "connectivity and valence both match sodium cation",
+    "smarts": "[Na+&X0&v0]",
+    "smiles": "[Na+]",
+    "use_chirality": false,
+    "expected_match": true
+  }
+]

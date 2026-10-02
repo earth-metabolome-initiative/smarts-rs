@@ -1,0 +1,189 @@
+[
+  {
+    "id": "rdcanon-two-atom-single-bond",
+    "source": "coleygroup/rdcanon rdcanon_tests.py TestRegularSmarts.test_two_atom_smarts",
+    "members": [
+      "[C;H0;+0]-[C;H1;+0]",
+      "[C;H1;+0]-[C;H0;+0]"
+    ]
+  },
+  {
+    "id": "rdcanon-two-atom-double-bond",
+    "source": "coleygroup/rdcanon rdcanon_tests.py TestRegularSmarts.test_two_atom_smarts",
+    "members": [
+      "[C;H0;+0]=[C;H1;+0]",
+      "[C;H1;+0]=[C;H0;+0]"
+    ]
+  },
+  {
+    "id": "rdcanon-two-atom-charge-normalization",
+    "source": "coleygroup/rdcanon rdcanon_tests.py TestRegularSmarts.test_two_atom_smarts",
+    "members": [
+      "[C;H0;++]=[C;H1;+0]",
+      "[C;H1;+0]=[C;H0;+2]"
+    ]
+  },
+  {
+    "id": "rdcanon-monosubstituted-benzene-permutations",
+    "source": "coleygroup/rdcanon rdcanon_tests.py TestRegularSmarts.test_permutation_of_monosubstituted_benzene",
+    "members": [
+      "[Br;!Cl;H10;X10][c;H0]1[c;H0][c;H0][c;H0][c;H0][c;H0]1",
+      "[c;H0]([Br;!Cl;H10;X10])1[c;H0][c;H0][c;H0][c;H0][c;H0]1",
+      "[c;H0]1[c;H0]([Br;!Cl;H10;X10])[c;H0][c;H0][c;H0][c;H0]1",
+      "[c;H0]1[c;H0][c;H0]([Br;!Cl;H10;X10])[c;H0][c;H0][c;H0]1",
+      "[c;H0]1[c;H0][c;H0][c;H0]([Br;!Cl;H10;X10])[c;H0][c;H0]1",
+      "[c;H0]1[c;H0][c;H0][c;H0][c;H0]([Br;!Cl;H10;X10])[c;H0]1",
+      "[c;H0]1[c;H0][c;H0][c;H0][c;H0][c;H0]([Br;!Cl;H10;X10])1"
+    ]
+  },
+  {
+    "id": "rdcanon-atom-invariant-ordering",
+    "source": "coleygroup/rdcanon rdcanon_tests.py TestRegularSmarts.test_atom_invariant_permutations",
+    "members": [
+      "[Br;!Cl;H10;X10][c;H0]1[c;H0][c;H0][c;H0][c;H0][c;H0]1",
+      "[!Cl;H10;X10;Br][c;H0]1[c;H0][c;H0][c;H0][c;H0][c;H0]1",
+      "[H10;X10;Br;!Cl][c;H0]1[c;H0][c;H0][c;H0][c;H0][c;H0]1",
+      "[X10;Br;!Cl;H10][c;H0]1[c;H0][c;H0][c;H0][c;H0][c;H0]1"
+    ]
+  },
+  {
+    "id": "rdcanon-atom-invariant-or-ordering",
+    "source": "coleygroup/rdcanon rdcanon_tests.py TestRegularSmarts.test_atom_invariant_permutations",
+    "members": [
+      "[Br;Cl,B,C]",
+      "[Br;B,C,Cl]",
+      "[Br;C,Cl,B]",
+      "[Cl,B,C;Br]",
+      "[B,C,Cl;Br]",
+      "[C,Cl,B;Br]"
+    ]
+  },
+  {
+    "id": "rdcanon-stereo-isomer-family-1",
+    "source": "coleygroup/rdcanon rdcanon_tests.py TestRegularSmarts.test_stereochemistry_permutations",
+    "members": [
+      "I-[C@@](-Br)(-Cl)-C-[C@](-P)(-O)-B",
+      "I-[C@@](-Br)(-Cl)-C-[C@@](-P)(-B)-O",
+      "I-[C@](-Cl)(-Br)-C-[C@](-P)(-O)-B",
+      "I-[C@](-Cl)(-Br)-C-[C@@](-O)(-P)-B",
+      "O-[C@](-C-[C@](-I)(-Br)-Cl)(-P)-B",
+      "O-[C@](-C-[C@@](-Br)(-I)-Cl)(-P)-B",
+      "O-[C@@](-P)(-C-[C@](-I)(-Br)-Cl)-B",
+      "O-[C@@](-P)(-C-[C@@](-Br)(-I)-Cl)-B",
+      "P-[C@](-C-[C@](-Cl)(-I)-Br)(-B)-O",
+      "P-[C@](-C-[C@@](-I)(-Cl)-Br)(-B)-O",
+      "P-[C@@](-B)(-C-[C@](-Cl)(-I)-Br)-O",
+      "P-[C@@](-B)(-C-[C@@](-I)(-Cl)-Br)-O",
+      "B-[C@](-P)(-C-[C@@](-Br)(-I)-Cl)-O",
+      "C(-[C@](-B)(-P)-O)-[C@@](-I)(-Cl)-Br",
+      "B-[C@](-P)(-C-[C@](-Br)(-Cl)-I)-O",
+      "C(-[C@@](-Cl)(-Br)-I)-[C@](-O)(-B)-P"
+    ]
+  },
+  {
+    "id": "rdcanon-stereo-isomer-family-2",
+    "source": "coleygroup/rdcanon rdcanon_tests.py TestRegularSmarts.test_stereochemistry_permutations",
+    "members": [
+      "C(=C/O)\\C-C(=C-[C@@](-Br)(-Cl)-[H1@&C](-B)(-P)-O)-C",
+      "C(\\O)=C/C-C(=C-[C@@](-[C@@&H1](-B)(-O)-P)(-Br)-Cl)-C",
+      "Br-[C@](-Cl)(-[H1@@&C](-B)(-O)-P)-C=C(-C)-C\\C=C\\O",
+      "C(-C)(-C\\C=C\\O)=C-[C@](-Br)(-[C@&H1](-B)(-P)-O)-Cl",
+      "O\\C=C\\C-C(=C-[C@](-[H1@&C](-B)(-P)-O)(-Cl)-Br)-C",
+      "C(=C-[C@](-Br)(-[H1@@&C](-B)(-O)-P)-Cl)(-C/C=C/O)-C",
+      "B-[H1@&C](-[C@](-Br)(-Cl)-C=C(-C)-C/C=C/O)(-O)-P"
+    ]
+  },
+  {
+    "id": "rdcanon-symmetric-halogen-chain",
+    "source": "coleygroup/rdcanon rdcanon_tests.py TestRegularSmarts.test_symmetric_molecules",
+    "members": [
+      "[Cl][C][C][C][C][C][C][N][C][C][C][C][C][C][Br]",
+      "[Br][C][C][C][C][C][C][N][C][C][C][C][C][C][Cl]"
+    ]
+  },
+  {
+    "id": "rdcanon-symmetric-halogen-chain-double-bond",
+    "source": "coleygroup/rdcanon rdcanon_tests.py TestRegularSmarts.test_symmetric_molecules",
+    "members": [
+      "[Br][C][C][C][C][C][C][N][C][C][C][C][C][C]=[Br]",
+      "[Br]=[C][C][C][C][C][C][N][C][C][C][C][C][C][Br]"
+    ]
+  },
+  {
+    "id": "rdcanon-symmetric-diaryl-chain",
+    "source": "coleygroup/rdcanon rdcanon_tests.py TestRegularSmarts.test_symmetric_molecules",
+    "members": [
+      "Clc1ccc(CCCCCCCNNCCCCCCCc2ccc(Br)cc2)cc1",
+      "Brc1ccc(CCCCCCCNNCCCCCCCc2ccc(Cl)cc2)cc1"
+    ]
+  },
+  {
+    "id": "rdcanon-tertiary-amine-halogen-chain",
+    "source": "coleygroup/rdcanon rdcanon_tests.py TestRegularSmarts.test_symmetric_molecules",
+    "members": [
+      "BrCCCCCCN(CCCCCCI)CCCCCCCl",
+      "BrCCCCCCN(CCCCCCCl)CCCCCCI",
+      "ClCCCCCCN(CCCCCCBr)CCCCCCI",
+      "ClCCCCCCN(CCCCCCI)CCCCCCBr",
+      "ICCCCCCN(CCCCCCBr)CCCCCCCl",
+      "ICCCCCCN(CCCCCCCl)CCCCCCBr"
+    ]
+  },
+  {
+    "id": "rdcanon-bond-query-ordering",
+    "source": "coleygroup/rdcanon rdcanon_tests.py TestRegularSmarts.test_symmetric_molecules",
+    "members": [
+      "[C]=,-[N]=[C]",
+      "[C]=[N]=,-[C]"
+    ]
+  },
+  {
+    "id": "rdcanon-recursive-charge-bundle",
+    "source": "coleygroup/rdcanon rdcanon_tests.py TestRecursive.test_recursive",
+    "members": [
+      "[$([NX2]=[NX2+]=[NX1-]),$([NX2]=[NX2+]=N),$([NX2-]-[NX2+]#[NX1]),$([NX3](=[OX1])=[OX1]),$([NX3+](=[OX1])[O-]),$([NX2+]#[CX1-]),$([NX2]#[CX1]),$([OX1-,OH1][#7X4+]([*])([*])([*])),$([OX1]=[#7X4v5]([*])([*])([*])),$([OX1-,OH1][#7X3+R](~[R])(~[R])),$([OX1]=[#7v5X3R](~[R])(~[R])),$([*+]~[*-])]",
+      "[$([N&X3&+](=[O&X1])[O&-]),$([N&X2]=[N&X2&+]=N),$([N&X2]=[N&X2&+]=[N&X1&-]),$([O&X1&-,O&H1][#7&X3&+&R](~[R])~[R]),$([N&X2]#[C&X1]),$([O&X1]=[#7&X4&v5](*)(*)*),$([O&X1&-,O&H1][#7&X4&+](*)(*)*),$([N&X3](=[O&X1])=[O&X1]),$([N&X2&+]#[C&X1&-]),$([+]~[-]),$([O&X1]=[#7&v5&X3&R](~[R])~[R]),$([N&X2&-]-[N&X2&+]#[N&X1])]"
+    ]
+  },
+  {
+    "id": "rdcanon-recursive-neighbor-ordering",
+    "source": "coleygroup/rdcanon rdcanon_tests.py TestRecursive.test_recursive",
+    "members": [
+      "[$([c,o][c,n]),$([n,c][c,o])]",
+      "[$([n,c][c,o]),$([c,o][c,n])]"
+    ]
+  },
+  {
+    "id": "rdcanon-recursive-not-ordering",
+    "source": "coleygroup/rdcanon rdcanon_tests.py TestRecursive.test_recursive",
+    "members": [
+      "[$([n,c][c,o]),!$([c,o][c,n])]",
+      "[!$([c,o][c,n]),$([n,c][c,o])]"
+    ]
+  },
+  {
+    "id": "rdcanon-recursive-mixed-and-not-ordering",
+    "source": "coleygroup/rdcanon rdcanon_tests.py TestRecursive.test_recursive",
+    "members": [
+      "[$([n,c][c,o])&!$([c]),!$([c,o][c,n]);$([c,o])]",
+      "[!$([c,o][c,n]),$([n,c][c,o])&!$([c]);$([c,o])]",
+      "[$([c,o]);!$([c,o][c,n]),$([n,c][c,o])&!$([c])]"
+    ]
+  },
+  {
+    "id": "rdcanon-recursive-or-ordering",
+    "source": "coleygroup/rdcanon rdcanon_tests.py TestRecursive.test_recursive",
+    "members": [
+      "[$([n,c][c,o])&!$([c]),!$([c,o][c,n]);$([$([c,o]),$([c])])]",
+      "[$([n,c][c,o])&!$([c]),!$([c,o][c,n]);$([$([c]),$([c,o])])]"
+    ]
+  },
+  {
+    "id": "rdcanon-recursive-ring-renumbering",
+    "source": "coleygroup/rdcanon rdcanon_tests.py TestRecursive.test_recursive",
+    "members": [
+      "[$([#7R1]1-[#6R1]=[#7R1]-1)]",
+      "[$([#7R1]1-[#7R1]=[#6R1]-1)]"
+    ]
+  }
+]

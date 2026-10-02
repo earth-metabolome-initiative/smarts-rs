@@ -1,0 +1,72 @@
+[
+  {
+    "name": "count_overlapping_edges",
+    "smarts": "CC",
+    "smiles": "CCC",
+    "expected_match": true,
+    "expected_count": 2
+  },
+  {
+    "name": "count_branched_embeddings",
+    "smarts": "C(C)C",
+    "smiles": "CC(C)C",
+    "expected_match": true,
+    "expected_count": 3
+  },
+  {
+    "name": "count_disconnected_pairs",
+    "smarts": "C.C",
+    "smiles": "CCC",
+    "expected_match": true,
+    "expected_count": 3
+  },
+  {
+    "name": "count_carboxyl_embeddings_in_mixed_anhydride_like_target",
+    "smarts": "C(=O)O",
+    "smiles": "OC(=O)OC(=O)O",
+    "expected_match": true,
+    "expected_count": 4
+  },
+  {
+    "name": "count_recursive_benzene_anchors_in_naphthalene",
+    "smarts": "[$(c1ccccc1)]",
+    "smiles": "c1ccc2ccccc2c1",
+    "expected_match": true,
+    "expected_count": 10
+  },
+  {
+    "name": "count_recursive_small_ring_anchors",
+    "smarts": "[$(*1~[CH2]~[CH2]1)]",
+    "smiles": "C1CC1",
+    "expected_match": true,
+    "expected_count": 3
+  },
+  {
+    "name": "count_recursive_linear_terminal_anchors",
+    "smarts": "[$(*~[CH2]~[CH2]~*)]",
+    "smiles": "CCCC",
+    "expected_match": true,
+    "expected_count": 2
+  },
+  {
+    "name": "count_fused_benzene_embeddings",
+    "smarts": "c1ccccc1",
+    "smiles": "c1ccc2ccccc2c1",
+    "expected_match": true,
+    "expected_count": 2
+  },
+  {
+    "name": "count_naphthalene_aromatic_bonds",
+    "smarts": "c:c",
+    "smiles": "c1ccc2ccccc2c1",
+    "expected_match": true,
+    "expected_count": 11
+  },
+  {
+    "name": "count_true_aromatic_bonds_in_fused_kekule_system",
+    "smarts": "a:a",
+    "smiles": "C1=CC2=C(C=C1)C1=CC=CC=C21",
+    "expected_match": true,
+    "expected_count": 12
+  }
+]

@@ -1,0 +1,590 @@
+[
+  {
+    "name": "wildcard matches ethanol",
+    "smarts": "*",
+    "smiles": "CCO",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "bare carbon matches ethanol",
+    "smarts": "C",
+    "smiles": "CCO",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "bare nitrogen does not match ethanol",
+    "smarts": "N",
+    "smiles": "CCO",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "bare aromatic carbon matches benzene",
+    "smarts": "c",
+    "smiles": "c1ccccc1",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "bare aromatic carbon rejects ethanol",
+    "smarts": "c",
+    "smiles": "CCO",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "bare aliphatic carbon rejects benzene",
+    "smarts": "C",
+    "smiles": "c1ccccc1",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "oxygen bracket atom matches ethanol",
+    "smarts": "[O]",
+    "smiles": "CCO",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "bracket aromatic carbon matches benzene",
+    "smarts": "[c]",
+    "smiles": "c1ccccc1",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "bracket aromatic carbon rejects methane",
+    "smarts": "[c]",
+    "smiles": "C",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "bracket aliphatic carbon rejects benzene",
+    "smarts": "[C]",
+    "smiles": "c1ccccc1",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "atomic number oxygen matches ethanol",
+    "smarts": "[#8]",
+    "smiles": "CCO",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "atomic number nitrogen does not match ethanol",
+    "smarts": "[#7]",
+    "smiles": "CCO",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "atomic number sodium matches salt",
+    "smarts": "[#11]",
+    "smiles": "[Na+].[Cl-]",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "isotopic carbon matches isotopic methane",
+    "smarts": "[13C]",
+    "smiles": "[13CH4]",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "isotopic carbon does not match ordinary methane",
+    "smarts": "[13C]",
+    "smiles": "C",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "isotope wildcard matches yttrium 89",
+    "smarts": "[89*]",
+    "smiles": "[89Y]",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "isotope wildcard matches strontium 89",
+    "smarts": "[89*]",
+    "smiles": "[89Sr]",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "isotope wildcard rejects wrong isotope",
+    "smarts": "[89*]",
+    "smiles": "[88Sr]",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "zero isotope wildcard matches ordinary methane",
+    "smarts": "[0*]",
+    "smiles": "C",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "zero isotope wildcard rejects isotopic methane",
+    "smarts": "[0*]",
+    "smiles": "[13CH4]",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "chlorine matches chloroethane",
+    "smarts": "[Cl]",
+    "smiles": "CCCl",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "bromine rejects chloroethane",
+    "smarts": "[Br]",
+    "smiles": "CCCl",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "sodium cation matches salt",
+    "smarts": "[Na+]",
+    "smiles": "[Na+].[Cl-]",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "chloride anion matches salt",
+    "smarts": "[Cl-]",
+    "smiles": "[Na+].[Cl-]",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "negatively charged oxygen does not match ethanol",
+    "smarts": "[O-]",
+    "smiles": "CCO",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "deuterium atom matches labeled water",
+    "smarts": "[2H]",
+    "smiles": "[2H]O",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "methyl query matches ethanol",
+    "smarts": "[CH3]",
+    "smiles": "CCO",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "methylene query matches ethanol",
+    "smarts": "[CH2]",
+    "smiles": "CCO",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "single hydrogen carbon does not match ethanol",
+    "smarts": "[CH1]",
+    "smiles": "CCO",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "total hydrogen count four matches methane carbon",
+    "smarts": "[H4]",
+    "smiles": "C",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "total hydrogen count zero rejects methane carbon",
+    "smarts": "[H0]",
+    "smiles": "C",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "aromatic any matches benzene",
+    "smarts": "[a]",
+    "smiles": "c1ccccc1",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "aliphatic any does not match benzene",
+    "smarts": "[A]",
+    "smiles": "c1ccccc1",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "implicit hydrogen query matches benzene",
+    "smarts": "[h1]",
+    "smiles": "c1ccccc1",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "implicit hydrogen zero rejects benzene",
+    "smarts": "[h0]",
+    "smiles": "c1ccccc1",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "degree one matches ethanol",
+    "smarts": "[D1]",
+    "smiles": "CCO",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "degree two matches ethanol",
+    "smarts": "[D2]",
+    "smiles": "CCO",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "degree three does not match ethanol",
+    "smarts": "[D3]",
+    "smiles": "CCO",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "degree one matches chloride in salt",
+    "smarts": "[D1]",
+    "smiles": "[Na+].[Cl-]",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "negated oxygen does not match oxygen",
+    "smarts": "[!O]",
+    "smiles": "O",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "negated oxygen matches carbon",
+    "smarts": "[!O]",
+    "smiles": "C",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "negated hydrogen matches carbon",
+    "smarts": "[!#1]",
+    "smiles": "C",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "negated hydrogen rejects hydrogen",
+    "smarts": "[!#1]",
+    "smiles": "[H]",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "atom or query matches ethanol oxygen",
+    "smarts": "[N,O]",
+    "smiles": "CCO",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "atom or query matches ammonia",
+    "smarts": "[N,O]",
+    "smiles": "N",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "atom or query rejects methane",
+    "smarts": "[N,O]",
+    "smiles": "C",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "low and hydrogen count matches ethanol oxygen",
+    "smarts": "[O;H1]",
+    "smiles": "CCO",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "low and hydrogen count rejects ethanol oxygen zero H",
+    "smarts": "[O;H0]",
+    "smiles": "CCO",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "high and negated hydrogen count matches methane carbon",
+    "smarts": "[C&!H0]",
+    "smiles": "C",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "high and negated hydrogen count rejects carbonyl carbon",
+    "smarts": "[C&!H0]",
+    "smiles": "CC=O",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "charged oxygen matches acetate anion",
+    "smarts": "[O-]",
+    "smiles": "CC(=O)[O-]",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "positively charged nitrogen matches ammonium",
+    "smarts": "[N+]",
+    "smiles": "[NH4+]",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "hydrogen atom query matches isolated hydrogen",
+    "smarts": "[H]",
+    "smiles": "[H]",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "hydrogen atom query matches hydrogen cation",
+    "smarts": "[H]",
+    "smiles": "[H+]",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "hydrogen atom query rejects hydrogen chloride",
+    "smarts": "[H]",
+    "smiles": "[H]Cl",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "hydrogen cation query matches hydrogen cation",
+    "smarts": "[H+]",
+    "smiles": "[H+]",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "hydrogen cation query rejects neutral hydrogen",
+    "smarts": "[H+]",
+    "smiles": "[H]",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "hydrogen anion query matches hydrogen anion",
+    "smarts": "[H-]",
+    "smiles": "[H-]",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "hydrogen anion query rejects hydrogen cation",
+    "smarts": "[H-]",
+    "smiles": "[H+]",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "hydrogen or chlorine query matches chlorine",
+    "smarts": "[H,Cl]",
+    "smiles": "Cl",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "hydrogen or chlorine query matches hydrogen chloride",
+    "smarts": "[H,Cl]",
+    "smiles": "[H]Cl",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "hydrogen or chlorine query matches molecular hydrogen",
+    "smarts": "[H,Cl]",
+    "smiles": "[H][H]",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "double-hydrogen query matches chlorine in hydrogen chloride",
+    "smarts": "[HH]",
+    "smiles": "[H]Cl",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "double-hydrogen query matches molecular hydrogen",
+    "smarts": "[HH]",
+    "smiles": "[H][H]",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "atomic-number hydrogen query matches isolated hydrogen",
+    "smarts": "[#1]",
+    "smiles": "[H]",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "atomic-number hydrogen query rejects hydrogen chloride",
+    "smarts": "[#1]",
+    "smiles": "[H]Cl",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "atomic-number hydrogen query matches deuterium chloride",
+    "smarts": "[#1]",
+    "smiles": "[2H]Cl",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "isotopic hydrogen query matches deuterium chloride",
+    "smarts": "[2H]",
+    "smiles": "[2H]Cl",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "isotopic hydrogen query rejects protium chloride",
+    "smarts": "[2H]",
+    "smiles": "[H]Cl",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "charged isotopic hydrogen query matches deuteron cation",
+    "smarts": "[2H+]",
+    "smiles": "[2H+]",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "charged isotopic hydrogen query rejects protium cation",
+    "smarts": "[2H+]",
+    "smiles": "[H+]",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "not hydrogen count query matches hydrogen cation",
+    "smarts": "[!H]",
+    "smiles": "[H+]",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "not hydrogen count query rejects bromine",
+    "smarts": "[!H]",
+    "smiles": "Br",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "not atomic-number hydrogen query matches bromine",
+    "smarts": "[!#1]",
+    "smiles": "Br",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "not atomic-number hydrogen query rejects hydrogen cation",
+    "smarts": "[!#1]",
+    "smiles": "[H+]",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "nitrogen or hydrogen count query matches bromine",
+    "smarts": "[N,H]",
+    "smiles": "Br",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "nitrogen or hydrogen count query matches ammonia",
+    "smarts": "[N,H]",
+    "smiles": "N",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "hydrogen or oxygen query matches bromine",
+    "smarts": "[H,O]",
+    "smiles": "Br",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "hydrogen or oxygen query matches water oxygen",
+    "smarts": "[H,O]",
+    "smiles": "O",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "nitrogen oxygen not-h-zero query matches ammonia",
+    "smarts": "[N,O;!H0]",
+    "smiles": "N",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "nitrogen oxygen not-h-zero query matches water oxygen",
+    "smarts": "[N,O;!H0]",
+    "smiles": "O",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "nitrogen oxygen not-h-zero query rejects oxide",
+    "smarts": "[N,O;!H0]",
+    "smiles": "[O-]",
+    "use_chirality": false,
+    "expected_match": false
+  },
+  {
+    "name": "high-precedence nitrogen oxygen not-h-zero query matches water oxygen",
+    "smarts": "[N&!H0,O&!H0]",
+    "smiles": "O",
+    "use_chirality": false,
+    "expected_match": true
+  },
+  {
+    "name": "high-precedence nitrogen oxygen not-h-zero query rejects oxide",
+    "smarts": "[N&!H0,O&!H0]",
+    "smiles": "[O-]",
+    "use_chirality": false,
+    "expected_match": false
+  }
+]

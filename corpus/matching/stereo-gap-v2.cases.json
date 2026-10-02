@@ -1,0 +1,110 @@
+[
+  {
+    "name": "nontetrahedral-al1-does-not-constrain-forward",
+    "smarts": "[C@AL1](F)(Cl)Br",
+    "smiles": "F[C@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "nontetrahedral-al1-does-not-constrain-opposite",
+    "smarts": "[C@AL1](F)(Cl)Br",
+    "smiles": "F[C@@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "nontetrahedral-al1-does-not-constrain-achiral",
+    "smarts": "[C@AL1](F)(Cl)Br",
+    "smiles": "FC(Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "nontetrahedral-al2-does-not-constrain-forward",
+    "smarts": "[C@AL2](F)(Cl)Br",
+    "smiles": "F[C@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "nontetrahedral-al2-does-not-constrain-opposite",
+    "smarts": "[C@AL2](F)(Cl)Br",
+    "smiles": "F[C@@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "nontetrahedral-al2-does-not-constrain-achiral",
+    "smarts": "[C@AL2](F)(Cl)Br",
+    "smiles": "FC(Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "nontetrahedral-sp1-does-not-constrain-forward",
+    "smarts": "[C@SP1](F)(Cl)Br",
+    "smiles": "F[C@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "nontetrahedral-sp1-does-not-constrain-opposite",
+    "smarts": "[C@SP1](F)(Cl)Br",
+    "smiles": "F[C@@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "nontetrahedral-sp1-does-not-constrain-achiral",
+    "smarts": "[C@SP1](F)(Cl)Br",
+    "smiles": "FC(Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "nontetrahedral-sp2-does-not-constrain-forward",
+    "smarts": "[C@SP2](F)(Cl)Br",
+    "smiles": "F[C@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "nontetrahedral-sp2-does-not-constrain-opposite",
+    "smarts": "[C@SP2](F)(Cl)Br",
+    "smiles": "F[C@@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "nontetrahedral-sp2-does-not-constrain-achiral",
+    "smarts": "[C@SP2](F)(Cl)Br",
+    "smiles": "FC(Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "multidirectional-alkene-right-endpoint-forward",
+    "smarts": "F/C=C(/Cl)Br",
+    "smiles": "F/C=C(/Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "multidirectional-alkene-right-endpoint-rejects-opposite",
+    "smarts": "F/C=C(/Cl)Br",
+    "smiles": "F/C=C(\\Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "multidirectional-alkene-mixed-right-endpoint-forward",
+    "smarts": "F/C=C(/Cl)\\Br",
+    "smiles": "F/C=C(/Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "multidirectional-alkene-mixed-right-endpoint-rejects-opposite",
+    "smarts": "F/C=C(/Cl)\\Br",
+    "smiles": "F/C=C(\\Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "multidirectional-alkene-branched-forward",
+    "smarts": "F/C(=C(/Cl)Br)I",
+    "smiles": "F/C(=C(/Cl)Br)I",
+    "use_chirality": true
+  },
+  {
+    "name": "multidirectional-alkene-branched-rejects-opposite",
+    "smarts": "F/C(=C(/Cl)Br)I",
+    "smiles": "F/C(=C(\\Cl)Br)I",
+    "use_chirality": true
+  }
+]

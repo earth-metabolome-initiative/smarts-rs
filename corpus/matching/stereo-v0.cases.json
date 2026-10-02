@@ -1,0 +1,404 @@
+[
+  {
+    "name": "tetrahedral-at-matches-forward-form",
+    "smarts": "F[C@](Cl)Br",
+    "smiles": "F[C@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-at-rejects-opposite-enantiomer",
+    "smarts": "F[C@](Cl)Br",
+    "smiles": "F[C@@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-atat-matches-opposite-enantiomer",
+    "smarts": "F[C@@](Cl)Br",
+    "smiles": "F[C@@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-atat-rejects-forward-enantiomer",
+    "smarts": "F[C@@](Cl)Br",
+    "smiles": "F[C@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-ath-chain-form-matches-forward-form",
+    "smarts": "F[C@H](Cl)Br",
+    "smiles": "F[C@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-ath-chain-form-rejects-opposite-enantiomer",
+    "smarts": "F[C@H](Cl)Br",
+    "smiles": "F[C@@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-atath-chain-form-matches-opposite-enantiomer",
+    "smarts": "F[C@@H](Cl)Br",
+    "smiles": "F[C@@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-atath-chain-form-rejects-forward-enantiomer",
+    "smarts": "F[C@@H](Cl)Br",
+    "smiles": "F[C@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-th1-matches-forward-form",
+    "smarts": "F[C@TH1](Cl)Br",
+    "smiles": "F[C@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-th1-rejects-opposite-enantiomer",
+    "smarts": "F[C@TH1](Cl)Br",
+    "smiles": "F[C@@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-th2-matches-opposite-enantiomer",
+    "smarts": "F[C@TH2](Cl)Br",
+    "smiles": "F[C@@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-th2-rejects-forward-enantiomer",
+    "smarts": "F[C@TH2](Cl)Br",
+    "smiles": "F[C@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-at-central-form-matches",
+    "smarts": "[C@](F)(Cl)Br",
+    "smiles": "F[C@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-atat-central-form-matches-opposite",
+    "smarts": "[C@@](F)(Cl)Br",
+    "smiles": "F[C@@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-ath-central-form-matches-forward",
+    "smarts": "[C@H](F)(Cl)Br",
+    "smiles": "F[C@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-ath-central-form-rejects-opposite",
+    "smarts": "[C@H](F)(Cl)Br",
+    "smiles": "F[C@@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-atath-central-form-matches-opposite",
+    "smarts": "[C@@H](F)(Cl)Br",
+    "smiles": "F[C@@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-atath-central-form-rejects-forward",
+    "smarts": "[C@@H](F)(Cl)Br",
+    "smiles": "F[C@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-th1-central-form-matches",
+    "smarts": "[C@TH1](F)(Cl)Br",
+    "smiles": "F[C@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-th1-central-form-rejects-opposite",
+    "smarts": "[C@TH1](F)(Cl)Br",
+    "smiles": "F[C@@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-th2-central-form-matches-opposite",
+    "smarts": "[C@TH2](F)(Cl)Br",
+    "smiles": "F[C@@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-th2-central-form-rejects-forward",
+    "smarts": "[C@TH2](F)(Cl)Br",
+    "smiles": "F[C@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-at-order-sensitive-forward-form",
+    "smarts": "Br[C@](Cl)F",
+    "smiles": "F[C@@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-atat-order-sensitive-forward-form",
+    "smarts": "Br[C@@](Cl)F",
+    "smiles": "F[C@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-ath-order-sensitive-forward-form",
+    "smarts": "Br[C@H](Cl)F",
+    "smiles": "F[C@@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-ath-order-sensitive-rejects-forward-enantiomer",
+    "smarts": "Br[C@H](Cl)F",
+    "smiles": "F[C@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-th1-order-sensitive-forward-form",
+    "smarts": "Br[C@TH1](Cl)F",
+    "smiles": "F[C@@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-th1-order-sensitive-rejects-forward-enantiomer",
+    "smarts": "Br[C@TH1](Cl)F",
+    "smiles": "F[C@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-th2-order-sensitive-forward-form",
+    "smarts": "Br[C@TH2](Cl)F",
+    "smiles": "F[C@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-th2-order-sensitive-rejects-opposite-enantiomer",
+    "smarts": "Br[C@TH2](Cl)F",
+    "smiles": "F[C@@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-th1-branch-order-sensitive-forward-form",
+    "smarts": "[C@TH1](Br)(Cl)F",
+    "smiles": "F[C@@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-th1-branch-order-sensitive-rejects-forward-enantiomer",
+    "smarts": "[C@TH1](Br)(Cl)F",
+    "smiles": "F[C@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-th2-branch-order-sensitive-forward-form",
+    "smarts": "[C@TH2](Br)(Cl)F",
+    "smiles": "F[C@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-th2-branch-order-sensitive-rejects-opposite-enantiomer",
+    "smarts": "[C@TH2](Br)(Cl)F",
+    "smiles": "F[C@@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-at-underconstrained-does-not-constrain-forward",
+    "smarts": "[C@](F)Cl",
+    "smiles": "F[C@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-at-underconstrained-does-not-constrain-opposite",
+    "smarts": "[C@](F)Cl",
+    "smiles": "F[C@@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-atat-underconstrained-does-not-constrain-forward",
+    "smarts": "[C@@](F)Cl",
+    "smiles": "F[C@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-atat-underconstrained-does-not-constrain-opposite",
+    "smarts": "[C@@](F)Cl",
+    "smiles": "F[C@@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-ath-underconstrained-does-not-constrain-forward",
+    "smarts": "[C@H](F)Cl",
+    "smiles": "F[C@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-ath-underconstrained-does-not-constrain-opposite",
+    "smarts": "[C@H](F)Cl",
+    "smiles": "F[C@@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-atath-underconstrained-does-not-constrain-forward",
+    "smarts": "[C@@H](F)Cl",
+    "smiles": "F[C@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-atath-underconstrained-does-not-constrain-opposite",
+    "smarts": "[C@@H](F)Cl",
+    "smiles": "F[C@@H](Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-th1-requires-target-stereo",
+    "smarts": "F[C@TH1](Cl)Br",
+    "smiles": "FC(Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "tetrahedral-th2-requires-target-stereo",
+    "smarts": "F[C@TH2](Cl)Br",
+    "smiles": "FC(Cl)Br",
+    "use_chirality": true
+  },
+  {
+    "name": "standalone-directional-single-bond-does-not-overconstrain",
+    "smarts": "C/C",
+    "smiles": "CC",
+    "use_chirality": true
+  },
+  {
+    "name": "partial-left-directional-double-bond-matches-e",
+    "smarts": "F/C=C",
+    "smiles": "F/C=C/F",
+    "use_chirality": true
+  },
+  {
+    "name": "partial-left-directional-double-bond-matches-z",
+    "smarts": "F/C=C",
+    "smiles": "F/C=C\\F",
+    "use_chirality": true
+  },
+  {
+    "name": "partial-left-directional-double-bond-matches-unspecified",
+    "smarts": "F/C=C",
+    "smiles": "FC=CF",
+    "use_chirality": true
+  },
+  {
+    "name": "partial-right-directional-double-bond-matches-e",
+    "smarts": "C=C/F",
+    "smiles": "F/C=C/F",
+    "use_chirality": true
+  },
+  {
+    "name": "partial-right-directional-double-bond-matches-unspecified",
+    "smarts": "C=C/F",
+    "smiles": "FC=CF",
+    "use_chirality": true
+  },
+  {
+    "name": "double-bond-e-matches-forward-slashes",
+    "smarts": "F/C=C/F",
+    "smiles": "F/C=C/F",
+    "use_chirality": true
+  },
+  {
+    "name": "double-bond-e-matches-equivalent-backslashes",
+    "smarts": "F/C=C/F",
+    "smiles": "F\\C=C\\F",
+    "use_chirality": true
+  },
+  {
+    "name": "double-bond-e-rejects-z-config",
+    "smarts": "F/C=C/F",
+    "smiles": "F/C=C\\F",
+    "use_chirality": true
+  },
+  {
+    "name": "double-bond-e-rejects-unspecified-config",
+    "smarts": "F/C=C/F",
+    "smiles": "FC=CF",
+    "use_chirality": true
+  },
+  {
+    "name": "double-bond-z-matches-forward-mixed-slashes",
+    "smarts": "F/C=C\\F",
+    "smiles": "F/C=C\\F",
+    "use_chirality": true
+  },
+  {
+    "name": "double-bond-z-matches-equivalent-opposite-mixed-slashes",
+    "smarts": "F/C=C\\F",
+    "smiles": "F\\C=C/F",
+    "use_chirality": true
+  },
+  {
+    "name": "double-bond-z-rejects-e-config",
+    "smarts": "F/C=C\\F",
+    "smiles": "F/C=C/F",
+    "use_chirality": true
+  },
+  {
+    "name": "double-bond-z-rejects-unspecified-config",
+    "smarts": "F/C=C\\F",
+    "smiles": "FC=CF",
+    "use_chirality": true
+  },
+  {
+    "name": "double-bond-e-matches-reversed-substituent-order",
+    "smarts": "Cl/C=C/Br",
+    "smiles": "Br/C=C/Cl",
+    "use_chirality": true
+  },
+  {
+    "name": "double-bond-e-matches-reversed-substituent-order-with-backslashes",
+    "smarts": "Cl/C=C/Br",
+    "smiles": "Br\\C=C\\Cl",
+    "use_chirality": true
+  },
+  {
+    "name": "double-bond-e-rejects-reversed-z-config",
+    "smarts": "Cl/C=C/Br",
+    "smiles": "Br/C=C\\Cl",
+    "use_chirality": true
+  },
+  {
+    "name": "double-bond-e-generic-alkene-forward",
+    "smarts": "C/C=C/C",
+    "smiles": "C/C=C/C",
+    "use_chirality": true
+  },
+  {
+    "name": "double-bond-e-generic-alkene-rejects-z",
+    "smarts": "C/C=C/C",
+    "smiles": "C/C=C\\C",
+    "use_chirality": true
+  },
+  {
+    "name": "double-bond-e-generic-alkene-rejects-unspecified",
+    "smarts": "C/C=C/C",
+    "smiles": "CC=CC",
+    "use_chirality": true
+  },
+  {
+    "name": "double-bond-e-generic-alkene-rejects-ring-with-no-semantic-stereo",
+    "smarts": "C/C=C/C",
+    "smiles": "C1CC/C=C/CC1",
+    "use_chirality": true
+  },
+  {
+    "name": "double-bond-z-generic-alkene-forward",
+    "smarts": "C/C=C\\C",
+    "smiles": "C/C=C\\C",
+    "use_chirality": true
+  },
+  {
+    "name": "double-bond-z-generic-alkene-rejects-e",
+    "smarts": "C/C=C\\C",
+    "smiles": "C/C=C/C",
+    "use_chirality": true
+  }
+]

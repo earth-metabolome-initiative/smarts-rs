@@ -1,0 +1,22 @@
+[
+  { "name": "same group can match same connected component", "smarts": "(C.C)", "smiles": "CCCC", "expected_match": true },
+  { "name": "same group rejects separated singleton components", "smarts": "(C.C)", "smiles": "C.C", "expected_match": false },
+  { "name": "same group matches one component inside mixture", "smarts": "(C.C)", "smiles": "CC.C", "expected_match": true },
+  { "name": "different groups reject one connected component", "smarts": "(C).(C)", "smiles": "CCCC", "expected_match": false },
+  { "name": "different groups match two target components", "smarts": "(C).(C)", "smiles": "CCCC.CCCC", "expected_match": true },
+  { "name": "different groups match mixed-size components", "smarts": "(C).(C)", "smiles": "CC.C", "expected_match": true },
+  { "name": "grouped then ungrouped can stay in same component", "smarts": "(C).C", "smiles": "CCCC", "expected_match": true },
+  { "name": "grouped then ungrouped can also use different components", "smarts": "(C).C", "smiles": "C.C", "expected_match": true },
+  { "name": "two grouped then one ungrouped follows daylight example", "smarts": "(C).(C).C", "smiles": "CCCC.CCCC", "expected_match": true },
+  { "name": "oxygen pair grouped matches dioxygen", "smarts": "(O.O)", "smiles": "O=O", "expected_match": true },
+  { "name": "oxygen pair grouped rejects separated oxygens", "smarts": "(O.O)", "smiles": "O.CCO", "expected_match": false },
+  { "name": "oxygen groups separated match different components", "smarts": "(O).(O)", "smiles": "O.CCO", "expected_match": true },
+  { "name": "oxygen groups separated reject same component", "smarts": "(O).(O)", "smiles": "O=O", "expected_match": false },
+  { "name": "grouped carbonyl and oxygen match same acid component", "smarts": "(C=O.O)", "smiles": "CC(=O)O", "expected_match": true },
+  { "name": "separated carbonyl and oxygen groups reject same acid component", "smarts": "(C=O).(O)", "smiles": "CC(=O)O", "expected_match": false },
+  { "name": "separated carbonyl and oxygen groups match different components", "smarts": "(C=O).(O)", "smiles": "CC=O.O", "expected_match": true },
+  { "name": "grouped pair then separated singleton rejects one component", "smarts": "(C.C).(O)", "smiles": "CCO", "expected_match": false },
+  { "name": "grouped pair then separated singleton matches mixture", "smarts": "(C.C).(O)", "smiles": "CC.O", "expected_match": true },
+  { "name": "singleton group plus grouped pair reject single component", "smarts": "(C).(C.C)", "smiles": "CCC", "expected_match": false },
+  { "name": "singleton group plus grouped pair match mixture", "smarts": "(C).(C.C)", "smiles": "CC.C", "expected_match": true }
+]

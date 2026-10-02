@@ -1,0 +1,146 @@
+[
+  {
+    "name": "two carbons match same connected alkane",
+    "smarts": "C.C",
+    "smiles": "CCCC",
+    "expected_match": true
+  },
+  {
+    "name": "two carbons match separated mixture",
+    "smarts": "C.C",
+    "smiles": "C.C",
+    "expected_match": true
+  },
+  {
+    "name": "two carbons reject single carbon",
+    "smarts": "C.C",
+    "smiles": "C",
+    "expected_match": false
+  },
+  {
+    "name": "three carbons match propane",
+    "smarts": "C.C.C",
+    "smiles": "CCC",
+    "expected_match": true
+  },
+  {
+    "name": "three carbons reject ethane",
+    "smarts": "C.C.C",
+    "smiles": "CC",
+    "expected_match": false
+  },
+  {
+    "name": "carbon oxygen match ethanol",
+    "smarts": "C.O",
+    "smiles": "CCO",
+    "expected_match": true
+  },
+  {
+    "name": "carbon oxygen match mixture",
+    "smarts": "C.O",
+    "smiles": "C.O",
+    "expected_match": true
+  },
+  {
+    "name": "carbon oxygen reject hydrocarbon",
+    "smarts": "C.O",
+    "smiles": "CC",
+    "expected_match": false
+  },
+  {
+    "name": "two oxygens match dioxygen",
+    "smarts": "O.O",
+    "smiles": "O=O",
+    "expected_match": true
+  },
+  {
+    "name": "two oxygens match peroxide mixture",
+    "smarts": "O.O",
+    "smiles": "O.O",
+    "expected_match": true
+  },
+  {
+    "name": "two oxygens reject single oxygen",
+    "smarts": "O.O",
+    "smiles": "O",
+    "expected_match": false
+  },
+  {
+    "name": "carbonyl and oxygen match acid",
+    "smarts": "C=O.O",
+    "smiles": "CC(=O)O",
+    "expected_match": true
+  },
+  {
+    "name": "carbonyl and oxygen reject aldehyde",
+    "smarts": "C=O.O",
+    "smiles": "CC=O",
+    "expected_match": false
+  },
+  {
+    "name": "benzene and oxygen match phenol",
+    "smarts": "c1ccccc1.O",
+    "smiles": "Oc1ccccc1",
+    "expected_match": true
+  },
+  {
+    "name": "benzene and oxygen reject ethanol",
+    "smarts": "c1ccccc1.O",
+    "smiles": "CCO",
+    "expected_match": false
+  },
+  {
+    "name": "ring and carbon match methyl cyclopropane",
+    "smarts": "C1CC1.C",
+    "smiles": "CC1CC1",
+    "expected_match": true
+  },
+  {
+    "name": "ring and carbon reject bare cyclopropane",
+    "smarts": "C1CC1.C",
+    "smiles": "C1CC1",
+    "expected_match": false
+  },
+  {
+    "name": "heteroatom disjunction across components matches ethanol",
+    "smarts": "[N,O].C",
+    "smiles": "CCO",
+    "expected_match": true
+  },
+  {
+    "name": "heteroatom disjunction across components rejects ethane",
+    "smarts": "[N,O].C",
+    "smiles": "CC",
+    "expected_match": false
+  },
+  {
+    "name": "isotope and oxygen match labeled methanol",
+    "smarts": "[13C].O",
+    "smiles": "[13CH3]O",
+    "expected_match": true
+  },
+  {
+    "name": "isotope and oxygen reject unlabeled methanol",
+    "smarts": "[13C].O",
+    "smiles": "CO",
+    "expected_match": false
+  },
+  {
+    "name": "ring atom predicate across components matches cyclopropane",
+    "smarts": "[R].[R]",
+    "smiles": "C1CC1",
+    "expected_match": true
+  },
+  {
+    "name": "ring atom predicate across components rejects propane",
+    "smarts": "[R].[R]",
+    "smiles": "CCC",
+    "expected_match": false
+  },
+  {
+    "name": "connectivity and valence across components match nitrile",
+    "smarts": "[N&X].[v4]",
+    "smiles": "C#N.c1ccccc1",
+    "expected_match": true
+  }
+]

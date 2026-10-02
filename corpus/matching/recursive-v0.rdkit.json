@@ -1,0 +1,98 @@
+[
+  {
+    "name": "recursive exact carbon matches carbon",
+    "smarts": "[$(C)]",
+    "smiles": "C",
+    "expected_match": true
+  },
+  {
+    "name": "recursive exact oxygen rejects carbon",
+    "smarts": "[$(O)]",
+    "smiles": "C",
+    "expected_match": false
+  },
+  {
+    "name": "recursive carbon oxygen path matches methanol",
+    "smarts": "[$(CO)]",
+    "smiles": "CO",
+    "expected_match": true
+  },
+  {
+    "name": "recursive carbon oxygen path rejects ethane",
+    "smarts": "[$(CO)]",
+    "smiles": "CC",
+    "expected_match": false
+  },
+  {
+    "name": "recursive neighbour oxygen matches methanol carbon",
+    "smarts": "[$(*O)]",
+    "smiles": "CO",
+    "expected_match": true
+  },
+  {
+    "name": "recursive neighbour oxygen rejects ethane carbon",
+    "smarts": "[$(*O)]",
+    "smiles": "CC",
+    "expected_match": false
+  },
+  {
+    "name": "recursive carbon with oxygen neighbour matches methanol",
+    "smarts": "[C&$(*O)]",
+    "smiles": "CO",
+    "expected_match": true
+  },
+  {
+    "name": "recursive carbon with oxygen neighbour rejects ethane",
+    "smarts": "[C&$(*O)]",
+    "smiles": "CC",
+    "expected_match": false
+  },
+  {
+    "name": "recursive carbonyl matches acetaldehyde",
+    "smarts": "[$(C=O)]",
+    "smiles": "CC=O",
+    "expected_match": true
+  },
+  {
+    "name": "recursive carbonyl rejects ethanol",
+    "smarts": "[$(C=O)]",
+    "smiles": "CCO",
+    "expected_match": false
+  },
+  {
+    "name": "recursive ring path matches cyclopropane",
+    "smarts": "[$(C1CC1)]",
+    "smiles": "C1CC1",
+    "expected_match": true
+  },
+  {
+    "name": "recursive ring path rejects propane",
+    "smarts": "[$(C1CC1)]",
+    "smiles": "CCC",
+    "expected_match": false
+  },
+  {
+    "name": "recursive disconnected path matches ethane",
+    "smarts": "[$(C.C)]",
+    "smiles": "CC",
+    "expected_match": true
+  },
+  {
+    "name": "recursive disconnected path rejects methane",
+    "smarts": "[$(C.C)]",
+    "smiles": "C",
+    "expected_match": false
+  },
+  {
+    "name": "recursive nested atom disjunction matches ethanol oxygen",
+    "smarts": "[$([O,N]C)]",
+    "smiles": "CCO",
+    "expected_match": true
+  },
+  {
+    "name": "recursive nested atom disjunction rejects ethane",
+    "smarts": "[$([O,N]C)]",
+    "smiles": "CC",
+    "expected_match": false
+  }
+]

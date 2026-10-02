@@ -1,0 +1,23 @@
+[
+  { "id": "bench-amide-linear", "smarts": "C(=O)N", "source": "benchmark:synthetic" },
+  { "id": "bench-branch-halogenated", "smarts": "C(Cl)(Br)F", "source": "benchmark:synthetic" },
+  { "id": "bench-kekule-benzene", "smarts": "C1=CC=CC=C1", "source": "benchmark:synthetic" },
+  { "id": "bench-cyclohexanol", "smarts": "C1CCC(CC1)O", "source": "benchmark:synthetic" },
+  { "id": "bench-bicyclic-fused", "smarts": "C1CC2CCC1C2", "source": "benchmark:synthetic" },
+  { "id": "bench-salt-components", "smarts": "[Na].[Cl]", "source": "benchmark:synthetic" },
+  { "id": "bench-isotopic-alkoxide", "smarts": "[13C]([2H])([H])[O-]", "source": "benchmark:synthetic" },
+  { "id": "bench-metal-any-bond", "smarts": "[Pt]~[Na]", "source": "benchmark:synthetic" },
+  { "id": "bench-ring-connectivity-combo", "smarts": "[x2;r5]", "source": "benchmark:synthetic" },
+  { "id": "bench-bracket-heavy-conjunction", "smarts": "[C;H1;X4;D4]", "source": "benchmark:synthetic" },
+  { "id": "bench-recursive-acid", "smarts": "[$(CO)]C(=O)O", "source": "benchmark:synthetic" },
+  { "id": "bench-recursive-cyclopropanol", "smarts": "[$([OH])]C1CC1", "source": "benchmark:synthetic" },
+  { "id": "bench-aromatic-aza-ring", "smarts": "c1ncccc1", "source": "benchmark:synthetic" },
+  { "id": "bench-ionic-carbonyl", "smarts": "[Na+].[O-]C(=O)C", "source": "benchmark:synthetic" },
+  { "id": "bench-directional-double-up", "smarts": "C/C=C/C", "source": "benchmark:synthetic" },
+  { "id": "bench-directional-double-down", "smarts": "C\\C=C\\C", "source": "benchmark:synthetic" },
+  { "id": "bench-metal-atomic-number", "smarts": "[195Pt]-[#6]", "source": "benchmark:synthetic" },
+  { "id": "bench-charged-chain", "smarts": "[#6]-[#7+]-[#8-]", "source": "benchmark:synthetic" },
+  { "id": "bench-atom-or-bracket-bond", "smarts": "[C,N;H1]-[O,S]", "source": "benchmark:synthetic" },
+  { "id": "bench-bridged-branch", "smarts": "C1(CC1)N", "source": "benchmark:synthetic" },
+  { "id": "bench-cyclopropyl-branch", "smarts": "C1(C)CC1", "source": "benchmark:synthetic" }
+]
