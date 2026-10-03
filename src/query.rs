@@ -8,6 +8,8 @@ use core::fmt;
 use elements_rs::{Element, ElementVariant, Isotope, MassNumber};
 use smiles_rs::{atom::bracketed::chirality::Chirality, bond::Bond};
 
+use crate::bond_semantics::bond_expr_written_from;
+
 /// Dense atom identifier inside one parsed SMARTS query.
 pub type AtomId = usize;
 /// Dense bond identifier inside one parsed SMARTS query.
@@ -758,7 +760,8 @@ impl<'a> QueryDisplayWriter<'a> {
     ) -> fmt::Result {
         let writer = &self.query_writers[writer_index];
         let bond_id = writer.parent_bond_by_atom[child_id].expect("child must have a parent bond");
-        write_bond_expr_nonrecursive(f, &writer.mol.bonds[bond_id].expr)
+        let bond = &writer.mol.bonds[bond_id];
+        write_bond_expr_nonrecursive(f, &bond_expr_written_from(&bond.expr, bond.src == child_id))
     }
 
     fn write_ring_token_bond(
@@ -1224,12 +1227,12 @@ fn build_ring_tokens_by_atom(mol: &QueryMol, is_parent_bond: &[bool]) -> Vec<Vec
         let bond = &mol.bonds[bond_id];
         let first = bond.src.min(bond.dst);
         let second = bond.src.max(bond.dst);
-        let token = RingToken {
+        let token = |atom_id: AtomId| RingToken {
             label: ring_label,
-            expr: bond.expr.clone(),
+            expr: bond_expr_written_from(&bond.expr, bond.dst == atom_id).into_owned(),
         };
-        ring_tokens_by_atom[first].push(token.clone());
-        ring_tokens_by_atom[second].push(token);
+        ring_tokens_by_atom[first].push(token(first));
+        ring_tokens_by_atom[second].push(token(second));
     }
     for tokens in &mut ring_tokens_by_atom {
         tokens.sort_by_key(|token| token.label);

@@ -22,7 +22,14 @@ use smiles_rs::{
     DoubleBondStereoConfig, Smiles,
 };
 
-use crate::{error::SmartsMatchError, prepared::PreparedTarget, target::BondLabel};
+use crate::{
+    bond_semantics::{
+        bond_state_bit, bond_state_mask_is_ring_sensitive, reversed_direction, BondSemantics,
+    },
+    error::SmartsMatchError,
+    prepared::PreparedTarget,
+    target::BondLabel,
+};
 
 type QueryNeighbors = alloc::vec::Vec<alloc::vec::Vec<(QueryAtomId, usize)>>;
 type QueryAtomScores = alloc::vec::Vec<usize>;
@@ -231,15 +238,10 @@ struct QueryDoubleBondStereoConstraint {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct QueryDirectionalSubstituent {
-    bond_id: usize,
-    direction: Bond,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct QueryLocalSubstituent {
     bond_id: usize,
-    direction: Option<Bond>,
+    /// Direction read from the double-bond atom towards the substituent.
+    outward_direction: Option<Bond>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -1190,7 +1192,7 @@ impl CompiledQuery {
         let (query_neighbors, query_degrees, query_atom_scores, stereo_plan) =
             compile_query_parts(&query)?;
         let atom_matchers = compile_atom_matchers(&query);
-        let bond_matchers = compile_bond_matchers(&query, &stereo_plan);
+        let bond_matchers = compile_bond_matchers(&query);
         let has_stereo_constraints = query_has_stereo_constraints(&query, &stereo_plan);
         let has_component_constraints = query.component_groups().iter().any(Option::is_some);
         let recursive_queries = compile_recursive_queries(&query, next_recursive_cache_slot)?;
@@ -1480,14 +1482,6 @@ fn ensure_supported_bond_expr(
         BondExpr::Elided => Ok(()),
         BondExpr::Query(tree) => ensure_supported_bond_tree(tree),
     }
-}
-
-fn query_bond_is_directional(stereo_plan: &QueryStereoPlan, bond_id: usize) -> bool {
-    stereo_plan
-        .directional_bond_ids
-        .get(bond_id)
-        .copied()
-        .unwrap_or(false)
 }
 
 fn ensure_supported_bond_tree(tree: &BondExprTree) -> Result<(), SmartsMatchError> {
@@ -1805,21 +1799,12 @@ fn double_negated_bracket_tree(tree: &BracketExprTree) -> Option<&BracketExprTre
     Some(grandchild)
 }
 
-fn compile_bond_matchers(
-    query: &QueryMol,
-    stereo_plan: &QueryStereoPlan,
-) -> Box<[CompiledBondMatcher]> {
+fn compile_bond_matchers(query: &QueryMol) -> Box<[CompiledBondMatcher]> {
     query
         .bonds()
         .iter()
         .map(|bond| {
-            let state_mask = if bond_expr_contains_negated_directional_primitive(&bond.expr) {
-                0
-            } else if query_bond_is_directional(stereo_plan, bond.id) {
-                single_like_bond_state_mask()
-            } else {
-                bond_expr_state_mask(&bond.expr)
-            };
+            let state_mask = BondSemantics::of_expr(&bond.expr).states();
             CompiledBondMatcher {
                 state_mask,
                 ring_sensitive: bond_state_mask_is_ring_sensitive(state_mask),
@@ -1834,95 +1819,6 @@ fn query_has_stereo_constraints(query: &QueryMol, stereo_plan: &QueryStereoPlan)
             .atoms()
             .iter()
             .any(|atom| extract_query_chirality(&atom.expr).is_some())
-}
-
-const BOND_LABEL_STATE_COUNT: usize = 7;
-const BOND_STATE_MASK_ALL: u16 = (1u16 << (BOND_LABEL_STATE_COUNT * 2)) - 1;
-
-const fn bond_label_state_index(label: BondLabel) -> usize {
-    match label {
-        BondLabel::Single => 0,
-        BondLabel::Double => 1,
-        BondLabel::Triple => 2,
-        BondLabel::Aromatic => 3,
-        BondLabel::Up => 4,
-        BondLabel::Down => 5,
-        BondLabel::Any => 6,
-    }
-}
-
-const fn bond_state_bit(label: BondLabel, ring: bool) -> u16 {
-    let offset = if ring { BOND_LABEL_STATE_COUNT } else { 0 };
-    1u16 << (bond_label_state_index(label) + offset)
-}
-
-const fn bond_label_state_mask(label: BondLabel) -> u16 {
-    bond_state_bit(label, false) | bond_state_bit(label, true)
-}
-
-const fn single_like_bond_state_mask() -> u16 {
-    bond_label_state_mask(BondLabel::Single)
-        | bond_label_state_mask(BondLabel::Up)
-        | bond_label_state_mask(BondLabel::Down)
-}
-
-const fn ring_bond_state_mask() -> u16 {
-    bond_state_bit(BondLabel::Single, true)
-        | bond_state_bit(BondLabel::Double, true)
-        | bond_state_bit(BondLabel::Triple, true)
-        | bond_state_bit(BondLabel::Aromatic, true)
-        | bond_state_bit(BondLabel::Up, true)
-        | bond_state_bit(BondLabel::Down, true)
-        | bond_state_bit(BondLabel::Any, true)
-}
-
-const fn bond_state_mask_is_ring_sensitive(mask: u16) -> bool {
-    let mut index = 0usize;
-    while index < BOND_LABEL_STATE_COUNT {
-        let non_ring = (mask >> index) & 1;
-        let ring = (mask >> (index + BOND_LABEL_STATE_COUNT)) & 1;
-        if non_ring != ring {
-            return true;
-        }
-        index += 1;
-    }
-    false
-}
-
-fn bond_expr_state_mask(expr: &BondExpr) -> u16 {
-    match expr {
-        BondExpr::Elided => {
-            single_like_bond_state_mask() | bond_label_state_mask(BondLabel::Aromatic)
-        }
-        BondExpr::Query(tree) => bond_tree_state_mask(tree),
-    }
-}
-
-fn bond_tree_state_mask(tree: &BondExprTree) -> u16 {
-    match tree {
-        BondExprTree::Primitive(primitive) => bond_primitive_state_mask(*primitive),
-        BondExprTree::Not(inner) => !bond_tree_state_mask(inner) & BOND_STATE_MASK_ALL,
-        BondExprTree::HighAnd(items) | BondExprTree::LowAnd(items) => {
-            items.iter().fold(BOND_STATE_MASK_ALL, |mask, item| {
-                mask & bond_tree_state_mask(item)
-            })
-        }
-        BondExprTree::Or(items) => items
-            .iter()
-            .fold(0u16, |mask, item| mask | bond_tree_state_mask(item)),
-    }
-}
-
-const fn bond_primitive_state_mask(primitive: BondPrimitive) -> u16 {
-    match primitive {
-        BondPrimitive::Bond(Bond::Single | Bond::Up | Bond::Down) => single_like_bond_state_mask(),
-        BondPrimitive::Bond(Bond::Double) => bond_label_state_mask(BondLabel::Double),
-        BondPrimitive::Bond(Bond::Triple) => bond_label_state_mask(BondLabel::Triple),
-        BondPrimitive::Aromatic => bond_label_state_mask(BondLabel::Aromatic),
-        BondPrimitive::Bond(Bond::Quadruple) => 0,
-        BondPrimitive::Any => BOND_STATE_MASK_ALL,
-        BondPrimitive::Ring => ring_bond_state_mask(),
-    }
 }
 
 fn build_query_atom_scores(
@@ -3457,21 +3353,18 @@ fn build_query_stereo_plan(
     let mut double_bond_constraints = alloc::vec::Vec::new();
 
     for bond in query.bonds() {
-        if !is_simple_double_bond_expr(&bond.expr) {
+        if !BondSemantics::of_expr(&bond.expr).matches_only_double_bonds() {
             continue;
         }
 
-        let left_directional =
-            directional_substituents(query, query_neighbors, bond.src, bond.id, bond.dst)?;
-        let right_directional =
-            directional_substituents(query, query_neighbors, bond.dst, bond.id, bond.src)?;
-
-        if left_directional.is_empty() || right_directional.is_empty() {
+        let left_local = local_substituents(query, query_neighbors, bond.src, bond.id, bond.dst);
+        let right_local = local_substituents(query, query_neighbors, bond.dst, bond.id, bond.src);
+        let is_directional =
+            |substituent: &QueryLocalSubstituent| substituent.outward_direction.is_some();
+        if !left_local.iter().any(is_directional) || !right_local.iter().any(is_directional) {
             continue;
         }
 
-        let left_local = local_substituents(query, query_neighbors, bond.src, bond.id, bond.dst)?;
-        let right_local = local_substituents(query, query_neighbors, bond.dst, bond.id, bond.src)?;
         let (fragment, left_atom_id, right_atom_id) =
             build_local_double_bond_fragment(&left_local, &right_local)?;
         let local_smiles = fragment
@@ -3481,8 +3374,10 @@ fn build_query_stereo_plan(
             .double_bond_stereo_config(left_atom_id, right_atom_id)
             .ok_or_else(|| unsupported_bond_primitive("/"))?;
 
-        for substituent in left_directional.iter().chain(right_directional.iter()) {
-            directional_bond_ids[substituent.bond_id] = true;
+        for substituent in left_local.iter().chain(&right_local) {
+            if substituent.outward_direction.is_some() {
+                directional_bond_ids[substituent.bond_id] = true;
+            }
         }
         double_bond_constraints.push(QueryDoubleBondStereoConstraint {
             left_atom: bond.src,
@@ -3783,50 +3678,31 @@ fn render_local_chirality(chirality: Chirality, has_hydrogen: bool) -> String {
     }
 }
 
-fn directional_substituents(
-    query: &QueryMol,
-    query_neighbors: &[alloc::vec::Vec<(QueryAtomId, usize)>],
-    endpoint: QueryAtomId,
-    double_bond_id: usize,
-    opposite_endpoint: QueryAtomId,
-) -> Result<alloc::vec::Vec<QueryDirectionalSubstituent>, SmartsMatchError> {
-    let mut directional = alloc::vec::Vec::new();
-    for (neighbor_atom, bond_id) in &query_neighbors[endpoint] {
-        if *bond_id == double_bond_id || *neighbor_atom == opposite_endpoint {
-            continue;
-        }
-        let Some(direction) = first_supported_directional_bond(&query.bonds()[*bond_id].expr)?
-        else {
-            continue;
-        };
-        directional.push(QueryDirectionalSubstituent {
-            bond_id: *bond_id,
-            direction,
-        });
-    }
-    Ok(directional)
-}
-
 fn local_substituents(
     query: &QueryMol,
     query_neighbors: &[alloc::vec::Vec<(QueryAtomId, usize)>],
     endpoint: QueryAtomId,
     double_bond_id: usize,
     opposite_endpoint: QueryAtomId,
-) -> Result<alloc::vec::Vec<QueryLocalSubstituent>, SmartsMatchError> {
-    let mut substituents = alloc::vec::Vec::new();
-    for (neighbor_atom, bond_id) in &query_neighbors[endpoint] {
-        if *bond_id == double_bond_id || *neighbor_atom == opposite_endpoint {
-            continue;
-        }
-        let expr = &query.bonds()[*bond_id].expr;
-        let direction = first_supported_directional_bond(expr)?;
-        substituents.push(QueryLocalSubstituent {
-            bond_id: *bond_id,
-            direction,
-        });
-    }
-    Ok(substituents)
+) -> alloc::vec::Vec<QueryLocalSubstituent> {
+    query_neighbors[endpoint]
+        .iter()
+        .filter(|&&(neighbor_atom, bond_id)| {
+            bond_id != double_bond_id && neighbor_atom != opposite_endpoint
+        })
+        .map(|&(_, bond_id)| {
+            let bond = &query.bonds()[bond_id];
+            let direction = BondSemantics::of_expr(&bond.expr).direction();
+            QueryLocalSubstituent {
+                bond_id,
+                outward_direction: if bond.src == endpoint {
+                    direction
+                } else {
+                    direction.map(reversed_direction)
+                },
+            }
+        })
+        .collect()
 }
 
 fn build_local_double_bond_fragment(
@@ -3846,13 +3722,15 @@ fn build_local_double_bond_fragment(
 
     let left_prefix_index = left_substituents
         .iter()
-        .position(|substituent| substituent.direction.is_some())
+        .position(|substituent| substituent.outward_direction.is_some())
         .or_else(|| (!left_substituents.is_empty()).then_some(0));
 
     if let Some(prefix_index) = left_prefix_index {
         fragment.push_str(PLACEHOLDER_ATOMS[next_placeholder]);
         fragment.push_str(local_double_bond_direction_text(
-            left_substituents[prefix_index].direction,
+            left_substituents[prefix_index]
+                .outward_direction
+                .map(reversed_direction),
         ));
         next_placeholder += 1;
         next_atom_id += 1;
@@ -3867,7 +3745,9 @@ fn build_local_double_bond_fragment(
             continue;
         }
         fragment.push('(');
-        fragment.push_str(local_double_bond_direction_text(substituent.direction));
+        fragment.push_str(local_double_bond_direction_text(
+            substituent.outward_direction,
+        ));
         fragment.push_str(PLACEHOLDER_ATOMS[next_placeholder]);
         fragment.push(')');
         next_placeholder += 1;
@@ -3885,7 +3765,9 @@ fn build_local_double_bond_fragment(
                 continue;
             }
             fragment.push('(');
-            fragment.push_str(local_double_bond_direction_text(substituent.direction));
+            fragment.push_str(local_double_bond_direction_text(
+                substituent.outward_direction,
+            ));
             fragment.push_str(PLACEHOLDER_ATOMS[next_placeholder]);
             fragment.push(')');
             next_placeholder += 1;
@@ -3893,7 +3775,9 @@ fn build_local_double_bond_fragment(
         }
 
         let continuation = right_substituents[continuation_index];
-        fragment.push_str(local_double_bond_direction_text(continuation.direction));
+        fragment.push_str(local_double_bond_direction_text(
+            continuation.outward_direction,
+        ));
         fragment.push_str(PLACEHOLDER_ATOMS[next_placeholder]);
         let _ = next_atom_id;
     }
@@ -3904,7 +3788,7 @@ fn build_local_double_bond_fragment(
 fn right_continuation_index(substituents: &[QueryLocalSubstituent]) -> Option<usize> {
     substituents
         .iter()
-        .position(|substituent| substituent.direction.is_none())
+        .position(|substituent| substituent.outward_direction.is_none())
         .or_else(|| (!substituents.is_empty()).then(|| substituents.len() - 1))
 }
 
@@ -3913,75 +3797,6 @@ const fn local_double_bond_direction_text(direction: Option<Bond>) -> &'static s
         Some(Bond::Up) => "/",
         Some(Bond::Down) => "\\",
         _ => "",
-    }
-}
-
-fn first_supported_directional_bond(expr: &BondExpr) -> Result<Option<Bond>, SmartsMatchError> {
-    match expr {
-        BondExpr::Elided => Ok(None),
-        BondExpr::Query(tree) => first_supported_directional_bond_tree(tree),
-    }
-}
-
-fn bond_expr_contains_negated_directional_primitive(expr: &BondExpr) -> bool {
-    match expr {
-        BondExpr::Elided => false,
-        BondExpr::Query(tree) => bond_tree_contains_negated_directional_primitive(tree),
-    }
-}
-
-fn bond_tree_contains_negated_directional_primitive(tree: &BondExprTree) -> bool {
-    match tree {
-        BondExprTree::Primitive(_) => false,
-        BondExprTree::Not(inner) => bond_tree_contains_directional_primitive(inner),
-        BondExprTree::HighAnd(items) | BondExprTree::Or(items) | BondExprTree::LowAnd(items) => {
-            let mut index = 0usize;
-            while index < items.len() {
-                if bond_tree_contains_negated_directional_primitive(&items[index]) {
-                    return true;
-                }
-                index += 1;
-            }
-            false
-        }
-    }
-}
-
-fn first_supported_directional_bond_tree(
-    tree: &BondExprTree,
-) -> Result<Option<Bond>, SmartsMatchError> {
-    match tree {
-        BondExprTree::Primitive(BondPrimitive::Bond(Bond::Up | Bond::Down)) => match tree {
-            BondExprTree::Primitive(BondPrimitive::Bond(bond)) => Ok(Some(*bond)),
-            _ => Ok(None),
-        },
-        BondExprTree::Primitive(_) | BondExprTree::Not(_) => Ok(None),
-        BondExprTree::HighAnd(items) | BondExprTree::Or(items) | BondExprTree::LowAnd(items) => {
-            for item in items {
-                if let Some(direction) = first_supported_directional_bond_tree(item)? {
-                    return Ok(Some(direction));
-                }
-            }
-            Ok(None)
-        }
-    }
-}
-
-const fn is_simple_double_bond_expr(expr: &BondExpr) -> bool {
-    matches!(
-        expr,
-        BondExpr::Query(BondExprTree::Primitive(BondPrimitive::Bond(Bond::Double)))
-    )
-}
-
-fn bond_tree_contains_directional_primitive(tree: &BondExprTree) -> bool {
-    match tree {
-        BondExprTree::Primitive(BondPrimitive::Bond(Bond::Up | Bond::Down)) => true,
-        BondExprTree::Primitive(_) => false,
-        BondExprTree::Not(inner) => bond_tree_contains_directional_primitive(inner),
-        BondExprTree::HighAnd(items) | BondExprTree::Or(items) | BondExprTree::LowAnd(items) => {
-            items.iter().any(bond_tree_contains_directional_primitive)
-        }
     }
 }
 

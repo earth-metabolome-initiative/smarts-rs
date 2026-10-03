@@ -1089,6 +1089,35 @@ fn multidirectional_endpoint_queries_are_respected() {
 }
 
 #[test]
+fn stereo_double_bond_is_recognised_by_the_states_it_matches() {
+    assert!(query_matches_smiles("C/C=&~C/C", "C/C=C/C"));
+    assert!(!query_matches_smiles("C/C=&~C/C", "C/C=C\\C"));
+}
+
+#[test]
+fn directional_bond_keeps_the_rest_of_its_expression() {
+    assert!(!query_matches_smiles("F/C=C/&@F", "F/C=C/F"));
+    assert!(query_matches_smiles("F/C=C/&!@F", "F/C=C/F"));
+    assert!(!query_matches_smiles("F/C=C/&!@F", "F/C=C\\F"));
+    assert!(!query_matches_smiles("F/C=C/;=F", "F/C=C/F"));
+}
+
+#[test]
+fn directional_bond_reads_from_its_written_atom_order() {
+    assert!(query_matches_smiles("C(\\F)=C/F", "F/C=C/F"));
+    assert!(!query_matches_smiles("C(\\F)=C/F", "F/C=C\\F"));
+    assert!(query_matches_smiles("C(/F)=C/F", "F/C=C\\F"));
+    assert!(!query_matches_smiles("C(/F)=C/F", "F/C=C/F"));
+    assert!(query_matches_smiles("C(=C/F)\\F", "F/C=C/F"));
+}
+
+#[test]
+fn target_directional_bond_reads_from_its_written_atom_order() {
+    assert!(query_matches_smiles("F/C=C/F", "C(\\F)=C/F"));
+    assert!(!query_matches_smiles("F/C=C/F", "C(/F)=C/F"));
+}
+
+#[test]
 fn semantic_double_bond_stereo_is_respected() {
     assert!(QueryMol::from_str("C/C").unwrap().matches("CC").unwrap());
     assert!(QueryMol::from_str("F/C=C")

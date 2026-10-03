@@ -93,11 +93,10 @@ fn permute_atoms(query: &QueryMol, atom_order: &[usize]) -> QueryMol {
         .map(|bond| {
             let src = new_index_of_old[bond.src];
             let dst = new_index_of_old[bond.dst];
-            let expr = if src <= dst {
-                bond.expr.clone()
-            } else {
-                super::flip_directional_bond_expr(&bond.expr)
-            };
+            let mut expr = bond.expr.clone();
+            if src > dst {
+                crate::bond_semantics::flip_directions(&mut expr);
+            }
             let (src, dst) = if src <= dst { (src, dst) } else { (dst, src) };
             QueryBond {
                 id: 0,
@@ -541,6 +540,52 @@ fn canonicalize_simplifies_low_precedence_complement_residual_forms() {
 }
 
 #[test]
+fn canonicalize_subtracts_excluded_counts_for_every_numeric_primitive() {
+    for group in [
+        ["[X{2-4};!X3,R]", "[X2,X4,R&X{2-4}]"],
+        ["[v{2-4};!v3,R]", "[v2,v4,R&v{2-4}]"],
+        ["[z{2-4};!z3,R]", "[z2,z4,R&z{2-4}]"],
+        ["[Z{2-4};!Z3,R]", "[Z2,Z4,R&Z{2-4}]"],
+        ["[x{2-4};!x3,D2]", "[x2,x4,D2&x{2-4}]"],
+        ["[r{4-6};!r5,D2]", "[r4,r6,D2&r{4-6}]"],
+        ["[^{1-3};!^2,D2]", "[^1,^3,D2&^{1-3}]"],
+        ["[H{1-3};!H2,R]", "[H1,H3,R&H{1-3}]"],
+    ] {
+        assert_same_canonical_group(&group);
+    }
+}
+
+#[test]
+fn canonicalize_empties_conjunctions_of_zero_and_nonzero_counts() {
+    for source in [
+        "[D0&D{1-}]",
+        "[X0&X{1-}]",
+        "[v0&v{1-}]",
+        "[H0&H{1-}]",
+        "[z0&z{1-}]",
+        "[Z0&Z{1-}]",
+        "[x0&x{1-}]",
+        "[r0&r{1-}]",
+        "[^0&^{1-}]",
+    ] {
+        assert_same_canonical_group(&[source, "[!*]"]);
+    }
+}
+
+#[test]
+fn canonicalize_drops_recursive_single_atom_terms_implied_by_others() {
+    for group in [
+        ["[$(C)&$([C,N])]", "[$(C)]"],
+        ["[$([C&R])&$(C)]", "[$([C&R])]"],
+        ["[$([C&R])&$([C,N])]", "[$([C&R])]"],
+        ["[$(C)&$(*)]", "[$(C)]"],
+        ["[$(C),$([C,N])]", "[$([C,N])]"],
+    ] {
+        assert_same_canonical_group(&group);
+    }
+}
+
+#[test]
 fn canonicalize_simplifies_negated_mutually_exclusive_atom_forms() {
     for (source, expected) in [
         ("[!C,!c]", "*"),
@@ -742,7 +787,7 @@ fn canonicalize_simplifies_equivalent_bond_boolean_forms() {
         ("[#6]-,=;!-;!=[#7]", "[#6]!~[#7]"),
         ("[#6]=,:;!=;!:[#7]", "[#6]!~[#7]"),
     ] {
-        assert_eq!(canonical_string(source), expected, "{source}");
+        assert_same_canonical_group(&[source, expected]);
     }
 }
 
@@ -831,7 +876,7 @@ fn canonicalize_simplifies_low_precedence_distribution_forms() {
         ("[#6]-,=;!-&!=,@[#7]", "[#6]-,=;@[#7]"),
         ("[#6]-,@;!-&!@,=[#7]", "[#6]=&@[#7]"),
     ] {
-        assert_eq!(canonical_string(source), expected, "{source}");
+        assert_same_canonical_group(&[source, expected]);
     }
 
     assert_same_canonical_group(&["[#6]-&@&=,:[#7]", "[#6]-&@&=,!-&:,!@&:,!=&:[#7]"]);
@@ -946,8 +991,8 @@ fn canonicalize_handles_cytosporins_slow_reports() {
             "*-,:,=C.(*(!=[!-]-&@1)!-[#6]-&@1~[!#6&H]-[!Cl].[!#6&H]-[!Cl]-,/&@[#6&R])",
         ),
     ] {
+        assert_same_canonical_group(&[source, expected]);
         let canonical = canonical_string(source);
-        assert_eq!(canonical, expected, "{source}");
         let reparsed = QueryMol::from_str(&canonical).unwrap();
         assert_eq!(reparsed.canonicalize().to_string(), canonical);
     }
@@ -1297,6 +1342,103 @@ fn canonicalize_preserves_distinctions_between_non_equivalent_queries() {
     assert_ne!(canonical_string("[$(CO)]"), canonical_string("[$(CN)]"));
     assert_ne!(canonical_string("[C;H1]"), canonical_string("[C;H2]"));
     assert_ne!(canonical_string("C1CC1"), canonical_string("CCC"));
+}
+
+#[test]
+fn canonicalize_preserves_match_results() {
+    let targets = [
+        "F/C=C/F",
+        "F/C=C\\F",
+        "FC=CF",
+        "C/C=C/C",
+        "C/C=C\\C",
+        "C/C=C/CO",
+        "C/C=C\\CO",
+        "C1CCCCC/C=C/1",
+        "C1CCCCC/C=C\\1",
+        "CC",
+        "C1CC1",
+        "C=C",
+        "C1=CC1",
+        "C#C",
+        "c1ccccc1",
+    ];
+    for source in [
+        "F/C=C/F",
+        "F/C=C\\F",
+        "F\\C=C/F",
+        "C(/F)=C/F",
+        "C(\\F)=C/F",
+        "F/C=C/&=F",
+        "C/C=&~C/C",
+        "F/C=C/,=F",
+        "F/C=C/&@F",
+        "F/,\\C=C/F",
+        "F\\,/C=C/F",
+        "F/!\\C=C/F",
+        "C-,:C",
+        "C!@C",
+        "C-,=;@C",
+        "C=,#;!@C",
+        "C~;!-C",
+        "C/C=C/CO",
+        "OC/C=C/C",
+        "C1CCCCC/C=C/1",
+        "C\\1CCCCC/C=C1",
+    ] {
+        assert_canonical_forms_match_like_source(source, &targets);
+    }
+}
+
+#[test]
+fn canonicalize_preserves_chiral_match_results() {
+    let targets = [
+        "F[C@](Cl)(Br)I",
+        "F[C@@](Cl)(Br)I",
+        "FC(Cl)(Br)I",
+        "N[C@@H](C)C(=O)O",
+        "N[C@H](C)C(=O)O",
+    ];
+    for source in [
+        "F[C@](Cl)(Br)I",
+        "I[C@](Br)(Cl)F",
+        "Br[C@@](I)(F)Cl",
+        "F[C@TH1](Cl)(Br)I",
+        "I[C@TH2](Br)(Cl)F",
+        "I[C;@,N](Br)(Cl)F",
+        "I[!N;@](Br)(Cl)F",
+        "N[C@@H](C)C(=O)O",
+        "OC(=O)[C@H](N)C",
+    ] {
+        assert_canonical_forms_match_like_source(source, &targets);
+    }
+}
+
+/// The canonical query and its printed form match every target the source matches.
+fn assert_canonical_forms_match_like_source(source: &str, targets: &[&str]) {
+    let query = QueryMol::from_str(source).unwrap();
+    let canonical = query.canonicalize();
+    let printed = QueryMol::from_str(&canonical.to_string()).unwrap();
+    for target in targets {
+        let expected = query.matches(target).ok();
+        assert_eq!(
+            expected,
+            canonical.matches(target).ok(),
+            "canonical form {canonical} of {source} disagrees on {target}"
+        );
+        assert_eq!(
+            expected,
+            printed.matches(target).ok(),
+            "printed canonical form {canonical} of {source} disagrees on {target}"
+        );
+    }
+}
+
+#[test]
+fn canonicalize_handles_long_bond_expression_fuzz_artifact() {
+    let source = "A#,-!:!@,-!/,-/,!@,::,/;:!@,:@,-!@,!:~!/;!@;#,-!:!@,-!/,!-/,!@,::,/;:!@,:@,-!@,!:~!/;!@,::,-!:;!@,::,-!!@,-!/,::,-!:;!@,::,-!!@,-!/,:::,/;:!@,:@,-!@,!:~!/;!@A#,-!:!@,-!/,-/,!@,::,/;:!@,:@,-!@,!:~!/;!@,::,-!:;!@,::,-!!@,-!/,::,-!:;!@,::,!/;@,::,/N";
+    assert_canonical_roundtrips(source);
+    assert_all_atom_permutations_converge(source);
 }
 
 #[test]

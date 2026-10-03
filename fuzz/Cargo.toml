@@ -12,7 +12,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 smarts-rs = { path = "..", features = ["std"] }
-smiles-rs = "0.1.5"
+smiles-rs = "0.1.6"
 
 [[bin]]
 name = "parse_display_loop"
