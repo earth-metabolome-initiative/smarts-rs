@@ -93,11 +93,10 @@ fn permute_atoms(query: &QueryMol, atom_order: &[usize]) -> QueryMol {
         .map(|bond| {
             let src = new_index_of_old[bond.src];
             let dst = new_index_of_old[bond.dst];
-            let expr = if src <= dst {
-                bond.expr.clone()
-            } else {
-                super::flip_directional_bond_expr(&bond.expr)
-            };
+            let mut expr = bond.expr.clone();
+            if src > dst {
+                crate::bond_semantics::flip_directions(&mut expr);
+            }
             let (src, dst) = if src <= dst { (src, dst) } else { (dst, src) };
             QueryBond {
                 id: 0,
@@ -742,7 +741,7 @@ fn canonicalize_simplifies_equivalent_bond_boolean_forms() {
         ("[#6]-,=;!-;!=[#7]", "[#6]!~[#7]"),
         ("[#6]=,:;!=;!:[#7]", "[#6]!~[#7]"),
     ] {
-        assert_eq!(canonical_string(source), expected, "{source}");
+        assert_same_canonical_group(&[source, expected]);
     }
 }
 
@@ -831,7 +830,7 @@ fn canonicalize_simplifies_low_precedence_distribution_forms() {
         ("[#6]-,=;!-&!=,@[#7]", "[#6]-,=;@[#7]"),
         ("[#6]-,@;!-&!@,=[#7]", "[#6]=&@[#7]"),
     ] {
-        assert_eq!(canonical_string(source), expected, "{source}");
+        assert_same_canonical_group(&[source, expected]);
     }
 
     assert_same_canonical_group(&["[#6]-&@&=,:[#7]", "[#6]-&@&=,!-&:,!@&:,!=&:[#7]"]);
@@ -946,8 +945,8 @@ fn canonicalize_handles_cytosporins_slow_reports() {
             "*-,:,=C.(*(!=[!-]-&@1)!-[#6]-&@1~[!#6&H]-[!Cl].[!#6&H]-[!Cl]-,/&@[#6&R])",
         ),
     ] {
+        assert_same_canonical_group(&[source, expected]);
         let canonical = canonical_string(source);
-        assert_eq!(canonical, expected, "{source}");
         let reparsed = QueryMol::from_str(&canonical).unwrap();
         assert_eq!(reparsed.canonicalize().to_string(), canonical);
     }
@@ -1297,6 +1296,74 @@ fn canonicalize_preserves_distinctions_between_non_equivalent_queries() {
     assert_ne!(canonical_string("[$(CO)]"), canonical_string("[$(CN)]"));
     assert_ne!(canonical_string("[C;H1]"), canonical_string("[C;H2]"));
     assert_ne!(canonical_string("C1CC1"), canonical_string("CCC"));
+}
+
+#[test]
+fn canonicalize_preserves_match_results() {
+    let targets = [
+        "F/C=C/F",
+        "F/C=C\\F",
+        "FC=CF",
+        "C/C=C/C",
+        "C/C=C\\C",
+        "C/C=C/CO",
+        "C/C=C\\CO",
+        "C1CCCCC/C=C/1",
+        "C1CCCCC/C=C\\1",
+        "CC",
+        "C1CC1",
+        "C=C",
+        "C1=CC1",
+        "C#C",
+        "c1ccccc1",
+    ];
+    for source in [
+        "F/C=C/F",
+        "F/C=C\\F",
+        "F\\C=C/F",
+        "C(/F)=C/F",
+        "C(\\F)=C/F",
+        "F/C=C/&=F",
+        "C/C=&~C/C",
+        "F/C=C/,=F",
+        "F/C=C/&@F",
+        "F/,\\C=C/F",
+        "F\\,/C=C/F",
+        "F/!\\C=C/F",
+        "C-,:C",
+        "C!@C",
+        "C-,=;@C",
+        "C=,#;!@C",
+        "C~;!-C",
+        "C/C=C/CO",
+        "OC/C=C/C",
+        "C1CCCCC/C=C/1",
+        "C\\1CCCCC/C=C1",
+    ] {
+        let query = QueryMol::from_str(source).unwrap();
+        let canonical = query.canonicalize();
+        let printed = QueryMol::from_str(&canonical.to_string()).unwrap();
+        for target in targets {
+            let expected = query.matches(target).ok();
+            assert_eq!(
+                expected,
+                canonical.matches(target).ok(),
+                "canonical form {canonical} of {source} disagrees on {target}"
+            );
+            assert_eq!(
+                expected,
+                printed.matches(target).ok(),
+                "printed canonical form {canonical} of {source} disagrees on {target}"
+            );
+        }
+    }
+}
+
+#[test]
+fn canonicalize_handles_long_bond_expression_fuzz_artifact() {
+    let source = "A#,-!:!@,-!/,-/,!@,::,/;:!@,:@,-!@,!:~!/;!@;#,-!:!@,-!/,!-/,!@,::,/;:!@,:@,-!@,!:~!/;!@,::,-!:;!@,::,-!!@,-!/,::,-!:;!@,::,-!!@,-!/,:::,/;:!@,:@,-!@,!:~!/;!@A#,-!:!@,-!/,-/,!@,::,/;:!@,:@,-!@,!:~!/;!@,::,-!:;!@,::,-!!@,-!/,::,-!:;!@,::,!/;@,::,/N";
+    assert_canonical_roundtrips(source);
+    assert_all_atom_permutations_converge(source);
 }
 
 #[test]

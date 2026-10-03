@@ -9,6 +9,7 @@ extern crate std;
 use alloc::string::ToString;
 use core::str::FromStr;
 
+mod bond_semantics;
 mod bracket;
 mod canonicalization;
 mod edit;

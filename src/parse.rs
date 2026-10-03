@@ -4,6 +4,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use smiles_rs::bond::Bond;
 
+use crate::bond_semantics::flip_directions;
 use crate::bracket::{parse_bracket_text, BracketParseError, BracketParseErrorKind};
 use crate::error::UnsupportedFeature;
 use crate::query::{
@@ -20,6 +21,21 @@ use crate::{SmartsParseError, SmartsParseErrorKind};
 /// contains malformed or unsupported SMARTS syntax.
 pub fn parse_smarts(input: &str) -> Result<QueryMol, SmartsParseError> {
     Parser::new(input).parse()
+}
+
+/// Parses a bare bond expression such as `-,=;@`.
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "bond semantics parse their spelling table, and unreachable_pub rejects plain pub"
+)]
+pub(crate) fn parse_bond_expr_text(input: &str) -> Result<BondExprTree, SmartsParseError> {
+    let mut parser = Parser::new(input);
+    let tree = parser.parse_bond_low_and()?;
+    if parser.is_eof() {
+        Ok(tree)
+    } else {
+        Err(parser.error_here(SmartsParseErrorKind::UnexpectedCharacter(parser.peek())))
+    }
 }
 
 struct Parser<'a> {
@@ -354,7 +370,11 @@ impl<'a> Parser<'a> {
                 return Err(self.error(SmartsParseErrorKind::CrossComponentRingClosure));
             }
 
-            let bond_expr = resolve_ring_bond(open.explicit_bond, explicit_bond_expr)
+            let closing_bond = explicit_bond_expr.map(|mut expr| {
+                flip_directions(&mut expr);
+                expr
+            });
+            let bond_expr = resolve_ring_bond(open.explicit_bond, closing_bond)
                 .ok_or_else(|| self.error(SmartsParseErrorKind::ConflictingRingClosureBond))?;
 
             self.bonds.push(QueryBond {
@@ -826,6 +846,17 @@ mod tests {
         assert_eq!(
             parse_smarts("C%123").unwrap_err().kind(),
             SmartsParseErrorKind::UnexpectedCharacter('3')
+        );
+    }
+
+    #[test]
+    fn closure_digit_direction_reads_from_the_atom_carrying_the_digit() {
+        let opening = parse_smarts("C\\1CCCCC/C=C1").unwrap();
+        assert_eq!(parse_smarts("C1CCCCC/C=C/1").unwrap(), opening);
+        assert_eq!(parse_smarts("C\\1CCCCC/C=C/1").unwrap(), opening);
+        assert_eq!(
+            parse_smarts("C\\1CCCCC/C=C\\1").unwrap_err().kind(),
+            SmartsParseErrorKind::ConflictingRingClosureBond
         );
     }
 
