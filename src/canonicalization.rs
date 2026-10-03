@@ -17,6 +17,7 @@ use smiles_rs::{atom::bracketed::chirality::Chirality, bond::Bond};
 
 use crate::{
     bond_semantics::{flip_directions, reversed_direction, BondSemantics},
+    matching::extract_chirality_from_bracket_tree,
     query::{
         AtomExpr, AtomId, AtomPrimitive, BondExpr, BondExprTree, BracketExpr, BracketExprTree,
         ComponentId, HydrogenKind, NumericQuery, NumericRange, QueryAtom, QueryBond, QueryMol,
@@ -551,9 +552,6 @@ fn atom_expr_supports_emitted_parity(
     if !has_no_ring_neighbors {
         return false;
     }
-    if !atom_expr_has_single_atomic_identity(expr) {
-        return false;
-    }
     let emitted_degree = from_neighbors.len().max(to_neighbors.len());
     match atom_expr_chirality(expr) {
         Some(Chirality::At | Chirality::AtAt | Chirality::TH(1 | 2)) => {
@@ -600,13 +598,6 @@ fn atom_expr_has_single_hydrogen(expr: &AtomExpr) -> bool {
     }
 }
 
-fn atom_expr_has_single_atomic_identity(expr: &AtomExpr) -> bool {
-    match expr {
-        AtomExpr::Wildcard | AtomExpr::Bare { .. } => true,
-        AtomExpr::Bracket(bracket) => bracket_tree_atomic_identity_count(&bracket.tree) == 1,
-    }
-}
-
 fn bracket_tree_has_single_hydrogen(tree: &BracketExprTree) -> bool {
     match tree {
         BracketExprTree::Primitive(AtomPrimitive::Hydrogen(
@@ -619,33 +610,6 @@ fn bracket_tree_has_single_hydrogen(tree: &BracketExprTree) -> bool {
         | BracketExprTree::Or(items)
         | BracketExprTree::LowAnd(items) => items.iter().any(bracket_tree_has_single_hydrogen),
     }
-}
-
-fn bracket_tree_atomic_identity_count(tree: &BracketExprTree) -> usize {
-    match tree {
-        BracketExprTree::Primitive(primitive) => {
-            usize::from(atom_primitive_is_atomic_identity(primitive))
-        }
-        BracketExprTree::Not(inner) => bracket_tree_atomic_identity_count(inner),
-        BracketExprTree::HighAnd(items)
-        | BracketExprTree::Or(items)
-        | BracketExprTree::LowAnd(items) => {
-            items.iter().map(bracket_tree_atomic_identity_count).sum()
-        }
-    }
-}
-
-const fn atom_primitive_is_atomic_identity(primitive: &AtomPrimitive) -> bool {
-    matches!(
-        primitive,
-        AtomPrimitive::Wildcard
-            | AtomPrimitive::AliphaticAny
-            | AtomPrimitive::AromaticAny
-            | AtomPrimitive::Symbol { .. }
-            | AtomPrimitive::Isotope { .. }
-            | AtomPrimitive::IsotopeWildcard(_)
-            | AtomPrimitive::AtomicNumber(_)
-    )
 }
 
 fn flatten_original_atom_order(entries: &[CanonicalizedEntry]) -> Vec<AtomId> {
@@ -830,6 +794,7 @@ fn canonical_bracket_expr(
     recursive_mode: RecursiveCanonicalizationMode,
 ) -> BracketExpr {
     let mut normalized = expr.clone();
+    normalized.tree = hoist_atom_chirality(normalized.tree);
     normalized
         .normalize()
         .unwrap_or_else(|_| unreachable!("parsed SMARTS expressions are never empty"));
@@ -859,6 +824,42 @@ fn canonical_bracket_expr(
     BracketExpr {
         tree: bracket.tree,
         atom_map: bracket.atom_map,
+    }
+}
+
+/// Moves the atom's chirality into one top-level conjunct. The matcher reads a
+/// single chirality per atom and evaluates every `@` primitive as true.
+fn hoist_atom_chirality(tree: BracketExprTree) -> BracketExprTree {
+    let Some(chirality) = extract_chirality_from_bracket_tree(&tree) else {
+        return tree;
+    };
+    let chirality = BracketExprTree::Primitive(AtomPrimitive::Chirality(chirality));
+    match chirality_as_wildcard(tree) {
+        rest @ (BracketExprTree::Or(_) | BracketExprTree::LowAnd(_)) => {
+            BracketExprTree::LowAnd(vec![rest, chirality])
+        }
+        rest => BracketExprTree::HighAnd(vec![rest, chirality]),
+    }
+}
+
+fn chirality_as_wildcard(tree: BracketExprTree) -> BracketExprTree {
+    match tree {
+        BracketExprTree::Primitive(AtomPrimitive::Chirality(_)) => {
+            BracketExprTree::Primitive(AtomPrimitive::Wildcard)
+        }
+        BracketExprTree::Primitive(primitive) => BracketExprTree::Primitive(primitive),
+        BracketExprTree::Not(inner) => {
+            BracketExprTree::Not(Box::new(chirality_as_wildcard(*inner)))
+        }
+        BracketExprTree::HighAnd(items) => {
+            BracketExprTree::HighAnd(items.into_iter().map(chirality_as_wildcard).collect())
+        }
+        BracketExprTree::Or(items) => {
+            BracketExprTree::Or(items.into_iter().map(chirality_as_wildcard).collect())
+        }
+        BracketExprTree::LowAnd(items) => {
+            BracketExprTree::LowAnd(items.into_iter().map(chirality_as_wildcard).collect())
+        }
     }
 }
 
