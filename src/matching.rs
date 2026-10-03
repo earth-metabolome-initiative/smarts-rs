@@ -3419,7 +3419,8 @@ fn extract_query_chirality(expr: &AtomExpr) -> Option<Chirality> {
     }
 }
 
-fn extract_chirality_from_bracket_tree(tree: &BracketExprTree) -> Option<Chirality> {
+/// The one chirality an atom carries, its first `@` form outside a negation.
+pub(crate) fn extract_chirality_from_bracket_tree(tree: &BracketExprTree) -> Option<Chirality> {
     match tree {
         BracketExprTree::Primitive(AtomPrimitive::Chirality(chirality)) => Some(*chirality),
         BracketExprTree::Primitive(_) | BracketExprTree::Not(_) => None,

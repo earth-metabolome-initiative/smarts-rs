@@ -1335,6 +1335,29 @@ fn canonicalize_is_stable_under_manual_graph_reordering() {
 }
 
 #[test]
+fn canonicalize_keeps_chirality_written_beside_several_atom_identities() {
+    let targets = ["F[C@](Cl)(Br)I", "F[C@@](Cl)(Br)I", "F[N@](Cl)(Br)I"];
+    for source in [
+        "I[C@,N](Br)(Cl)F",
+        "I[C,N;@](Br)(Cl)F",
+        "I[@](Br)(Cl)F",
+        "I[#6,#7;@@](Br)(Cl)F",
+        "I[C@,N@@](Br)(Cl)F",
+    ] {
+        assert_canonical_roundtrips(source);
+        let query = QueryMol::from_str(source).unwrap();
+        let canonical = query.canonicalize();
+        for target in targets {
+            assert_eq!(
+                query.matches(target).ok(),
+                canonical.matches(target).ok(),
+                "canonical form {canonical} of {source} disagrees on {target}"
+            );
+        }
+    }
+}
+
+#[test]
 fn canonicalize_preserves_distinctions_between_non_equivalent_queries() {
     assert_ne!(canonical_string("C"), canonical_string("[#6]"));
     assert_ne!(canonical_string("C-N"), canonical_string("C=N"));
