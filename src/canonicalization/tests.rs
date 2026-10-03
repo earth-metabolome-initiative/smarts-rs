@@ -1437,6 +1437,53 @@ fn canonicalize_preserves_chiral_match_results() {
     }
 }
 
+#[test]
+fn canonicalize_preserves_stereo_of_directional_bonds_shared_by_double_bonds() {
+    for (sources, targets) in [
+        (
+            &[
+                "F/C=C/C=C/F",
+                "F/C=C\\C=C/F",
+                "F/C=C/C=C\\F",
+                "F\\C=C\\C=C\\F",
+            ][..],
+            &["F/C=C/C=C/F", "F/C=C\\C=C/F", "F/C=C\\C=C\\F"][..],
+        ),
+        (
+            &["F/C=C/C=C/C=C/F", "F/C=C\\C=C/C=C/F", "F/C=C/C(=C/F)/Cl"][..],
+            &[
+                "F/C=C/C=C/C=C/F",
+                "F\\C=C/C=C/C=C\\F",
+                "F/C=C/C=C\\C=C\\F",
+                "F/C=C(Cl)/C=C/F",
+                "F/C=C\\C(Cl)=C\\F",
+            ][..],
+        ),
+    ] {
+        for source in sources {
+            assert_canonical_forms_match_like_source(source, targets);
+        }
+    }
+    assert_ne!(
+        canonical_string("F/C=C/C=C/F"),
+        canonical_string("F/C=C\\C=C/F")
+    );
+    assert_ne!(
+        canonical_string("F/C=C/C=C/F"),
+        canonical_string("F/C=C/C=C\\F")
+    );
+}
+
+#[test]
+fn canonicalize_converges_spellings_of_two_directional_substituents_on_one_atom() {
+    assert_same_canonical_group(&["F/C(/Cl)=C/Br", "Cl\\C(\\F)=C/Br", "Br/C=C(\\Cl)/F"]);
+    assert_same_canonical_group(&["F/C(/Cl)=C\\Br", "Cl\\C(\\F)=C\\Br", "Br\\C=C(\\Cl)/F"]);
+    assert_ne!(
+        canonical_string("F/C(/Cl)=C/Br"),
+        canonical_string("F/C(/Cl)=C\\Br")
+    );
+}
+
 /// The canonical query and its printed form match every target the source matches.
 fn assert_canonical_forms_match_like_source(source: &str, targets: &[&str]) {
     let query = QueryMol::from_str(source).unwrap();
