@@ -154,10 +154,11 @@ impl BondSemantics {
 
     /// Replaces the direction of a bond that already carries one.
     pub(crate) const fn with_direction(self, direction: Bond) -> Self {
-        match self.direction {
-            Some(_) => Self::new(self.states, Some(direction)),
-            None => self,
-        }
+        debug_assert!(
+            self.direction.is_some(),
+            "only directional bonds change direction"
+        );
+        Self::new(self.states, Some(direction))
     }
 
     /// Shortest spelling of this meaning, the elided bond when it is the shortest.

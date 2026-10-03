@@ -3,7 +3,10 @@ use alloc::{format, string::String, vec, vec::Vec};
 use smiles_rs::bond::Bond;
 
 use super::{bond_state_bit, spellings, BondSemantics, DISTINGUISHABLE_LABELS};
-use crate::{parse::parse_bond_expr_text, target::BondLabel};
+use crate::{
+    parse::parse_bond_expr_text, target::BondLabel, BondExprTree, BondPrimitive,
+    SmartsParseErrorKind,
+};
 
 const LABELS: usize = DISTINGUISHABLE_LABELS.len();
 const TABLE_LEN: usize = 1 << (2 * LABELS);
@@ -265,6 +268,23 @@ fn negated_direction_matches_nothing() {
             "{source}"
         );
     }
+}
+
+#[test]
+fn quadruple_bond_matches_nothing() {
+    let quadruple = BondExprTree::Primitive(BondPrimitive::Bond(Bond::Quadruple));
+    assert_eq!(
+        BondSemantics::of_tree(&quadruple),
+        BondSemantics::new(0, None)
+    );
+}
+
+#[test]
+fn bare_bond_expression_rejects_trailing_input() {
+    assert_eq!(
+        parse_bond_expr_text("-C").unwrap_err().kind(),
+        SmartsParseErrorKind::UnexpectedCharacter('C')
+    );
 }
 
 #[test]
