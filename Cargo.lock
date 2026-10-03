@@ -908,9 +908,9 @@ dependencies = [
 
 [[package]]
 name = "smiles-rs"
-version = "0.1.5"
+version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82c668a36ecf662d466a0e4fd965cd5c2fa7220c421ea1d8ebf26a515a312290"
+checksum = "463ab28c0171dc3d3333d1f53218987c31cf30f7d9ff1a597060282293d7cd76"
 dependencies = [
  "elements_rs",
  "geometric-traits",

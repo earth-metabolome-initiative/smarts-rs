@@ -1112,7 +1112,6 @@ fn directional_bond_reads_from_its_written_atom_order() {
 }
 
 #[test]
-#[ignore = "needs the smiles-rs fix for branch-written double-bond substituents (upstream/branch-bond-direction)"]
 fn target_directional_bond_reads_from_its_written_atom_order() {
     assert!(query_matches_smiles("F/C=C/F", "C(\\F)=C/F"));
     assert!(!query_matches_smiles("F/C=C/F", "C(/F)=C/F"));
