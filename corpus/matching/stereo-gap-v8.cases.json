@@ -328,5 +328,905 @@
     "smarts": "C1CCCCCC/C=C/1",
     "smiles": "C1/C=C\\CCCCCC1",
     "use_chirality": true
+  },
+  {
+    "name": "hetero-0",
+    "smarts": "C(/C(C)C)=N/O",
+    "smiles": "C(/C(C)C)=N/O",
+    "use_chirality": true
+  },
+  {
+    "name": "hetero-1",
+    "smarts": "C(/C(C)C)=N/O",
+    "smiles": "CC(C)/C=N\\O",
+    "use_chirality": true
+  },
+  {
+    "name": "hetero-2",
+    "smarts": "C(/C(C)C)=N/O",
+    "smiles": "C(/C=N/O)(C)C",
+    "use_chirality": true
+  },
+  {
+    "name": "hetero-3",
+    "smarts": "C(/C(C)C)=N/O",
+    "smiles": "CC(C)/C=N/O",
+    "use_chirality": true
+  },
+  {
+    "name": "hetero-4",
+    "smarts": "C(/C(C)C)=N/O",
+    "smiles": "CC(C)C=NO",
+    "use_chirality": true
+  },
+  {
+    "name": "hetero-5",
+    "smarts": "C/C(F)=N/O",
+    "smiles": "C/C(=N/O)F",
+    "use_chirality": true
+  },
+  {
+    "name": "hetero-6",
+    "smarts": "C/C(F)=N/O",
+    "smiles": "C/C(F)=N/O",
+    "use_chirality": true
+  },
+  {
+    "name": "hetero-7",
+    "smarts": "C/C(F)=N/O",
+    "smiles": "C/C(=N\\O)F",
+    "use_chirality": true
+  },
+  {
+    "name": "hetero-8",
+    "smarts": "C/C(F)=N/O",
+    "smiles": "C/C(F)=N\\O",
+    "use_chirality": true
+  },
+  {
+    "name": "hetero-9",
+    "smarts": "C/C(F)=N/O",
+    "smiles": "CC(F)=NO",
+    "use_chirality": true
+  },
+  {
+    "name": "hetero-10",
+    "smarts": "Cl\\C(=N\\O)F",
+    "smiles": "C(=N\\O)(/Cl)F",
+    "use_chirality": true
+  },
+  {
+    "name": "hetero-11",
+    "smarts": "Cl\\C(=N\\O)F",
+    "smiles": "N(/O)=C(/F)Cl",
+    "use_chirality": true
+  },
+  {
+    "name": "hetero-12",
+    "smarts": "Cl\\C(=N\\O)F",
+    "smiles": "C(/F)(=N\\O)Cl",
+    "use_chirality": true
+  },
+  {
+    "name": "hetero-13",
+    "smarts": "Cl\\C(=N\\O)F",
+    "smiles": "ClC(=NO)F",
+    "use_chirality": true
+  },
+  {
+    "name": "hetero-14",
+    "smarts": "Cl\\C(=N\\O)F",
+    "smiles": "F/C(=N/O)Cl",
+    "use_chirality": true
+  },
+  {
+    "name": "hetero-15",
+    "smarts": "F\\N=N\\F",
+    "smiles": "F/N=N/F",
+    "use_chirality": true
+  },
+  {
+    "name": "hetero-16",
+    "smarts": "F\\N=N\\F",
+    "smiles": "N(/F)=N\\F",
+    "use_chirality": true
+  },
+  {
+    "name": "hetero-17",
+    "smarts": "F\\N=N\\F",
+    "smiles": "F/N=N\\F",
+    "use_chirality": true
+  },
+  {
+    "name": "hetero-18",
+    "smarts": "F\\N=N\\F",
+    "smiles": "FN=NF",
+    "use_chirality": true
+  },
+  {
+    "name": "hetero-19",
+    "smarts": "F\\N=N\\F",
+    "smiles": "N(/F)=N/F",
+    "use_chirality": true
+  },
+  {
+    "name": "hetero-20",
+    "smarts": "N(=C/C)/O",
+    "smiles": "C/C=N\\O",
+    "use_chirality": true
+  },
+  {
+    "name": "hetero-21",
+    "smarts": "N(=C/C)/O",
+    "smiles": "N(=C/C)/O",
+    "use_chirality": true
+  },
+  {
+    "name": "hetero-22",
+    "smarts": "N(=C/C)/O",
+    "smiles": "C(=NO)C",
+    "use_chirality": true
+  },
+  {
+    "name": "hetero-23",
+    "smarts": "N(=C/C)/O",
+    "smiles": "C/C=N/O",
+    "use_chirality": true
+  },
+  {
+    "name": "hetero-24",
+    "smarts": "N(=C/C)/O",
+    "smiles": "CC=NO",
+    "use_chirality": true
+  },
+  {
+    "name": "hetero-25",
+    "smarts": "N(\\F)=N\\Cl",
+    "smiles": "Cl/N=N\\F",
+    "use_chirality": true
+  },
+  {
+    "name": "hetero-26",
+    "smarts": "N(\\F)=N\\Cl",
+    "smiles": "F/N=N\\Cl",
+    "use_chirality": true
+  },
+  {
+    "name": "hetero-27",
+    "smarts": "N(\\F)=N\\Cl",
+    "smiles": "Cl/N=N/F",
+    "use_chirality": true
+  },
+  {
+    "name": "hetero-28",
+    "smarts": "N(\\F)=N\\Cl",
+    "smiles": "ClN=NF",
+    "use_chirality": true
+  },
+  {
+    "name": "hetero-29",
+    "smarts": "N(\\F)=N\\Cl",
+    "smiles": "F/N=N/Cl",
+    "use_chirality": true
+  },
+  {
+    "name": "hydrogen-0",
+    "smarts": "Br/C=C/F",
+    "smiles": "Br/C([H])=C(\\[H])F",
+    "use_chirality": true
+  },
+  {
+    "name": "hydrogen-1",
+    "smarts": "Br/C=C/F",
+    "smiles": "C(/F)=C\\Br",
+    "use_chirality": true
+  },
+  {
+    "name": "hydrogen-2",
+    "smarts": "Br/C=C/F",
+    "smiles": "Br/C=C\\F",
+    "use_chirality": true
+  },
+  {
+    "name": "hydrogen-3",
+    "smarts": "Br/C=C/F",
+    "smiles": "C(=C(\\[H])F)(/Br)[H]",
+    "use_chirality": true
+  },
+  {
+    "name": "hydrogen-4",
+    "smarts": "Br/C=C/F",
+    "smiles": "C(=C/F)/Br",
+    "use_chirality": true
+  },
+  {
+    "name": "hydrogen-5",
+    "smarts": "Br\\C=C\\F",
+    "smiles": "Br/C([H])=C(\\[H])F",
+    "use_chirality": true
+  },
+  {
+    "name": "hydrogen-6",
+    "smarts": "Br\\C=C\\F",
+    "smiles": "C(/F)=C\\Br",
+    "use_chirality": true
+  },
+  {
+    "name": "hydrogen-7",
+    "smarts": "Br\\C=C\\F",
+    "smiles": "Br/C=C\\F",
+    "use_chirality": true
+  },
+  {
+    "name": "hydrogen-8",
+    "smarts": "Br\\C=C\\F",
+    "smiles": "C(=C(\\[H])F)(/Br)[H]",
+    "use_chirality": true
+  },
+  {
+    "name": "hydrogen-9",
+    "smarts": "Br\\C=C\\F",
+    "smiles": "C(=C/F)/Br",
+    "use_chirality": true
+  },
+  {
+    "name": "hydrogen-10",
+    "smarts": "C(/F)=C/Br",
+    "smiles": "Br/C=C\\F",
+    "use_chirality": true
+  },
+  {
+    "name": "hydrogen-11",
+    "smarts": "C(/F)=C/Br",
+    "smiles": "C(=C(\\[H])F)(/Br)[H]",
+    "use_chirality": true
+  },
+  {
+    "name": "hydrogen-12",
+    "smarts": "C(/F)=C/Br",
+    "smiles": "Br/C([H])=C(\\[H])F",
+    "use_chirality": true
+  },
+  {
+    "name": "hydrogen-13",
+    "smarts": "C(/F)=C/Br",
+    "smiles": "C(/F)=C\\Br",
+    "use_chirality": true
+  },
+  {
+    "name": "hydrogen-14",
+    "smarts": "C(/F)=C/Br",
+    "smiles": "C(=CBr)F",
+    "use_chirality": true
+  },
+  {
+    "name": "hydrogen-15",
+    "smarts": "C(=C\\Br)/F",
+    "smiles": "Br/C([H])=C(\\[H])F",
+    "use_chirality": true
+  },
+  {
+    "name": "hydrogen-16",
+    "smarts": "C(=C\\Br)/F",
+    "smiles": "C(/F)=C\\Br",
+    "use_chirality": true
+  },
+  {
+    "name": "hydrogen-17",
+    "smarts": "C(=C\\Br)/F",
+    "smiles": "Br/C=C\\F",
+    "use_chirality": true
+  },
+  {
+    "name": "hydrogen-18",
+    "smarts": "C(=C\\Br)/F",
+    "smiles": "C(=C(\\[H])F)(/Br)[H]",
+    "use_chirality": true
+  },
+  {
+    "name": "hydrogen-19",
+    "smarts": "C(=C\\Br)/F",
+    "smiles": "C(=C/F)/Br",
+    "use_chirality": true
+  },
+  {
+    "name": "hydrogen-20",
+    "smarts": "C(\\F)=C/Br",
+    "smiles": "Br/C([H])=C(\\[H])F",
+    "use_chirality": true
+  },
+  {
+    "name": "hydrogen-21",
+    "smarts": "C(\\F)=C/Br",
+    "smiles": "C(/F)=C\\Br",
+    "use_chirality": true
+  },
+  {
+    "name": "hydrogen-22",
+    "smarts": "C(\\F)=C/Br",
+    "smiles": "Br/C=C\\F",
+    "use_chirality": true
+  },
+  {
+    "name": "hydrogen-23",
+    "smarts": "C(\\F)=C/Br",
+    "smiles": "C(=C(\\[H])F)(/Br)[H]",
+    "use_chirality": true
+  },
+  {
+    "name": "hydrogen-24",
+    "smarts": "C(\\F)=C/Br",
+    "smiles": "C(=C/F)/Br",
+    "use_chirality": true
+  },
+  {
+    "name": "hydrogen-25",
+    "smarts": "F/C=C\\Br",
+    "smiles": "Br/C=C\\F",
+    "use_chirality": true
+  },
+  {
+    "name": "hydrogen-26",
+    "smarts": "F/C=C\\Br",
+    "smiles": "C(=C(\\[H])F)(/Br)[H]",
+    "use_chirality": true
+  },
+  {
+    "name": "hydrogen-27",
+    "smarts": "F/C=C\\Br",
+    "smiles": "Br/C([H])=C(\\[H])F",
+    "use_chirality": true
+  },
+  {
+    "name": "hydrogen-28",
+    "smarts": "F/C=C\\Br",
+    "smiles": "C(/F)=C\\Br",
+    "use_chirality": true
+  },
+  {
+    "name": "hydrogen-29",
+    "smarts": "F/C=C\\Br",
+    "smiles": "C(=CBr)F",
+    "use_chirality": true
+  },
+  {
+    "name": "wildcard-0",
+    "smarts": "*/C(*)=C/*",
+    "smiles": "Br/C=C(/Cl)F",
+    "use_chirality": true
+  },
+  {
+    "name": "wildcard-1",
+    "smarts": "*/C(*)=C/*",
+    "smiles": "Br/C=C(\\F)Cl",
+    "use_chirality": true
+  },
+  {
+    "name": "wildcard-2",
+    "smarts": "*/C(*)=C/*",
+    "smiles": "BrC(I)=CF",
+    "use_chirality": true
+  },
+  {
+    "name": "wildcard-3",
+    "smarts": "*/C(*)=C/*",
+    "smiles": "C(Br)(I)=C(Cl)F",
+    "use_chirality": true
+  },
+  {
+    "name": "wildcard-4",
+    "smarts": "*/C(*)=C/*",
+    "smiles": "C(Br)(I)=CF",
+    "use_chirality": true
+  },
+  {
+    "name": "wildcard-5",
+    "smarts": "C(/F)=C(/CCCCN)CCCO",
+    "smiles": "C(/C(CCCCN)=C/F)CCO",
+    "use_chirality": true
+  },
+  {
+    "name": "wildcard-6",
+    "smarts": "C(/F)=C(/CCCCN)CCCO",
+    "smiles": "C(/CCCCN)(=C/F)CCCO",
+    "use_chirality": true
+  },
+  {
+    "name": "wildcard-7",
+    "smarts": "C(/F)=C(/CCCCN)CCCO",
+    "smiles": "C(=C\\F)(/CCCCN)CCCO",
+    "use_chirality": true
+  },
+  {
+    "name": "wildcard-8",
+    "smarts": "C(/F)=C(/CCCCN)CCCO",
+    "smiles": "C(CC(=CF)CCCO)CCN",
+    "use_chirality": true
+  },
+  {
+    "name": "wildcard-9",
+    "smarts": "C(/F)=C(/CCCCN)CCCO",
+    "smiles": "C(CCO)C(CCCCN)=CF",
+    "use_chirality": true
+  },
+  {
+    "name": "wildcard-10",
+    "smarts": "C(CC/C(=C/F)CCCCN)O",
+    "smiles": "C(/C(CCCCN)=C/F)CCO",
+    "use_chirality": true
+  },
+  {
+    "name": "wildcard-11",
+    "smarts": "C(CC/C(=C/F)CCCCN)O",
+    "smiles": "C(/CCCCN)(=C/F)CCCO",
+    "use_chirality": true
+  },
+  {
+    "name": "wildcard-12",
+    "smarts": "C(CC/C(=C/F)CCCCN)O",
+    "smiles": "C(=C\\F)(/CCCCN)CCCO",
+    "use_chirality": true
+  },
+  {
+    "name": "wildcard-13",
+    "smarts": "C(CC/C(=C/F)CCCCN)O",
+    "smiles": "C(CC(=CF)CCCO)CCN",
+    "use_chirality": true
+  },
+  {
+    "name": "wildcard-14",
+    "smarts": "C(CC/C(=C/F)CCCCN)O",
+    "smiles": "C(CCO)C(CCCCN)=CF",
+    "use_chirality": true
+  },
+  {
+    "name": "wildcard-15",
+    "smarts": "C(CCCN)/C(CCCO)=C\\F",
+    "smiles": "C(/C(CCCCN)=C/F)CCO",
+    "use_chirality": true
+  },
+  {
+    "name": "wildcard-16",
+    "smarts": "C(CCCN)/C(CCCO)=C\\F",
+    "smiles": "C(/CCCCN)(=C/F)CCCO",
+    "use_chirality": true
+  },
+  {
+    "name": "wildcard-17",
+    "smarts": "C(CCCN)/C(CCCO)=C\\F",
+    "smiles": "C(=C\\F)(/CCCCN)CCCO",
+    "use_chirality": true
+  },
+  {
+    "name": "wildcard-18",
+    "smarts": "C(CCCN)/C(CCCO)=C\\F",
+    "smiles": "C(CC(=CF)CCCO)CCN",
+    "use_chirality": true
+  },
+  {
+    "name": "wildcard-19",
+    "smarts": "C(CCCN)/C(CCCO)=C\\F",
+    "smiles": "C(CCO)C(CCCCN)=CF",
+    "use_chirality": true
+  },
+  {
+    "name": "wildcard-20",
+    "smarts": "C(CO)C/C(=C\\F)CCCCN",
+    "smiles": "C(=C\\F)(/CCCCN)CCCO",
+    "use_chirality": true
+  },
+  {
+    "name": "wildcard-21",
+    "smarts": "C(CO)C/C(=C\\F)CCCCN",
+    "smiles": "C(CO)C/C(=C\\F)CCCCN",
+    "use_chirality": true
+  },
+  {
+    "name": "wildcard-22",
+    "smarts": "C(CO)C/C(=C\\F)CCCCN",
+    "smiles": "C(/C(CCCCN)=C/F)CCO",
+    "use_chirality": true
+  },
+  {
+    "name": "wildcard-23",
+    "smarts": "C(CO)C/C(=C\\F)CCCCN",
+    "smiles": "C(/CCCCN)(=C/F)CCCO",
+    "use_chirality": true
+  },
+  {
+    "name": "wildcard-24",
+    "smarts": "C(CO)C/C(=C\\F)CCCCN",
+    "smiles": "C(CC(=CF)CCCO)CCN",
+    "use_chirality": true
+  },
+  {
+    "name": "wildcard-25",
+    "smarts": "NCCCC\\C(=C/F)CCCO",
+    "smiles": "C(/C(CCCCN)=C/F)CCO",
+    "use_chirality": true
+  },
+  {
+    "name": "wildcard-26",
+    "smarts": "NCCCC\\C(=C/F)CCCO",
+    "smiles": "C(/CCCCN)(=C/F)CCCO",
+    "use_chirality": true
+  },
+  {
+    "name": "wildcard-27",
+    "smarts": "NCCCC\\C(=C/F)CCCO",
+    "smiles": "C(=C\\F)(/CCCCN)CCCO",
+    "use_chirality": true
+  },
+  {
+    "name": "wildcard-28",
+    "smarts": "NCCCC\\C(=C/F)CCCO",
+    "smiles": "C(CC(=CF)CCCO)CCN",
+    "use_chirality": true
+  },
+  {
+    "name": "wildcard-29",
+    "smarts": "NCCCC\\C(=C/F)CCCO",
+    "smiles": "C(CCO)C(CCCCN)=CF",
+    "use_chirality": true
+  },
+  {
+    "name": "polyene-0",
+    "smarts": "C(/Br)=C(/C=C/F)Cl",
+    "smiles": "C(/Br)=C(/C=C/F)Cl",
+    "use_chirality": true
+  },
+  {
+    "name": "polyene-1",
+    "smarts": "C(/Br)=C(/C=C/F)Cl",
+    "smiles": "C(=C(/C=C/F)Cl)/Br",
+    "use_chirality": true
+  },
+  {
+    "name": "polyene-2",
+    "smarts": "C(/Br)=C(/C=C/F)Cl",
+    "smiles": "BrC=C(C=CF)Cl",
+    "use_chirality": true
+  },
+  {
+    "name": "polyene-3",
+    "smarts": "C(/Br)=C(/C=C/F)Cl",
+    "smiles": "C(/C(Cl)=C/Br)=C\\F",
+    "use_chirality": true
+  },
+  {
+    "name": "polyene-4",
+    "smarts": "C(/Br)=C(/C=C/F)Cl",
+    "smiles": "C(/F)=C/C(Cl)=C/Br",
+    "use_chirality": true
+  },
+  {
+    "name": "polyene-5",
+    "smarts": "C(/F)=C/C=C/C=C/F",
+    "smiles": "C(=C/F)/C=C/C=C/F",
+    "use_chirality": true
+  },
+  {
+    "name": "polyene-6",
+    "smarts": "C(/F)=C/C=C/C=C/F",
+    "smiles": "C(\\F)=C/C=C/C=C\\F",
+    "use_chirality": true
+  },
+  {
+    "name": "polyene-7",
+    "smarts": "C(/F)=C/C=C/C=C/F",
+    "smiles": "C(/C=C/F)=C/C=C/F",
+    "use_chirality": true
+  },
+  {
+    "name": "polyene-8",
+    "smarts": "C(/F)=C/C=C/C=C/F",
+    "smiles": "C(/C=C/F)=C\\C=C\\F",
+    "use_chirality": true
+  },
+  {
+    "name": "polyene-9",
+    "smarts": "C(/F)=C/C=C/C=C/F",
+    "smiles": "C(/C=C\\C=C/F)=C\\F",
+    "use_chirality": true
+  },
+  {
+    "name": "polyene-10",
+    "smarts": "C(=C/C=CF)/F",
+    "smiles": "C(/C=C\\F)=C/F",
+    "use_chirality": true
+  },
+  {
+    "name": "polyene-11",
+    "smarts": "C(=C/C=CF)/F",
+    "smiles": "C(/F)=C/C=C\\F",
+    "use_chirality": true
+  },
+  {
+    "name": "polyene-12",
+    "smarts": "C(=C/C=CF)/F",
+    "smiles": "C(/C=C/F)=C\\F",
+    "use_chirality": true
+  },
+  {
+    "name": "polyene-13",
+    "smarts": "C(=C/C=CF)/F",
+    "smiles": "C(=CC=CF)F",
+    "use_chirality": true
+  },
+  {
+    "name": "polyene-14",
+    "smarts": "C(=C/C=CF)/F",
+    "smiles": "C(=C\\F)/C=C/F",
+    "use_chirality": true
+  },
+  {
+    "name": "polyene-15",
+    "smarts": "C(=C\\C=C\\F)\\F",
+    "smiles": "C(=C/F)/C=C/F",
+    "use_chirality": true
+  },
+  {
+    "name": "polyene-16",
+    "smarts": "C(=C\\C=C\\F)\\F",
+    "smiles": "F/C=C/C=C\\F",
+    "use_chirality": true
+  },
+  {
+    "name": "polyene-17",
+    "smarts": "C(=C\\C=C\\F)\\F",
+    "smiles": "C(/C=C/F)=C\\F",
+    "use_chirality": true
+  },
+  {
+    "name": "polyene-18",
+    "smarts": "C(=C\\C=C\\F)\\F",
+    "smiles": "C(/C=C\\F)=C/F",
+    "use_chirality": true
+  },
+  {
+    "name": "polyene-19",
+    "smarts": "C(=C\\C=C\\F)\\F",
+    "smiles": "C(/F)=C/C=C\\F",
+    "use_chirality": true
+  },
+  {
+    "name": "polyene-20",
+    "smarts": "C/C=C(/C=C\\C=C/C)C",
+    "smiles": "C(C)(/C=C\\C=C/C)=C\\C",
+    "use_chirality": true
+  },
+  {
+    "name": "polyene-21",
+    "smarts": "C/C=C(/C=C\\C=C/C)C",
+    "smiles": "CC(=C\\C)/C=C\\C=C/C",
+    "use_chirality": true
+  },
+  {
+    "name": "polyene-22",
+    "smarts": "C/C=C(/C=C\\C=C/C)C",
+    "smiles": "C(/C(=C\\C)C)=C\\C=C/C",
+    "use_chirality": true
+  },
+  {
+    "name": "polyene-23",
+    "smarts": "C/C=C(/C=C\\C=C/C)C",
+    "smiles": "C(/C(C)=C\\C)=C/C=C\\C",
+    "use_chirality": true
+  },
+  {
+    "name": "polyene-24",
+    "smarts": "C/C=C(/C=C\\C=C/C)C",
+    "smiles": "C(/C)=C/C=C\\C(=C/C)C",
+    "use_chirality": true
+  },
+  {
+    "name": "polyene-25",
+    "smarts": "C\\C=C/C=C\\C(=C\\C)C",
+    "smiles": "C(C)(/C=C\\C=C/C)=C\\C",
+    "use_chirality": true
+  },
+  {
+    "name": "polyene-26",
+    "smarts": "C\\C=C/C=C\\C(=C\\C)C",
+    "smiles": "CC(=C\\C)/C=C\\C=C/C",
+    "use_chirality": true
+  },
+  {
+    "name": "polyene-27",
+    "smarts": "C\\C=C/C=C\\C(=C\\C)C",
+    "smiles": "C(/C(=C\\C)C)=C\\C=C/C",
+    "use_chirality": true
+  },
+  {
+    "name": "polyene-28",
+    "smarts": "C\\C=C/C=C\\C(=C\\C)C",
+    "smiles": "C(/C(C)=C\\C)=C/C=C\\C",
+    "use_chirality": true
+  },
+  {
+    "name": "polyene-29",
+    "smarts": "C\\C=C/C=C\\C(=C\\C)C",
+    "smiles": "C(/C)=C/C=C\\C(=C/C)C",
+    "use_chirality": true
+  },
+  {
+    "name": "closure-0",
+    "smarts": "C1/C=C/CCCCC1",
+    "smiles": "C1/C=C/CCCCC1",
+    "use_chirality": true
+  },
+  {
+    "name": "closure-1",
+    "smarts": "C1/C=C/CCCCC1",
+    "smiles": "C1/CCCCCC/C=1",
+    "use_chirality": true
+  },
+  {
+    "name": "closure-2",
+    "smarts": "C1/C=C/CCCCC1",
+    "smiles": "C1/C=C\\CCCCC1",
+    "use_chirality": true
+  },
+  {
+    "name": "closure-3",
+    "smarts": "C1/C=C/CCCCC1",
+    "smiles": "C1=CCCCCCC1",
+    "use_chirality": true
+  },
+  {
+    "name": "closure-4",
+    "smarts": "C1/C=C/CCCCC1",
+    "smiles": "C1=C\\CCCCCC/1",
+    "use_chirality": true
+  },
+  {
+    "name": "closure-5",
+    "smarts": "C1=C/CCCCCC\\1",
+    "smiles": "C1/C=C\\CCCCC1",
+    "use_chirality": true
+  },
+  {
+    "name": "closure-6",
+    "smarts": "C1=C/CCCCCC\\1",
+    "smiles": "C1=C\\CCCCCC/1",
+    "use_chirality": true
+  },
+  {
+    "name": "closure-7",
+    "smarts": "C1=C/CCCCCC\\1",
+    "smiles": "C1/C=C/CCCCC1",
+    "use_chirality": true
+  },
+  {
+    "name": "closure-8",
+    "smarts": "C1=C/CCCCCC\\1",
+    "smiles": "C1/CCCCCC/C=1",
+    "use_chirality": true
+  },
+  {
+    "name": "closure-9",
+    "smarts": "C1=C/CCCCCC\\1",
+    "smiles": "C1=C/CCCCCC/1",
+    "use_chirality": true
+  },
+  {
+    "name": "closure-10",
+    "smarts": "C1CC/C=C/CCC1",
+    "smiles": "C1/C=C/CCCCC1",
+    "use_chirality": true
+  },
+  {
+    "name": "closure-11",
+    "smarts": "C1CC/C=C/CCC1",
+    "smiles": "C1/CCCCCC/C=1",
+    "use_chirality": true
+  },
+  {
+    "name": "closure-12",
+    "smarts": "C1CC/C=C/CCC1",
+    "smiles": "C1/C=C\\CCCCC1",
+    "use_chirality": true
+  },
+  {
+    "name": "closure-13",
+    "smarts": "C1CC/C=C/CCC1",
+    "smiles": "C1=CCCCCCC1",
+    "use_chirality": true
+  },
+  {
+    "name": "closure-14",
+    "smarts": "C1CC/C=C/CCC1",
+    "smiles": "C1=C\\CCCCCC/1",
+    "use_chirality": true
+  },
+  {
+    "name": "closure-15",
+    "smarts": "C1CCCC/C=C\\C1",
+    "smiles": "C1/C=C\\CCCCC1",
+    "use_chirality": true
+  },
+  {
+    "name": "closure-16",
+    "smarts": "C1CCCC/C=C\\C1",
+    "smiles": "C1=C\\CCCCCC/1",
+    "use_chirality": true
+  },
+  {
+    "name": "closure-17",
+    "smarts": "C1CCCC/C=C\\C1",
+    "smiles": "C1/C=C/CCCCC1",
+    "use_chirality": true
+  },
+  {
+    "name": "closure-18",
+    "smarts": "C1CCCC/C=C\\C1",
+    "smiles": "C1/CCCCCC/C=1",
+    "use_chirality": true
+  },
+  {
+    "name": "closure-19",
+    "smarts": "C1CCCC/C=C\\C1",
+    "smiles": "C1=C/CCCCCC/1",
+    "use_chirality": true
+  },
+  {
+    "name": "closure-20",
+    "smarts": "C1CCCC\\C=C/C1",
+    "smiles": "C1/C=C\\CCCCC1",
+    "use_chirality": true
+  },
+  {
+    "name": "closure-21",
+    "smarts": "C1CCCC\\C=C/C1",
+    "smiles": "C1=C\\CCCCCC/1",
+    "use_chirality": true
+  },
+  {
+    "name": "closure-22",
+    "smarts": "C1CCCC\\C=C/C1",
+    "smiles": "C1/C=C/CCCCC1",
+    "use_chirality": true
+  },
+  {
+    "name": "closure-23",
+    "smarts": "C1CCCC\\C=C/C1",
+    "smiles": "C1/CCCCCC/C=1",
+    "use_chirality": true
+  },
+  {
+    "name": "closure-24",
+    "smarts": "C1CCCC\\C=C/C1",
+    "smiles": "C1=C/CCCCCC/1",
+    "use_chirality": true
+  },
+  {
+    "name": "closure-25",
+    "smarts": "C1C\\C=C/CCCC1",
+    "smiles": "C1/C=C\\CCCCC1",
+    "use_chirality": true
+  },
+  {
+    "name": "closure-26",
+    "smarts": "C1C\\C=C/CCCC1",
+    "smiles": "C1=C\\CCCCCC/1",
+    "use_chirality": true
+  },
+  {
+    "name": "closure-27",
+    "smarts": "C1C\\C=C/CCCC1",
+    "smiles": "C1/C=C/CCCCC1",
+    "use_chirality": true
+  },
+  {
+    "name": "closure-28",
+    "smarts": "C1C\\C=C/CCCC1",
+    "smiles": "C1/CCCCCC/C=1",
+    "use_chirality": true
+  },
+  {
+    "name": "closure-29",
+    "smarts": "C1C\\C=C/CCCC1",
+    "smiles": "C1=C/CCCCCC/1",
+    "use_chirality": true
   }
 ]

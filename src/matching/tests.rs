@@ -1142,6 +1142,14 @@ fn contradictory_directions_on_one_double_bond_atom_match_nothing() {
 }
 
 #[test]
+fn double_bond_stereo_inside_recursive_smarts_is_respected() {
+    // RDKit ignores double-bond stereo inside $(...) and matches all three targets.
+    assert!(query_matches_smiles("[$(F/C=C/Br)]", "F/C=C/Br"));
+    assert!(!query_matches_smiles("[$(F/C=C/Br)]", "F/C=C\\Br"));
+    assert!(!query_matches_smiles("[$(F/C=C/Br)]", "FC=CBr"));
+}
+
+#[test]
 fn semantic_double_bond_stereo_is_respected() {
     assert!(QueryMol::from_str("C/C").unwrap().matches("CC").unwrap());
     assert!(QueryMol::from_str("F/C=C")
