@@ -1,0 +1,332 @@
+[
+  {
+    "name": "far-right-substituent-0",
+    "smarts": "F/C=C(Br)/I",
+    "smiles": "F/C=C(\\Br)I",
+    "use_chirality": true
+  },
+  {
+    "name": "far-right-substituent-1",
+    "smarts": "F/C=C(Br)/I",
+    "smiles": "F/C=C(/Br)I",
+    "use_chirality": true
+  },
+  {
+    "name": "far-right-substituent-2",
+    "smarts": "F/C=C(Br)/I",
+    "smiles": "FC=C(Br)I",
+    "use_chirality": true
+  },
+  {
+    "name": "far-right-substituent-3",
+    "smarts": "F/C=C(Br)/I",
+    "smiles": "I/C(Br)=C/F",
+    "use_chirality": true
+  },
+  {
+    "name": "far-right-substituent-4",
+    "smarts": "F/C=C(Br)/I",
+    "smiles": "I/C(Br)=C\\F",
+    "use_chirality": true
+  },
+  {
+    "name": "far-right-substituent-branch-0",
+    "smarts": "F/C=C(/I)Br",
+    "smiles": "F/C=C(\\Br)I",
+    "use_chirality": true
+  },
+  {
+    "name": "far-right-substituent-branch-1",
+    "smarts": "F/C=C(/I)Br",
+    "smiles": "F/C=C(/Br)I",
+    "use_chirality": true
+  },
+  {
+    "name": "far-right-substituent-branch-2",
+    "smarts": "F/C=C(/I)Br",
+    "smiles": "FC=C(Br)I",
+    "use_chirality": true
+  },
+  {
+    "name": "far-right-substituent-branch-3",
+    "smarts": "F/C=C(/I)Br",
+    "smiles": "I/C(Br)=C/F",
+    "use_chirality": true
+  },
+  {
+    "name": "far-right-substituent-branch-4",
+    "smarts": "F/C=C(/I)Br",
+    "smiles": "I/C(Br)=C\\F",
+    "use_chirality": true
+  },
+  {
+    "name": "far-left-substituent-0",
+    "smarts": "FC(/Cl)=C/Br",
+    "smiles": "F/C(Cl)=C/Br",
+    "use_chirality": true
+  },
+  {
+    "name": "far-left-substituent-1",
+    "smarts": "FC(/Cl)=C/Br",
+    "smiles": "F/C(Cl)=C\\Br",
+    "use_chirality": true
+  },
+  {
+    "name": "far-left-substituent-2",
+    "smarts": "FC(/Cl)=C/Br",
+    "smiles": "FC(Cl)=CBr",
+    "use_chirality": true
+  },
+  {
+    "name": "far-left-substituent-3",
+    "smarts": "FC(/Cl)=C/Br",
+    "smiles": "Br/C=C(/F)Cl",
+    "use_chirality": true
+  },
+  {
+    "name": "far-left-substituent-4",
+    "smarts": "FC(/Cl)=C/Br",
+    "smiles": "Br/C=C(\\F)Cl",
+    "use_chirality": true
+  },
+  {
+    "name": "far-left-substituent-branch-first-0",
+    "smarts": "C(F)(/Cl)=C/Br",
+    "smiles": "F/C(Cl)=C/Br",
+    "use_chirality": true
+  },
+  {
+    "name": "far-left-substituent-branch-first-1",
+    "smarts": "C(F)(/Cl)=C/Br",
+    "smiles": "F/C(Cl)=C\\Br",
+    "use_chirality": true
+  },
+  {
+    "name": "far-left-substituent-branch-first-2",
+    "smarts": "C(F)(/Cl)=C/Br",
+    "smiles": "FC(Cl)=CBr",
+    "use_chirality": true
+  },
+  {
+    "name": "far-left-substituent-branch-first-3",
+    "smarts": "C(F)(/Cl)=C/Br",
+    "smiles": "Br/C=C(/F)Cl",
+    "use_chirality": true
+  },
+  {
+    "name": "far-left-substituent-branch-first-4",
+    "smarts": "C(F)(/Cl)=C/Br",
+    "smiles": "Br/C=C(\\F)Cl",
+    "use_chirality": true
+  },
+  {
+    "name": "both-far-substituents-0",
+    "smarts": "F/C(Cl)=C(Br)/I",
+    "smiles": "F/C(Cl)=C(\\Br)I",
+    "use_chirality": true
+  },
+  {
+    "name": "both-far-substituents-1",
+    "smarts": "F/C(Cl)=C(Br)/I",
+    "smiles": "F/C(Cl)=C(/Br)I",
+    "use_chirality": true
+  },
+  {
+    "name": "both-far-substituents-2",
+    "smarts": "F/C(Cl)=C(Br)/I",
+    "smiles": "FC(Cl)=C(Br)I",
+    "use_chirality": true
+  },
+  {
+    "name": "both-far-substituents-3",
+    "smarts": "F/C(Cl)=C(Br)/I",
+    "smiles": "I/C(Br)=C(/F)Cl",
+    "use_chirality": true
+  },
+  {
+    "name": "both-far-substituents-4",
+    "smarts": "F/C(Cl)=C(Br)/I",
+    "smiles": "I/C(Br)=C(\\F)Cl",
+    "use_chirality": true
+  },
+  {
+    "name": "both-left-substituents-0",
+    "smarts": "F/C(/Cl)=C/Br",
+    "smiles": "F/C(Cl)=C/Br",
+    "use_chirality": true
+  },
+  {
+    "name": "both-left-substituents-1",
+    "smarts": "F/C(/Cl)=C/Br",
+    "smiles": "F/C(Cl)=C\\Br",
+    "use_chirality": true
+  },
+  {
+    "name": "both-left-substituents-2",
+    "smarts": "F/C(/Cl)=C/Br",
+    "smiles": "FC(Cl)=CBr",
+    "use_chirality": true
+  },
+  {
+    "name": "both-left-substituents-3",
+    "smarts": "F/C(/Cl)=C/Br",
+    "smiles": "Br/C=C(/F)Cl",
+    "use_chirality": true
+  },
+  {
+    "name": "both-left-substituents-4",
+    "smarts": "F/C(/Cl)=C/Br",
+    "smiles": "Br/C=C(\\F)Cl",
+    "use_chirality": true
+  },
+  {
+    "name": "both-left-substituents-other-first-0",
+    "smarts": "Cl\\C(\\F)=C/Br",
+    "smiles": "F/C(Cl)=C/Br",
+    "use_chirality": true
+  },
+  {
+    "name": "both-left-substituents-other-first-1",
+    "smarts": "Cl\\C(\\F)=C/Br",
+    "smiles": "F/C(Cl)=C\\Br",
+    "use_chirality": true
+  },
+  {
+    "name": "both-left-substituents-other-first-2",
+    "smarts": "Cl\\C(\\F)=C/Br",
+    "smiles": "FC(Cl)=CBr",
+    "use_chirality": true
+  },
+  {
+    "name": "both-left-substituents-other-first-3",
+    "smarts": "Cl\\C(\\F)=C/Br",
+    "smiles": "Br/C=C(/F)Cl",
+    "use_chirality": true
+  },
+  {
+    "name": "both-left-substituents-other-first-4",
+    "smarts": "Cl\\C(\\F)=C/Br",
+    "smiles": "Br/C=C(\\F)Cl",
+    "use_chirality": true
+  },
+  {
+    "name": "both-right-substituents-0",
+    "smarts": "F/C=C(/Br)\\I",
+    "smiles": "F/C=C(\\Br)I",
+    "use_chirality": true
+  },
+  {
+    "name": "both-right-substituents-1",
+    "smarts": "F/C=C(/Br)\\I",
+    "smiles": "F/C=C(/Br)I",
+    "use_chirality": true
+  },
+  {
+    "name": "both-right-substituents-2",
+    "smarts": "F/C=C(/Br)\\I",
+    "smiles": "FC=C(Br)I",
+    "use_chirality": true
+  },
+  {
+    "name": "both-right-substituents-3",
+    "smarts": "F/C=C(/Br)\\I",
+    "smiles": "I/C(Br)=C/F",
+    "use_chirality": true
+  },
+  {
+    "name": "both-right-substituents-4",
+    "smarts": "F/C=C(/Br)\\I",
+    "smiles": "I/C(Br)=C\\F",
+    "use_chirality": true
+  },
+  {
+    "name": "all-four-substituents-0",
+    "smarts": "F/C(/Cl)=C(/Br)\\I",
+    "smiles": "F/C(Cl)=C(\\Br)I",
+    "use_chirality": true
+  },
+  {
+    "name": "all-four-substituents-1",
+    "smarts": "F/C(/Cl)=C(/Br)\\I",
+    "smiles": "F/C(Cl)=C(/Br)I",
+    "use_chirality": true
+  },
+  {
+    "name": "all-four-substituents-2",
+    "smarts": "F/C(/Cl)=C(/Br)\\I",
+    "smiles": "FC(Cl)=C(Br)I",
+    "use_chirality": true
+  },
+  {
+    "name": "all-four-substituents-3",
+    "smarts": "F/C(/Cl)=C(/Br)\\I",
+    "smiles": "I/C(Br)=C(/F)Cl",
+    "use_chirality": true
+  },
+  {
+    "name": "all-four-substituents-4",
+    "smarts": "F/C(/Cl)=C(/Br)\\I",
+    "smiles": "I/C(Br)=C(\\F)Cl",
+    "use_chirality": true
+  },
+  {
+    "name": "eight-membered-ring-0",
+    "smarts": "C\\1CCCCC/C=C1",
+    "smiles": "C1=C/CCCCCC/1",
+    "use_chirality": true
+  },
+  {
+    "name": "eight-membered-ring-1",
+    "smarts": "C\\1CCCCC/C=C1",
+    "smiles": "C1=C\\CCCCCC/1",
+    "use_chirality": true
+  },
+  {
+    "name": "eight-membered-ring-2",
+    "smarts": "C\\1CCCCC/C=C1",
+    "smiles": "C1=CCCCCCC1",
+    "use_chirality": true
+  },
+  {
+    "name": "eight-membered-ring-3",
+    "smarts": "C\\1CCCCC/C=C1",
+    "smiles": "C1/C=C/CCCCC1",
+    "use_chirality": true
+  },
+  {
+    "name": "eight-membered-ring-4",
+    "smarts": "C\\1CCCCC/C=C1",
+    "smiles": "C1/C=C\\CCCCC1",
+    "use_chirality": true
+  },
+  {
+    "name": "nine-membered-ring-closure-direction-0",
+    "smarts": "C1CCCCCC/C=C/1",
+    "smiles": "C1=C/CCCCCCC/1",
+    "use_chirality": true
+  },
+  {
+    "name": "nine-membered-ring-closure-direction-1",
+    "smarts": "C1CCCCCC/C=C/1",
+    "smiles": "C1=C\\CCCCCCC/1",
+    "use_chirality": true
+  },
+  {
+    "name": "nine-membered-ring-closure-direction-2",
+    "smarts": "C1CCCCCC/C=C/1",
+    "smiles": "C1=CCCCCCCC1",
+    "use_chirality": true
+  },
+  {
+    "name": "nine-membered-ring-closure-direction-3",
+    "smarts": "C1CCCCCC/C=C/1",
+    "smiles": "C1/C=C/CCCCCC1",
+    "use_chirality": true
+  },
+  {
+    "name": "nine-membered-ring-closure-direction-4",
+    "smarts": "C1CCCCCC/C=C/1",
+    "smiles": "C1/C=C\\CCCCCC1",
+    "use_chirality": true
+  }
+]

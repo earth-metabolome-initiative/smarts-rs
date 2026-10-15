@@ -1118,6 +1118,30 @@ fn target_directional_bond_reads_from_its_written_atom_order() {
 }
 
 #[test]
+fn double_bond_stereo_relates_the_substituents_the_query_names() {
+    assert!(!query_matches_smiles("F/C=C(Br)/I", "F/C=C(/Br)I"));
+    assert!(query_matches_smiles("F/C=C(Br)/I", "F/C=C(\\Br)I"));
+    assert!(query_matches_smiles("FC(/Cl)=C/Br", "F/C(Cl)=C/Br"));
+    assert!(!query_matches_smiles("FC(/Cl)=C/Br", "F/C(Cl)=C\\Br"));
+    assert!(!query_matches_smiles("F/C(Cl)=C(Br)/I", "F/C(Cl)=C(/Br)I"));
+    assert!(query_matches_smiles("F/C(Cl)=C(Br)/I", "F/C(Cl)=C(\\Br)I"));
+}
+
+#[test]
+fn double_bond_stereo_in_rings_of_eight_atoms_is_respected() {
+    assert!(query_matches_smiles("C\\1CCCCC/C=C1", "C1=C/CCCCCC/1"));
+    assert!(!query_matches_smiles("C\\1CCCCC/C=C1", "C1=C\\CCCCCC/1"));
+}
+
+#[test]
+fn contradictory_directions_on_one_double_bond_atom_match_nothing() {
+    // RDKit lets the first directional bond win and matches F/C(Cl)=C/Br.
+    for target in ["F/C(Cl)=C/Br", "F/C(Cl)=C\\Br", "FC(Cl)=CBr"] {
+        assert!(!query_matches_smiles("F/C(\\Cl)=C/Br", target), "{target}");
+    }
+}
+
+#[test]
 fn semantic_double_bond_stereo_is_respected() {
     assert!(QueryMol::from_str("C/C").unwrap().matches("CC").unwrap());
     assert!(QueryMol::from_str("F/C=C")
