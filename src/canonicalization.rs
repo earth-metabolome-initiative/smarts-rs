@@ -373,7 +373,7 @@ impl QueryMol {
         let provisional =
             Self::from_parts(provisional_atoms, bonds, 1, vec![self.component_group(0)]);
         let provisional = if has_directional_bonds {
-            normalize_directional_double_bond_pairs(&provisional)
+            normalize_directional_bond_groups(&provisional)
         } else {
             provisional
         };
@@ -4139,16 +4139,18 @@ fn emitted_stereo_neighbors(query: &QueryMol) -> Vec<Vec<AtomId>> {
         .collect()
 }
 
-fn normalize_directional_double_bond_pairs(query: &QueryMol) -> QueryMol {
+/// Orients every group of directional bonds that meet at stereo double bonds.
+/// The matcher reads only whether the directional substituents of a stereo
+/// double bond point the same way, so flipping a whole group keeps its meaning.
+fn normalize_directional_bond_groups(query: &QueryMol) -> QueryMol {
     let mut bonds = query.bonds().to_vec();
     let semantics = bonds
         .iter()
         .map(|bond| BondSemantics::of_expr(&bond.expr))
         .collect::<Vec<_>>();
-    let mut incident_bonds_by_atom = vec![Vec::new(); query.atom_count()];
     let parent_bond_by_atom = spanning_forest_parent_bonds(query);
     let preorder_indices = query_preorder_indices(query, &parent_bond_by_atom);
-    let mut paired_directional_bonds = vec![false; bonds.len()];
+    let mut incident_bonds_by_atom = vec![Vec::new(); query.atom_count()];
     for bond in &bonds {
         incident_bonds_by_atom[bond.src].push(bond.id);
         if bond.dst != bond.src {
@@ -4156,53 +4158,54 @@ fn normalize_directional_double_bond_pairs(query: &QueryMol) -> QueryMol {
         }
     }
 
+    let mut group_parent = (0..bonds.len()).collect::<Vec<_>>();
     for (bond_id, bond_semantics) in semantics.iter().enumerate() {
         if !bond_semantics.matches_only_double_bonds() {
             continue;
         }
-        let (src, dst) = (bonds[bond_id].src, bonds[bond_id].dst);
-        let left = neighboring_directional_bonds(
-            &bonds,
-            &semantics,
-            &incident_bonds_by_atom[src],
-            bond_id,
-            src,
-        );
-        let right = neighboring_directional_bonds(
-            &bonds,
-            &semantics,
-            &incident_bonds_by_atom[dst],
-            bond_id,
-            dst,
-        );
-        let ([left], [right]) = (left.as_slice(), right.as_slice()) else {
+        let directional_on = |atom: AtomId| {
+            incident_bonds_by_atom[atom]
+                .iter()
+                .copied()
+                .filter(|&other| other != bond_id && semantics[other].direction().is_some())
+                .collect::<Vec<_>>()
+        };
+        let left = directional_on(bonds[bond_id].src);
+        let right = directional_on(bonds[bond_id].dst);
+        let Some(&first) = left.first() else {
             continue;
         };
-
-        let same_parity = left.relative_direction == right.relative_direction;
-        let left_key = canonical_directional_edge_key(&bonds[left.bond_id], &preorder_indices);
-        let right_key = canonical_directional_edge_key(&bonds[right.bond_id], &preorder_indices);
-        let (first, second) = if left_key <= right_key {
-            (left, right)
-        } else {
-            (right, left)
-        };
-        let second_direction = if same_parity { Bond::Up } else { Bond::Down };
-        for (neighbor, relative_direction) in [(first, Bond::Up), (second, second_direction)] {
-            paired_directional_bonds[neighbor.bond_id] = true;
-            bonds[neighbor.bond_id].expr = semantics[neighbor.bond_id]
-                .with_direction(neighbor.absolute(relative_direction))
-                .to_expr();
+        if right.is_empty() {
+            continue;
+        }
+        for &other in left.iter().chain(&right) {
+            unite_groups(&mut group_parent, first, other);
         }
     }
 
-    for ((bond, bond_semantics), paired) in bonds
-        .iter_mut()
-        .zip(&semantics)
-        .zip(&paired_directional_bonds)
-    {
-        if !paired && bond_semantics.direction().is_some() {
-            bond.expr = bond_semantics.with_direction(Bond::Up).to_expr();
+    let order_key = |bond_id: usize| {
+        (
+            canonical_directional_edge_key(&bonds[bond_id], &preorder_indices),
+            bond_id,
+        )
+    };
+    let mut leader_by_root = vec![None::<usize>; bonds.len()];
+    for bond_id in (0..bonds.len()).filter(|&bond_id| semantics[bond_id].direction().is_some()) {
+        let root = group_root(&mut group_parent, bond_id);
+        if leader_by_root[root].is_none_or(|leader| order_key(bond_id) < order_key(leader)) {
+            leader_by_root[root] = Some(bond_id);
+        }
+    }
+    for bond_id in 0..bonds.len() {
+        let Some(direction) = semantics[bond_id].direction() else {
+            continue;
+        };
+        let root = group_root(&mut group_parent, bond_id);
+        let leader = leader_by_root[root].expect("every directional bond leads or joins a group");
+        if semantics[leader].direction() == Some(Bond::Down) {
+            bonds[bond_id].expr = semantics[bond_id]
+                .with_direction(reversed_direction(direction))
+                .to_expr();
         }
     }
 
@@ -4224,6 +4227,20 @@ fn normalize_directional_double_bond_pairs(query: &QueryMol) -> QueryMol {
     )
 }
 
+const fn group_root(parent: &mut [usize], mut item: usize) -> usize {
+    while parent[item] != item {
+        parent[item] = parent[parent[item]];
+        item = parent[item];
+    }
+    item
+}
+
+const fn unite_groups(parent: &mut [usize], left: usize, right: usize) {
+    let left = group_root(parent, left);
+    let right = group_root(parent, right);
+    parent[right] = left;
+}
+
 const fn canonical_directional_edge_key(
     bond: &QueryBond,
     preorder_indices: &[usize],
@@ -4235,52 +4252,6 @@ const fn canonical_directional_edge_key(
     } else {
         (right, left)
     }
-}
-
-/// A directional bond next to a double bond, read from the double bond's side.
-struct DirectionalNeighbor {
-    bond_id: usize,
-    relative_direction: Bond,
-    center_is_src: bool,
-}
-
-impl DirectionalNeighbor {
-    /// Direction to store on the bond so that it reads `relative_direction`
-    /// from the double bond.
-    const fn absolute(&self, relative_direction: Bond) -> Bond {
-        if self.center_is_src {
-            reversed_direction(relative_direction)
-        } else {
-            relative_direction
-        }
-    }
-}
-
-fn neighboring_directional_bonds(
-    bonds: &[QueryBond],
-    semantics: &[BondSemantics],
-    incident_bonds: &[usize],
-    excluded_bond_id: usize,
-    center_atom: AtomId,
-) -> Vec<DirectionalNeighbor> {
-    incident_bonds
-        .iter()
-        .copied()
-        .filter(|&bond_id| bond_id != excluded_bond_id)
-        .filter_map(|bond_id| {
-            let direction = semantics[bond_id].direction()?;
-            let center_is_src = bonds[bond_id].src == center_atom;
-            Some(DirectionalNeighbor {
-                bond_id,
-                relative_direction: if center_is_src {
-                    reversed_direction(direction)
-                } else {
-                    direction
-                },
-                center_is_src,
-            })
-        })
-        .collect()
 }
 
 fn query_preorder_indices(query: &QueryMol, parent_bond_by_atom: &[Option<usize>]) -> Vec<usize> {
