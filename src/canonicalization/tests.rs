@@ -1484,6 +1484,11 @@ fn canonicalize_converges_spellings_of_two_directional_substituents_on_one_atom(
     );
 }
 
+#[test]
+fn canonicalize_handles_mixed_direction_double_bond_chain_fuzz_artifact() {
+    assert_canonical_roundtrips(r"F\C==C/\C=C\F=C/\C=C");
+}
+
 /// The canonical query and its printed form match every target the source matches.
 fn assert_canonical_forms_match_like_source(source: &str, targets: &[&str]) {
     let query = QueryMol::from_str(source).unwrap();
