@@ -9,6 +9,11 @@ permissions:
   contents: read
   actions: read
 
+# batch fuzzing joins this group, so it waits for pruning instead of overlapping it
+concurrency:
+  group: cflite-corpus-storage
+  cancel-in-progress: false
+
 jobs:
   Pruning:
     runs-on: ubuntu-latest
@@ -25,7 +30,7 @@ jobs:
         uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          fuzz-seconds: 600
+          fuzz-seconds: 5400 # shared evenly by the targets, each merge gets its slice
           mode: prune
           storage-repo: https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
           storage-repo-branch: fuzz-corpus
