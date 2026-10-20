@@ -39,6 +39,28 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --all-features --locked
 
+  msrv:
+    name: Minimum Supported Rust
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install minimum supported Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.92.0
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - name: Check without default features
+        run: cargo check -p smarts-rs --lib --no-default-features --locked
+
+      - name: Check all features
+        run: cargo check -p smarts-rs --lib --all-features --locked
+
   links:
     name: Link Check
     runs-on: ubuntu-latest

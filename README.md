@@ -3,10 +3,17 @@
 [![CI](https://github.com/earth-metabolome-initiative/smarts-rs/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/earth-metabolome-initiative/smarts-rs/actions/workflows/ci.yml)
 [![Codecov](https://codecov.io/gh/earth-metabolome-initiative/smarts-rs/graph/badge.svg?branch=main)](https://codecov.io/gh/earth-metabolome-initiative/smarts-rs)
 
-Rust support for parsing, canonicalizing, editing, screening, and matching
-SMARTS queries against SMILES targets.
+Rust support for parsing, canonicalizing, editing, screening, and matching SMARTS queries against SMILES targets. The library supports `no_std` with `alloc` on Rust `1.92` or newer.
 
 ## Basic SMARTS Utilities
+
+The examples require both crates as direct dependencies.
+
+```toml
+[dependencies]
+smarts-rs = "0.1.0"
+smiles-rs = "0.2.1"
+```
 
 SMARTS strings parse through `FromStr` into `smarts_rs::QueryMol`. The parsed query can be inspected directly, used for one-off matching, or compiled once and reused against prepared targets. Tetrahedral `@`, `@@`, `@TH1`, and `@TH2` require specified target chirality and constrain mapped neighbor orientation, including ring closures and bracket hydrogens.
 
