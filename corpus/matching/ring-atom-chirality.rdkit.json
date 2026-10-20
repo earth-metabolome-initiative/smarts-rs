@@ -1,0 +1,1314 @@
+[
+  {
+    "name": "acyclic-sameelement-anti-branch-first-t0",
+    "smarts": "CC[C@@H](C)O",
+    "smiles": "CC[C@H](O)C",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "acyclic-sameelement-anti-branch-first-t1",
+    "smarts": "CC[C@@H](C)O",
+    "smiles": "CC[C@@H](O)C",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "acyclic-sameelement-anti-forward-t0",
+    "smarts": "C[C@@H](O)CC",
+    "smiles": "CC[C@H](O)C",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "acyclic-sameelement-anti-forward-t1",
+    "smarts": "C[C@@H](O)CC",
+    "smiles": "CC[C@@H](O)C",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "acyclic-sameelement-anti-hetero-root-t1",
+    "smarts": "O[C@@H](C)CC",
+    "smiles": "CC[C@@H](O)C",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "acyclic-sameelement-anti-root-implicit-h-t0",
+    "smarts": "[C@@H](C)(CC)O",
+    "smiles": "CC[C@H](O)C",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "acyclic-sameelement-anti-root-implicit-h-t4-unspecified",
+    "smarts": "[C@@H](C)(CC)O",
+    "smiles": "CCC(C)O",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "acyclic-sameelement-branch-first-t0",
+    "smarts": "CC[C@H](C)O",
+    "smiles": "CC[C@H](O)C",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "acyclic-sameelement-branch-first-t1",
+    "smarts": "CC[C@H](C)O",
+    "smiles": "CC[C@@H](O)C",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "acyclic-sameelement-forward-t0",
+    "smarts": "C[C@H](O)CC",
+    "smiles": "CC[C@H](O)C",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "acyclic-sameelement-forward-t1",
+    "smarts": "C[C@H](O)CC",
+    "smiles": "CC[C@@H](O)C",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "acyclic-sameelement-forward-t2",
+    "smarts": "C[C@H](O)CC",
+    "smiles": "O[C@H](C)CC",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "acyclic-sameelement-forward-t3",
+    "smarts": "C[C@H](O)CC",
+    "smiles": "O[C@@H](C)CC",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "acyclic-sameelement-forward-t4-unspecified",
+    "smarts": "C[C@H](O)CC",
+    "smiles": "CCC(C)O",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "acyclic-sameelement-hetero-root-t0",
+    "smarts": "O[C@H](C)CC",
+    "smiles": "CC[C@H](O)C",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "acyclic-sameelement-hetero-root-t3",
+    "smarts": "O[C@H](C)CC",
+    "smiles": "O[C@@H](C)CC",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "acyclic-sameelement-root-implicit-h-t0",
+    "smarts": "[C@H](C)(CC)O",
+    "smiles": "CC[C@H](O)C",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "acyclic-sameelement-root-implicit-h-t1",
+    "smarts": "[C@H](C)(CC)O",
+    "smiles": "CC[C@@H](O)C",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "acyclic-three-centers-0",
+    "smarts": "C[C@H](F)C[C@H](F)C[C@H](F)C",
+    "smiles": "CC[C@H](F)C[C@H](F)C[C@H](F)C",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "acyclic-three-centers-flipped-middle",
+    "smarts": "C[C@H](F)C[C@H](F)C[C@H](F)C",
+    "smiles": "CC[C@H](F)C[C@@H](F)C[C@H](F)C",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "acyclic-two-centers-0",
+    "smarts": "C[C@H](O)C[C@H](O)C",
+    "smiles": "CC[C@H](O)C[C@H](O)C",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "acyclic-two-centers-1",
+    "smarts": "C[C@H](O)C[C@H](O)C",
+    "smiles": "CC[C@@H](O)C[C@@H](O)C",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "acyclic-two-centers-2",
+    "smarts": "C[C@H](O)C[C@H](O)C",
+    "smiles": "CC[C@H](O)C[C@@H](O)C",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "acyclic-two-centers-branch-lengths-0",
+    "smarts": "C[C@H](CC)OC[C@H](C)C",
+    "smiles": "CC[C@H](O)CCC[C@H](C)C",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "acyclic-two-centers-branch-lengths-1",
+    "smarts": "C[C@H](CC)OC[C@H](C)C",
+    "smiles": "CC[C@@H](O)CCC[C@H](C)C",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "acyclic-two-centers-second-unspecified",
+    "smarts": "C[C@H](O)C[C@H](O)C",
+    "smiles": "CC[C@H](O)CC(O)C",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "control-achiral-query-achiral-target",
+    "smarts": "C[C](O)CC",
+    "smiles": "CCC(C)O",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "control-achiral-query-chiral-target",
+    "smarts": "C[C](O)CC",
+    "smiles": "CC[C@H](O)C",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "control-ring-achiral-query-chiral-target",
+    "smarts": "[CH2]C1CCCCC1",
+    "smiles": "C[C@H]1CCCCC1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "count-chiral-ring-fragment-0",
+    "smarts": "C[C@H]1C(O)CCCC1",
+    "smiles": "O[C@H]1[C@H](C)CCCC1",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "count-chiral-ring-fragment-1",
+    "smarts": "C[C@H]1C(O)CCCC1",
+    "smiles": "O[C@H]1[C@@H](C)CCCC1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "count-chiral-ring-fragment-2",
+    "smarts": "C[C@H]1C(O)CCCC1",
+    "smiles": "O[C@H]1C[C@H](C)C(O)CC1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "count-three-acyclic-centers",
+    "smarts": "C[C@H](F)CC",
+    "smiles": "CC[C@H](F)CC[C@H](F)CC[C@H](F)C",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 2
+  },
+  {
+    "name": "count-two-equivalent-centers-0",
+    "smarts": "C[C@H](O)CC",
+    "smiles": "CC[C@H](O)COC[C@H](O)C",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "count-two-equivalent-centers-1",
+    "smarts": "C[C@H](O)CC",
+    "smiles": "CC[C@H](O)COC[C@@H](O)C",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "decalin-digit-swap-query-t0",
+    "smarts": "C2CCC[C@H]1[C@H]2CCCC1",
+    "smiles": "C1CCC[C@H]2[C@H]1CCCC2",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "decalin-digit-swap-query-t6-digit-swap",
+    "smarts": "C2CCC[C@H]1[C@H]2CCCC1",
+    "smiles": "C2CCC[C@@H]1[C@H]2CCCC1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "decalin-q0-t0",
+    "smarts": "C1CCC[C@H]2[C@H]1CCCC2",
+    "smiles": "C1CCC[C@H]2[C@H]1CCCC2",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "decalin-q0-t1",
+    "smarts": "C1CCC[C@H]2[C@H]1CCCC2",
+    "smiles": "C1CCC[C@H]2[C@@H]1CCCC2",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "decalin-q0-t2",
+    "smarts": "C1CCC[C@H]2[C@H]1CCCC2",
+    "smiles": "C1CCC[C@@H]2[C@@H]1CCCC2",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "decalin-q0-t3-unspecified",
+    "smarts": "C1CCC[C@H]2[C@H]1CCCC2",
+    "smiles": "C1CCCC2C1CCCC2",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "decalin-q0-t4-digit-swap",
+    "smarts": "C1CCC[C@H]2[C@H]1CCCC2",
+    "smiles": "C2CCC[C@H]1[C@H]2CCCC1",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "decalin-q0-t5",
+    "smarts": "C1CCC[C@H]2[C@H]1CCCC2",
+    "smiles": "C1CCC[C@@H]2[C@H]1CCCC2",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "decalin-q1-t0",
+    "smarts": "C1CCC[C@H]2[C@@H]1CCCC2",
+    "smiles": "C1CCC[C@H]2[C@H]1CCCC2",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "decalin-q1-t1",
+    "smarts": "C1CCC[C@H]2[C@@H]1CCCC2",
+    "smiles": "C1CCC[C@H]2[C@@H]1CCCC2",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "decalin-q1-t6-digit-swap",
+    "smarts": "C1CCC[C@H]2[C@@H]1CCCC2",
+    "smiles": "C2CCC[C@@H]1[C@H]2CCCC1",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "decalin-q2-t2",
+    "smarts": "C1CCC[C@@H]2[C@@H]1CCCC2",
+    "smiles": "C1CCC[C@@H]2[C@@H]1CCCC2",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "decalin-q2-t5",
+    "smarts": "C1CCC[C@@H]2[C@@H]1CCCC2",
+    "smiles": "C1CCC[C@@H]2[C@H]1CCCC2",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "dm5-12-q0-t0",
+    "smarts": "C[C@H]1[C@H](C)CCC1",
+    "smiles": "C[C@H]1[C@H](C)CCC1",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "dm5-12-q0-t1",
+    "smarts": "C[C@H]1[C@H](C)CCC1",
+    "smiles": "C[C@H]1[C@@H](C)CCC1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "dm5-12-q0-t2",
+    "smarts": "C[C@H]1[C@H](C)CCC1",
+    "smiles": "C[C@@H]1[C@@H](C)CCC1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "dm5-12-q0-t3",
+    "smarts": "C[C@H]1[C@H](C)CCC1",
+    "smiles": "C[C@@H]1[C@H](C)CCC1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "dm5-12-q0-t4-unspecified",
+    "smarts": "C[C@H]1[C@H](C)CCC1",
+    "smiles": "CC1C(C)CCC1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "dm5-12-q0-t5-reversed",
+    "smarts": "C[C@H]1[C@H](C)CCC1",
+    "smiles": "C[C@H]1CCC[C@H]1C",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "dm5-12-q0-t6-reversed",
+    "smarts": "C[C@H]1[C@H](C)CCC1",
+    "smiles": "C[C@@H]1CCC[C@@H]1C",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "dm5-12-q1-t0",
+    "smarts": "C[C@H]1[C@@H](C)CCC1",
+    "smiles": "C[C@H]1[C@H](C)CCC1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "dm5-12-q1-t1",
+    "smarts": "C[C@H]1[C@@H](C)CCC1",
+    "smiles": "C[C@H]1[C@@H](C)CCC1",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "dm5-12-q2-t2",
+    "smarts": "C[C@@H]1[C@@H](C)CCC1",
+    "smiles": "C[C@@H]1[C@@H](C)CCC1",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "dm5-12-q2-t3",
+    "smarts": "C[C@@H]1[C@@H](C)CCC1",
+    "smiles": "C[C@@H]1[C@H](C)CCC1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "dm5-12-q3-t5-reversed",
+    "smarts": "C[C@@H]1[C@H](C)CCC1",
+    "smiles": "C[C@H]1CCC[C@H]1C",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "dm5-12-q3-t6-reversed",
+    "smarts": "C[C@@H]1[C@H](C)CCC1",
+    "smiles": "C[C@@H]1CCC[C@@H]1C",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "dm5-13-q0-t0",
+    "smarts": "C[C@H]1CC[C@H](C)C1",
+    "smiles": "C[C@H]1CC[C@H](C)C1",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "dm5-13-q0-t1",
+    "smarts": "C[C@H]1CC[C@H](C)C1",
+    "smiles": "C[C@H]1CC[C@@H](C)C1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "dm5-13-q0-t2",
+    "smarts": "C[C@H]1CC[C@H](C)C1",
+    "smiles": "C[C@@H]1CC[C@@H](C)C1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "dm5-13-q0-t3-unspecified",
+    "smarts": "C[C@H]1CC[C@H](C)C1",
+    "smiles": "CC1CC(C)CC1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "dm5-13-q0-t4-reversed",
+    "smarts": "C[C@H]1CC[C@H](C)C1",
+    "smiles": "C[C@H]1C[C@H](C)CC1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "dm5-13-q1-t1",
+    "smarts": "C[C@H]1CC[C@@H](C)C1",
+    "smiles": "C[C@H]1CC[C@@H](C)C1",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "dm5-13-q2-t2",
+    "smarts": "C[C@@H]1CC[C@@H](C)C1",
+    "smiles": "C[C@@H]1CC[C@@H](C)C1",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "dmthp-14-q0-t0",
+    "smarts": "C[C@H]1CO[C@H](C)CC1",
+    "smiles": "C[C@H]1CO[C@H](C)CC1",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "dmthp-14-q0-t1",
+    "smarts": "C[C@H]1CO[C@H](C)CC1",
+    "smiles": "C[C@H]1CO[C@@H](C)CC1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "dmthp-14-q0-t2",
+    "smarts": "C[C@H]1CO[C@H](C)CC1",
+    "smiles": "C[C@@H]1CO[C@@H](C)CC1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "dmthp-14-q0-t3-unspecified",
+    "smarts": "C[C@H]1CO[C@H](C)CC1",
+    "smiles": "CC1COC(C)CC1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "dmthp-14-q1-t1",
+    "smarts": "C[C@H]1CO[C@@H](C)CC1",
+    "smiles": "C[C@H]1CO[C@@H](C)CC1",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "dmthp-14-q2-t2",
+    "smarts": "C[C@@H]1CO[C@@H](C)CC1",
+    "smiles": "C[C@@H]1CO[C@@H](C)CC1",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "explicit-h-target-h-node-query-t0",
+    "smarts": "[H][C@](Cl)(Br)F",
+    "smiles": "F[C@@](Cl)(Br)[H]",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "explicit-h-target-h-node-query-t1",
+    "smarts": "[H][C@@](Cl)(Br)F",
+    "smiles": "F[C@@](Cl)(Br)[H]",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "explicit-h-target-h-token-t0",
+    "smarts": "[C@](Cl)(Br)F",
+    "smiles": "F[C@](Cl)(Br)[H]",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "explicit-h-target-h-token-t1",
+    "smarts": "[C@](Cl)(Br)F",
+    "smiles": "F[C@@](Cl)(Br)[H]",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "explicit-h-target-implicit-h-query",
+    "smarts": "[C@H](Cl)(Br)F",
+    "smiles": "F[C@](Cl)(Br)[H]",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "hydrindane-digit-swap-query-t0",
+    "smarts": "C2CCC[C@H]1[C@H]2CCC1",
+    "smiles": "C1CCC[C@H]2[C@H]1CCC2",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "hydrindane-digit-swap-query-t4",
+    "smarts": "C2CCC[C@H]1[C@H]2CCC1",
+    "smiles": "C2CCC[C@H]1[C@H]2CCC1",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "hydrindane-q0-t0",
+    "smarts": "C1CCC[C@H]2[C@H]1CCC2",
+    "smiles": "C1CCC[C@H]2[C@H]1CCC2",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "hydrindane-q0-t1",
+    "smarts": "C1CCC[C@H]2[C@H]1CCC2",
+    "smiles": "C1CCC[C@H]2[C@@H]1CCC2",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "hydrindane-q0-t2",
+    "smarts": "C1CCC[C@H]2[C@H]1CCC2",
+    "smiles": "C1CCC[C@@H]2[C@@H]1CCC2",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "hydrindane-q0-t3-unspecified",
+    "smarts": "C1CCC[C@H]2[C@H]1CCC2",
+    "smiles": "C1CCCC2C1CCC2",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "hydrindane-q0-t4-digit-swap",
+    "smarts": "C1CCC[C@H]2[C@H]1CCC2",
+    "smiles": "C2CCC[C@H]1[C@H]2CCC1",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "hydrindane-q1-t1",
+    "smarts": "C1CCC[C@H]2[C@@H]1CCC2",
+    "smiles": "C1CCC[C@H]2[C@@H]1CCC2",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "implicit-h-query-deut-target",
+    "smarts": "[C@H](Cl)(Br)F",
+    "smiles": "F[C@]([2H])(Cl)Br",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "implicit-h-ring-query-deut-target",
+    "smarts": "[C@H]1CCCCC1",
+    "smiles": "C1[C@]([2H])CCCC1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "implicit-h-token-query-deut-target",
+    "smarts": "[C@](Cl)(Br)F",
+    "smiles": "F[C@]([2H])(Cl)Br",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "isotopic-generic-h-neighbor-deut-target",
+    "smarts": "[H][C@@](Cl)(Br)F",
+    "smiles": "F[C@]([2H])(Cl)Br",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "isotopic-h1-neighbor-query-implicit-target",
+    "smarts": "[1H][C@](Cl)(Br)F",
+    "smiles": "F[C@H](Cl)Br",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "isotopic-h2-neighbor-query-t0",
+    "smarts": "[2H][C@@](Cl)(Br)F",
+    "smiles": "F[C@]([2H])(Cl)Br",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "isotopic-h2-neighbor-query-t1",
+    "smarts": "[2H][C@](Cl)(Br)F",
+    "smiles": "F[C@]([2H])(Cl)Br",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "isotopic-h2-ring-neighbor-t0",
+    "smarts": "[2H][C@@]1CCCCC1",
+    "smiles": "C1[C@]([2H])CCCC1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "isotopic-h2-ring-neighbor-t1",
+    "smarts": "[2H][C@]1CCCCC1",
+    "smiles": "C1[C@]([2H])CCCC1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "isotopic-h2-ring-neighbor-unspecified",
+    "smarts": "[2H][C@@]1CCCCC1",
+    "smiles": "C1C([2H])CCCC1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "nonstereogenic-double-cl-anti-query",
+    "smarts": "[C@@H](Cl)(Cl)F",
+    "smiles": "F[C@H](Cl)Cl",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "nonstereogenic-double-cl-t0",
+    "smarts": "[C@H](Cl)(Cl)F",
+    "smiles": "F[C@H](Cl)Cl",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "nonstereogenic-double-cl-t1",
+    "smarts": "[C@H](Cl)(Cl)F",
+    "smiles": "F[C@@H](Cl)Cl",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "nonstereogenic-double-cl-unspecified-target",
+    "smarts": "[C@H](Cl)(Cl)F",
+    "smiles": "FC(Cl)Cl",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "nonstereogenic-quat-bridgehead-unspecified-target",
+    "smarts": "C1CC[C@]2(C)CCC1C2",
+    "smiles": "C1CC2(C)CCC1C2",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "nonstereogenic-quaternary-t0",
+    "smarts": "C[C@](C)(O)O",
+    "smiles": "C[C@](C)(O)O",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "nonstereogenic-quaternary-t1",
+    "smarts": "C[C@](C)(O)O",
+    "smiles": "C[C@@](C)(O)O",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "nonstereogenic-quaternary-unspecified-target",
+    "smarts": "C[C@](C)(O)O",
+    "smiles": "CC(C)(O)O",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "nonstereogenic-ring-methyl",
+    "smarts": "[C@H]1(C)CCCCC1",
+    "smiles": "CC1CCCCC1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "nonstereogenic-ring-methyl-anti",
+    "smarts": "[C@@H]1(C)CCCCC1",
+    "smiles": "CC1CCCCC1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "norbornane-3me-q0-t0",
+    "smarts": "C1CC2[C@H](C)CC1C2",
+    "smiles": "C1CC2[C@H](C)CC1C2",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "norbornane-3me-q0-t1",
+    "smarts": "C1CC2[C@H](C)CC1C2",
+    "smiles": "C1CC2[C@@H](C)CC1C2",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "norbornane-3me-q0-t2-unspecified",
+    "smarts": "C1CC2[C@H](C)CC1C2",
+    "smiles": "C1CC2C(C)CC1C2",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "norbornane-3me-q1-t1",
+    "smarts": "C1CC2[C@@H](C)CC1C2",
+    "smiles": "C1CC2[C@@H](C)CC1C2",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "norbornane-digit-swap-q3-t3",
+    "smarts": "C2CC1[C@@H](C)CC2C1",
+    "smiles": "C2CC1[C@@H](C)CC2C1",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "norbornane-digit-swap-query-t0",
+    "smarts": "C2CC1[C@H](C)CC2C1",
+    "smiles": "C1CC2[C@H](C)CC1C2",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "norbornane-digit-swap-query-t1",
+    "smarts": "C2CC1[C@H](C)CC2C1",
+    "smiles": "C1CC2[C@@H](C)CC1C2",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "ring5-anti-t1",
+    "smarts": "C[C@@H]1C(O)CCC1",
+    "smiles": "C[C@@H]1C(O)CCC1",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "ring5-open-t0",
+    "smarts": "C[C@H]1C(O)CCC1",
+    "smiles": "C[C@H]1C(O)CCC1",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "ring5-open-t1",
+    "smarts": "C[C@H]1C(O)CCC1",
+    "smiles": "C[C@@H]1C(O)CCC1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "ring5-open-t2-unspecified",
+    "smarts": "C[C@H]1C(O)CCC1",
+    "smiles": "CC1C(O)CCC1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "ring5-open-t3-reversed",
+    "smarts": "C[C@H]1C(O)CCC1",
+    "smiles": "C[C@H]1CCC(O)C1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "ring5-reversed-t3",
+    "smarts": "C[C@H]1CCC(O)C1",
+    "smiles": "C[C@H]1CCC(O)C1",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "ring5-root-t0",
+    "smarts": "[C@H](C)1C(O)CCC1",
+    "smiles": "C[C@H]1C(O)CCC1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "ring6-anti-t0",
+    "smarts": "C[C@@H]1C(O)CCCC1",
+    "smiles": "C[C@H]1C(O)CCCC1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "ring6-anti-t1",
+    "smarts": "C[C@@H]1C(O)CCCC1",
+    "smiles": "C[C@@H]1C(O)CCCC1",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "ring6-digit-two-t0",
+    "smarts": "C2[C@H](C)C(O)CCCC2",
+    "smiles": "C[C@H]1C(O)CCCC1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "ring6-open-t0",
+    "smarts": "C[C@H]1C(O)CCCC1",
+    "smiles": "C[C@H]1C(O)CCCC1",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "ring6-open-t1",
+    "smarts": "C[C@H]1C(O)CCCC1",
+    "smiles": "C[C@@H]1C(O)CCCC1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "ring6-open-t2-unspecified",
+    "smarts": "C[C@H]1C(O)CCCC1",
+    "smiles": "CC1C(O)CCCC1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "ring6-open-t3-reversed",
+    "smarts": "C[C@H]1C(O)CCCC1",
+    "smiles": "C[C@H]1CCCC(O)C1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "ring6-open-t4-reversed",
+    "smarts": "C[C@H]1C(O)CCCC1",
+    "smiles": "C[C@@H]1CCCC(O)C1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "ring6-reversed-t3",
+    "smarts": "C[C@H]1CCCC(O)C1",
+    "smiles": "C[C@H]1CCCC(O)C1",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "ring6-reversed-t4",
+    "smarts": "C[C@H]1CCCC(O)C1",
+    "smiles": "C[C@@H]1CCCC(O)C1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "ring6-root-t0",
+    "smarts": "[C@H](C)1C(O)CCCC1",
+    "smiles": "C[C@H]1C(O)CCCC1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "ring6-root-t1",
+    "smarts": "[C@H](C)1C(O)CCCC1",
+    "smiles": "C[C@@H]1C(O)CCCC1",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "root-explicit-h-node-implicit-target",
+    "smarts": "[H][C@](Cl)(Br)F",
+    "smiles": "F[C@H](Cl)Br",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "root-explicit-h-node-implicit-target-anti",
+    "smarts": "[H][C@@](Cl)(Br)F",
+    "smiles": "F[C@@H](Cl)Br",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "root-implicit-h-ether-t0",
+    "smarts": "[C@H](F)(CC)CO",
+    "smiles": "CO[C@H](F)CC",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "root-implicit-h-ether-t1",
+    "smarts": "[C@H](F)(CC)CO",
+    "smiles": "CO[C@@H](F)CC",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "root-implicit-h-halogen-t0",
+    "smarts": "[C@H](Cl)(Br)F",
+    "smiles": "F[C@H](Cl)Br",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "root-implicit-h-halogen-t1",
+    "smarts": "[C@H](Cl)(Br)F",
+    "smiles": "F[C@@H](Cl)Br",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "root-implicit-h-t0",
+    "smarts": "[C@H](F)(C)CC",
+    "smiles": "CC[C@H](F)C",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "root-implicit-h-t1",
+    "smarts": "[C@@H](F)(C)CC",
+    "smiles": "CC[C@H](F)C",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "root-no-h-token-t0",
+    "smarts": "[C@](F)(C)CC",
+    "smiles": "CC[C@H](F)C",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "spiro-quat-digit-swap-target",
+    "smarts": "C1CC2(CC1)CCC2",
+    "smiles": "C2CC1(CC2)CCC1",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "spiro-quat-hetero-chiral-vs-unspecified",
+    "smarts": "C1C[C@]2(CC1)CCOCC2",
+    "smiles": "C1CC2(CC1)CCOCC2",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "spiro-quat-hetero-ring-self",
+    "smarts": "C1CC2(CC1)CCOCC2",
+    "smiles": "C1CC2(CC1)CCOCC2",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "spiro-quat-self",
+    "smarts": "C1CC2(CC1)CCC2",
+    "smiles": "C1CC2(CC1)CCC2",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "spiro-ring-center-0",
+    "smarts": "C[C@H]1CC[C]2(CCC1)CCOC2",
+    "smiles": "C[C@H]1CC[C]2(CCC1)CCOC2",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "spiro-ring-center-1",
+    "smarts": "C[C@H]1CC[C]2(CCC1)CCOC2",
+    "smiles": "C[C@@H]1CC[C]2(CCC1)CCOC2",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "thf-anti-t1",
+    "smarts": "C[C@@H]1CCOC1",
+    "smiles": "C[C@@H]1CCOC1",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "thf-open-t0",
+    "smarts": "C[C@H]1CCOC1",
+    "smiles": "C[C@H]1CCOC1",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "thf-open-t1",
+    "smarts": "C[C@H]1CCOC1",
+    "smiles": "C[C@@H]1CCOC1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "thf-open-t2-unspecified",
+    "smarts": "C[C@H]1CCOC1",
+    "smiles": "CC1CCOC1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "thf-open-t3-hetero",
+    "smarts": "C[C@H]1CCOC1",
+    "smiles": "O1CCC[C@H]1C",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "thf-root-t0",
+    "smarts": "[C@H](C)1CCOC1",
+    "smiles": "C[C@H]1CCOC1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "thp-anti-t1",
+    "smarts": "C[C@@H]1COCCC1",
+    "smiles": "C[C@@H]1COCCC1",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "thp-hetero-t0",
+    "smarts": "O1C[C@H](C)CCC1",
+    "smiles": "C[C@H]1COCCC1",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "thp-open-t0",
+    "smarts": "C[C@H]1COCCC1",
+    "smiles": "C[C@H]1COCCC1",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "thp-open-t1",
+    "smarts": "C[C@H]1COCCC1",
+    "smiles": "C[C@@H]1COCCC1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "thp-open-t2-unspecified",
+    "smarts": "C[C@H]1COCCC1",
+    "smiles": "CC1OCCCC1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "thp-open-t3-hetero",
+    "smarts": "C[C@H]1COCCC1",
+    "smiles": "O1C[C@H](C)CCC1",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  },
+  {
+    "name": "thp-open-t4-hetero",
+    "smarts": "C[C@H]1COCCC1",
+    "smiles": "O1C[C@@H](C)CCC1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "thp-root-t0",
+    "smarts": "[C@H](C)1COCCC1",
+    "smiles": "C[C@H]1COCCC1",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "tricyclic-2ring-quat-chiral-vs-unspecified",
+    "smarts": "C1CC[C@]2(C)CC3CCC1CC23",
+    "smiles": "C1CC2(C)CC3CCC1CC23",
+    "use_chirality": true,
+    "expected_match": false,
+    "expected_count": 0
+  },
+  {
+    "name": "tricyclic-2ring-quat-self",
+    "smarts": "C1CC2(C)CC3CCC1CC23",
+    "smiles": "C1CC2(C)CC3CCC1CC23",
+    "use_chirality": true,
+    "expected_match": true,
+    "expected_count": 1
+  }
+]

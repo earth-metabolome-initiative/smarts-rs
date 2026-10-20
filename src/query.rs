@@ -309,6 +309,10 @@ impl QueryMol {
         self.atoms.get(atom_id)
     }
 
+    pub(crate) fn atom_expr_mut(&mut self, atom_id: AtomId) -> Option<&mut AtomExpr> {
+        self.atoms.get_mut(atom_id).map(|atom| &mut atom.expr)
+    }
+
     /// Returns one bond by dense identifier.
     #[inline]
     #[must_use]

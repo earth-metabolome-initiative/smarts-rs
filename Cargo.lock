@@ -398,7 +398,22 @@ dependencies = [
  "barnes-hut-tree",
  "bitvec",
  "hashbrown 0.17.1",
- "lender",
+ "lender 0.6.2",
+ "multi_ranged",
+ "num-traits",
+ "rand",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "geometric-traits"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cbc53e27137b6802ed1417ac7d85eee5e18857ae504247c8f8e527d806e2ff6d"
+dependencies = [
+ "barnes-hut-tree",
+ "hashbrown 0.17.1",
+ "lender 0.8.0",
  "multi_ranged",
  "num-traits",
  "rand",
@@ -510,6 +525,18 @@ name = "lender"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aeed4888de4544bf3ba2e111326978dbcc37f57bf2c7d6a6a78ed6c01f77ef93"
+dependencies = [
+ "aliasable",
+ "fallible-iterator",
+ "maybe-dangling",
+ "stable_try_trait_v2",
+]
+
+[[package]]
+name = "lender"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71ee39582f2e2a4dd0de3c898e944f5cba919eb2f61aecaaeb5279d1e6b9ae6f"
 dependencies = [
  "aliasable",
  "fallible-iterator",
@@ -895,7 +922,7 @@ dependencies = [
  "criterion",
  "elements_rs",
  "epserde",
- "geometric-traits",
+ "geometric-traits 0.1.0",
  "indicatif",
  "mem_dbg",
  "rayon",
@@ -908,12 +935,12 @@ dependencies = [
 
 [[package]]
 name = "smiles-rs"
-version = "0.1.6"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "463ab28c0171dc3d3333d1f53218987c31cf30f7d9ff1a597060282293d7cd76"
+checksum = "7357a49219a3c7f3f0d3e7b8d19fe67541b675c465fc5a531da599fba007fb9b"
 dependencies = [
  "elements_rs",
- "geometric-traits",
+ "geometric-traits 0.2.3",
  "hashbrown 0.17.1",
  "molecular-formulas",
  "smallvec",

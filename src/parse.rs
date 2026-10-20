@@ -2,11 +2,13 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
-use smiles_rs::bond::Bond;
+use smiles_rs::{atom::bracketed::chirality::Chirality, bond::Bond};
 
 use crate::bond_semantics::flip_directions;
 use crate::bracket::{parse_bracket_text, BracketParseError, BracketParseErrorKind};
+use crate::canonicalization::normalize_parsed_tetrahedral_chirality;
 use crate::error::UnsupportedFeature;
+use crate::matching::extract_chirality_from_bracket_tree;
 use crate::query::{
     parse_supported_bare_element, AtomExpr, BondExpr, BondExprTree, BondPrimitive, QueryAtom,
     QueryBond, QueryMol,
@@ -49,6 +51,7 @@ struct Parser<'a> {
     next_group_id: usize,
     component_groups: Vec<Option<usize>>,
     open_ring_closures: BTreeMap<u32, PendingRingClosure>,
+    stereo_neighbors: BTreeMap<usize, Vec<usize>>,
 }
 
 #[derive(Debug, Clone)]
@@ -56,6 +59,7 @@ struct PendingRingClosure {
     atom_id: usize,
     component_id: usize,
     explicit_bond: Option<BondExpr>,
+    stereo_position: Option<usize>,
 }
 
 impl<'a> Parser<'a> {
@@ -71,6 +75,7 @@ impl<'a> Parser<'a> {
             next_group_id: 0,
             component_groups: Vec::new(),
             open_ring_closures: BTreeMap::new(),
+            stereo_neighbors: BTreeMap::new(),
         }
     }
 
@@ -85,12 +90,14 @@ impl<'a> Parser<'a> {
             return Err(self.error(SmartsParseErrorKind::UnclosedRingClosure));
         }
 
-        Ok(QueryMol::from_parts(
+        let mut query = QueryMol::from_parts(
             self.atoms,
             self.bonds,
             self.current_component + 1,
             self.component_groups,
-        ))
+        );
+        normalize_parsed_tetrahedral_chirality(&mut query, self.stereo_neighbors);
+        Ok(query)
     }
 
     fn parse_scope(&mut self, stop_at_group_end: bool) -> Result<(), SmartsParseError> {
@@ -377,6 +384,14 @@ impl<'a> Parser<'a> {
             let bond_expr = resolve_ring_bond(open.explicit_bond, closing_bond)
                 .ok_or_else(|| self.error(SmartsParseErrorKind::ConflictingRingClosureBond))?;
 
+            if let Some(position) = open.stereo_position {
+                self.stereo_neighbors
+                    .get_mut(&open.atom_id)
+                    .expect("opening stereo atom exists")[position] = current_atom;
+            }
+            if let Some(neighbors) = self.stereo_neighbors.get_mut(&current_atom) {
+                neighbors.push(open.atom_id);
+            }
             self.bonds.push(QueryBond {
                 id: self.bonds.len(),
                 src: open.atom_id,
@@ -384,12 +399,21 @@ impl<'a> Parser<'a> {
                 expr: bond_expr,
             });
         } else {
+            let stereo_position = self
+                .stereo_neighbors
+                .get_mut(&current_atom)
+                .map(|neighbors| {
+                    let position = neighbors.len();
+                    neighbors.push(usize::MAX);
+                    position
+                });
             self.open_ring_closures.insert(
                 label,
                 PendingRingClosure {
                     atom_id: current_atom,
                     component_id: self.current_component,
                     explicit_bond: explicit_bond_expr,
+                    stereo_position,
                 },
             );
         }
@@ -493,6 +517,17 @@ impl<'a> Parser<'a> {
             component: self.current_component,
             expr,
         };
+        if matches!(
+            &atom.expr,
+            AtomExpr::Bracket(bracket)
+                if matches!(
+                    extract_chirality_from_bracket_tree(&bracket.tree),
+                    Some(Chirality::At | Chirality::AtAt | Chirality::TH(1 | 2))
+                )
+        ) {
+            self.stereo_neighbors
+                .insert(atom_id, self.current_atom.into_iter().collect());
+        }
 
         if let Some(prev_id) = self.current_atom {
             let bond_expr = incoming_bond.unwrap_or(BondExpr::Elided);
@@ -502,6 +537,9 @@ impl<'a> Parser<'a> {
                 dst: atom_id,
                 expr: bond_expr,
             });
+            if let Some(neighbors) = self.stereo_neighbors.get_mut(&prev_id) {
+                neighbors.push(atom_id);
+            }
         }
 
         self.atoms.push(atom);

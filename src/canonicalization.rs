@@ -279,39 +279,40 @@ impl QueryMol {
             return QueryCanonicalLabeling::new(order);
         }
 
+        let stereo_neighbors = self
+            .atoms()
+            .iter()
+            .any(|atom| {
+                matches!(
+                    atom_expr_chirality(&atom.expr),
+                    Some(Chirality::At | Chirality::AtAt | Chirality::TH(1 | 2))
+                ) && (3..=4).contains(&self.degree(atom.id))
+            })
+            .then(|| tetrahedral_stereo_neighbors(self));
         let atom_labels = self
             .atoms()
             .iter()
-            .map(|atom| atom.expr.to_string())
+            .map(|atom| {
+                if stereo_neighbors
+                    .as_ref()
+                    .is_some_and(|rows| rows[atom.id].is_some())
+                    && matches!(
+                        atom_expr_chirality(&atom.expr),
+                        Some(Chirality::AtAt | Chirality::TH(2))
+                    )
+                {
+                    invert_atom_expr_chirality(atom.expr.clone()).to_string()
+                } else {
+                    atom.expr.to_string()
+                }
+            })
             .collect::<Vec<_>>();
-
-        let bond_multiset_labels = build_bond_multiset_labels(self);
-        let nodes = SortedVec::try_from((0..self.atom_count()).collect::<Vec<_>>())
-            .unwrap_or_else(|_| unreachable!("dense node ids are always sorted"));
-        let edges = bond_multiset_labels
-            .iter()
-            .map(|(edge, _)| *edge)
-            .collect::<Vec<_>>();
-        let edge_count = edges.len();
-        let edges = UndiEdgesBuilder::default()
-            .expected_number_of_edges(edge_count)
-            .expected_shape(self.atom_count())
-            .edges(edges.into_iter())
-            .build()
-            .unwrap_or_else(|_| unreachable!("query graph uses dense atom ids"));
-        let graph: UndiGraph<usize> = UndiGraph::from((nodes, edges));
-
-        let result = CanonicalLabeling::canonical_labeling(
-            &graph,
-            |node_id| atom_labels[node_id].as_str(),
-            |node_a, node_b| {
-                bond_multiset_label_for_edge(&bond_multiset_labels, node_a, node_b).map_or_else(
-                    || unreachable!("canonizer only queries edges that exist"),
-                    |(_, label)| label.as_str(),
-                )
-            },
+        let bond_labels = build_bond_multiset_labels(self);
+        let order = stereo_neighbors.map_or_else(
+            || canonical_labeled_graph_order(&atom_labels, &bond_labels),
+            |neighbors| tetrahedral_canonical_order(self, &atom_labels, &bond_labels, &neighbors),
         );
-        QueryCanonicalLabeling::new(result.order)
+        QueryCanonicalLabeling::new(order)
     }
 
     fn exact_canonicalize_with_labeling(&self, labeling: &QueryCanonicalLabeling) -> Self {
@@ -491,6 +492,117 @@ impl QueryMol {
     }
 }
 
+fn canonical_labeled_graph_order<V: Ord, E: Ord>(
+    vertex_labels: &[V],
+    edge_labels: &[((usize, usize), E)],
+) -> Vec<usize> {
+    let nodes = SortedVec::try_from((0..vertex_labels.len()).collect::<Vec<_>>())
+        .unwrap_or_else(|_| unreachable!("dense node ids are always sorted"));
+    let edges = UndiEdgesBuilder::default()
+        .expected_number_of_edges(edge_labels.len())
+        .expected_shape(vertex_labels.len())
+        .edges(edge_labels.iter().map(|(edge, _)| *edge))
+        .build()
+        .unwrap_or_else(|_| unreachable!("query graph uses dense atom ids"));
+    let graph: UndiGraph<usize> = UndiGraph::from((nodes, edges));
+    CanonicalLabeling::canonical_labeling(
+        &graph,
+        |node_id| &vertex_labels[node_id],
+        |node_a, node_b| {
+            let key = (node_a.min(node_b), node_a.max(node_b));
+            let index = edge_labels
+                .binary_search_by_key(&key, |(edge, _)| *edge)
+                .unwrap_or_else(|_| unreachable!("canonizer only queries existing edges"));
+            &edge_labels[index].1
+        },
+    )
+    .order
+}
+
+fn tetrahedral_canonical_order(
+    query: &QueryMol,
+    atom_labels: &[String],
+    bond_labels: &[((usize, usize), String)],
+    stereo_neighbors: &[Option<[Option<AtomId>; 4]>],
+) -> Vec<AtomId> {
+    #[derive(PartialEq, Eq, PartialOrd, Ord)]
+    enum VertexLabel<'a> {
+        Atom(&'a str),
+        Slot,
+        Face,
+    }
+    #[derive(PartialEq, Eq, PartialOrd, Ord)]
+    enum EdgeLabel<'a> {
+        Bond(&'a str),
+        CenterSlot,
+        NeighborSlot,
+        CenterFace,
+        FacePort(u8),
+    }
+    // The twelve oriented faces admit exactly the even permutations of four slots.
+    const FACES: [[usize; 3]; 12] = [
+        [0, 1, 2],
+        [0, 2, 3],
+        [0, 3, 1],
+        [1, 0, 3],
+        [1, 2, 0],
+        [1, 3, 2],
+        [2, 0, 1],
+        [2, 1, 3],
+        [2, 3, 0],
+        [3, 0, 2],
+        [3, 1, 0],
+        [3, 2, 1],
+    ];
+    let stereo_count = stereo_neighbors.iter().flatten().count();
+    let extra_edges = stereo_neighbors
+        .iter()
+        .flatten()
+        .map(|slots| 52 + slots.iter().flatten().count())
+        .sum::<usize>();
+    let mut vertices = Vec::with_capacity(atom_labels.len() + 16 * stereo_count);
+    vertices.extend(atom_labels.iter().map(|label| VertexLabel::Atom(label)));
+    let mut edges = Vec::with_capacity(bond_labels.len() + extra_edges);
+    edges.extend(
+        bond_labels
+            .iter()
+            .map(|(edge, label)| (*edge, EdgeLabel::Bond(label))),
+    );
+    for (center, slots) in stereo_neighbors.iter().enumerate() {
+        let Some(mut slots) = *slots else {
+            continue;
+        };
+        if matches!(
+            atom_expr_chirality(&query.atoms()[center].expr),
+            Some(Chirality::AtAt | Chirality::TH(2))
+        ) {
+            slots.swap(0, 1);
+        }
+        let slot_vertices = slots.map(|neighbor| {
+            let vertex = vertices.len();
+            vertices.push(VertexLabel::Slot);
+            edges.push(((center, vertex), EdgeLabel::CenterSlot));
+            if let Some(neighbor) = neighbor {
+                edges.push(((neighbor, vertex), EdgeLabel::NeighborSlot));
+            }
+            vertex
+        });
+        for face in FACES {
+            let vertex = vertices.len();
+            vertices.push(VertexLabel::Face);
+            edges.push(((center, vertex), EdgeLabel::CenterFace));
+            for (port, slot) in [0, 1, 2].into_iter().zip(face) {
+                edges.push(((slot_vertices[slot], vertex), EdgeLabel::FacePort(port)));
+            }
+        }
+    }
+    edges.sort_unstable_by_key(|(edge, _)| *edge);
+    canonical_labeled_graph_order(&vertices, &edges)
+        .into_iter()
+        .filter(|&vertex| vertex < query.atom_count())
+        .collect()
+}
+
 fn atom_expr_contains_chirality(expr: &AtomExpr) -> bool {
     match expr {
         AtomExpr::Wildcard | AtomExpr::Bare { .. } => false,
@@ -508,28 +620,52 @@ fn chirality_adjusted_canonical_atoms(
     let new_parent_bond_by_atom = spanning_forest_parent_bonds(provisional);
     let old_ring_neighbors = ring_neighbors_by_atom(original, &old_parent_bond_by_atom);
     let new_ring_neighbors = ring_neighbors_by_atom(provisional, &new_parent_bond_by_atom);
-    let old_emitted_neighbors = emitted_stereo_neighbors(original);
-    let new_emitted_neighbors = emitted_stereo_neighbors(provisional);
+    let old_emitted_neighbors =
+        emitted_stereo_neighbors_from_parents(original, &old_parent_bond_by_atom);
+    let new_emitted_neighbors =
+        emitted_stereo_neighbors_from_parents(provisional, &new_parent_bond_by_atom);
+    let old_tetrahedral_neighbors = tetrahedral_stereo_neighbors_from_emitted(
+        original,
+        &old_parent_bond_by_atom,
+        &old_emitted_neighbors,
+    );
+    let new_tetrahedral_neighbors = tetrahedral_stereo_neighbors_from_emitted(
+        provisional,
+        &new_parent_bond_by_atom,
+        &new_emitted_neighbors,
+    );
 
     order
         .iter()
         .copied()
         .map(|old_atom| {
             let new_atom = new_index_of_old_atom[old_atom];
-            let mapped_old_neighbors = old_emitted_neighbors[old_atom]
-                .iter()
-                .copied()
-                .map(|neighbor| new_index_of_old_atom[neighbor])
-                .collect::<Vec<_>>();
-            let expr = if atom_expr_supports_emitted_parity(
-                &original.atoms()[old_atom].expr,
-                &mapped_old_neighbors,
-                &new_emitted_neighbors[new_atom],
-                old_ring_neighbors[old_atom].is_empty() && new_ring_neighbors[new_atom].is_empty(),
-            ) && emitted_neighbor_permutation_is_odd(
-                &mapped_old_neighbors,
-                &new_emitted_neighbors[new_atom],
+            let expr = &original.atoms()[old_atom].expr;
+            let invert = if matches!(
+                atom_expr_chirality(expr),
+                Some(Chirality::At | Chirality::AtAt | Chirality::TH(1 | 2))
             ) {
+                old_tetrahedral_neighbors[old_atom]
+                    .zip(new_tetrahedral_neighbors[new_atom])
+                    .is_some_and(|(old, new)| {
+                        let mapped =
+                            old.map(|neighbor| neighbor.map(|id| new_index_of_old_atom[id]));
+                        emitted_neighbor_permutation_is_odd(&mapped, &new)
+                    })
+            } else {
+                let mapped = old_emitted_neighbors[old_atom]
+                    .iter()
+                    .map(|&id| new_index_of_old_atom[id])
+                    .collect::<Vec<_>>();
+                atom_expr_supports_emitted_parity(
+                    expr,
+                    &mapped,
+                    &new_emitted_neighbors[new_atom],
+                    old_ring_neighbors[old_atom].is_empty()
+                        && new_ring_neighbors[new_atom].is_empty(),
+                ) && emitted_neighbor_permutation_is_odd(&mapped, &new_emitted_neighbors[new_atom])
+            };
+            let expr = if invert {
                 invert_atom_expr_chirality(original.atoms()[old_atom].expr.clone())
             } else {
                 original.atoms()[old_atom].expr.clone()
@@ -554,9 +690,6 @@ fn atom_expr_supports_emitted_parity(
     }
     let emitted_degree = from_neighbors.len().max(to_neighbors.len());
     match atom_expr_chirality(expr) {
-        Some(Chirality::At | Chirality::AtAt | Chirality::TH(1 | 2)) => {
-            emitted_degree == 4 || (emitted_degree == 3 && atom_expr_has_single_hydrogen(expr))
-        }
         Some(Chirality::AL(1 | 2)) => emitted_degree == 2,
         Some(_) | None => false,
     }
@@ -4036,7 +4169,10 @@ const fn invert_chirality(chirality: Chirality) -> Chirality {
     }
 }
 
-fn emitted_neighbor_permutation_is_odd(from_neighbors: &[AtomId], to_neighbors: &[AtomId]) -> bool {
+fn emitted_neighbor_permutation_is_odd<T: PartialEq>(
+    from_neighbors: &[T],
+    to_neighbors: &[T],
+) -> bool {
     if from_neighbors.len() != to_neighbors.len() {
         return false;
     }
@@ -4044,65 +4180,33 @@ fn emitted_neighbor_permutation_is_odd(from_neighbors: &[AtomId], to_neighbors: 
         return false;
     }
 
-    let permutation = permutation_from_neighbors(from_neighbors, to_neighbors);
-    permutation.is_some_and(|permutation| permutation_is_odd(&permutation))
+    let mut odd = false;
+    for (index, neighbor) in to_neighbors.iter().enumerate() {
+        let Some(from_index) = from_neighbors.iter().position(|from| from == neighbor) else {
+            return false;
+        };
+        for later in &to_neighbors[index + 1..] {
+            if from_neighbors[..from_index].contains(later) {
+                odd = !odd;
+            }
+        }
+    }
+    odd
 }
 
-fn has_duplicate_neighbors(neighbors: &[AtomId]) -> bool {
-    for (index, &neighbor) in neighbors.iter().enumerate() {
-        if neighbors[index + 1..].contains(&neighbor) {
+fn has_duplicate_neighbors<T: PartialEq>(neighbors: &[T]) -> bool {
+    for (index, neighbor) in neighbors.iter().enumerate() {
+        if neighbors[index + 1..].contains(neighbor) {
             return true;
         }
     }
     false
 }
 
-fn permutation_from_neighbors(
-    from_neighbors: &[AtomId],
-    to_neighbors: &[AtomId],
-) -> Option<Vec<usize>> {
-    let mut used = vec![false; from_neighbors.len()];
-    let mut permutation = Vec::with_capacity(to_neighbors.len());
-
-    for &to_neighbor in to_neighbors {
-        let index = from_neighbors
-            .iter()
-            .enumerate()
-            .find_map(|(index, &from_neighbor)| {
-                (!used[index] && from_neighbor == to_neighbor).then_some(index)
-            })?;
-        used[index] = true;
-        permutation.push(index);
-    }
-
-    Some(permutation)
-}
-
-fn permutation_is_odd(permutation: &[usize]) -> bool {
-    let mut visited = vec![false; permutation.len()];
-    let mut transpositions = 0usize;
-
-    for start in 0..permutation.len() {
-        if visited[start] {
-            continue;
-        }
-        let mut cursor = start;
-        let mut cycle_len = 0usize;
-        while !visited[cursor] {
-            visited[cursor] = true;
-            cursor = permutation[cursor];
-            cycle_len += 1;
-        }
-        if cycle_len > 0 {
-            transpositions += cycle_len - 1;
-        }
-    }
-
-    transpositions % 2 == 1
-}
-
-fn emitted_stereo_neighbors(query: &QueryMol) -> Vec<Vec<AtomId>> {
-    let parent_bond_by_atom = spanning_forest_parent_bonds(query);
+fn emitted_stereo_neighbors_from_parents(
+    query: &QueryMol,
+    parent_bond_by_atom: &[Option<usize>],
+) -> Vec<Vec<AtomId>> {
     let mut children_by_atom = vec![Vec::new(); query.atom_count()];
     for (atom_id, parent_bond) in parent_bond_by_atom.iter().copied().enumerate() {
         let Some(parent_bond) = parent_bond else {
@@ -4120,7 +4224,7 @@ fn emitted_stereo_neighbors(query: &QueryMol) -> Vec<Vec<AtomId>> {
         children.sort_unstable();
     }
 
-    let ring_neighbors_by_atom = ring_neighbors_by_atom(query, &parent_bond_by_atom);
+    let ring_neighbors_by_atom = ring_neighbors_by_atom(query, parent_bond_by_atom);
     (0..query.atom_count())
         .map(|atom_id| {
             let mut neighbors = Vec::new();
@@ -4137,6 +4241,83 @@ fn emitted_stereo_neighbors(query: &QueryMol) -> Vec<Vec<AtomId>> {
             neighbors
         })
         .collect()
+}
+
+/// Returns tetrahedral slots in graph emission order, including the unnamed fourth neighbor.
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "shared internally, and unreachable_pub rejects plain pub"
+)]
+pub(crate) fn tetrahedral_stereo_neighbors(query: &QueryMol) -> Vec<Option<[Option<AtomId>; 4]>> {
+    let parents = spanning_forest_parent_bonds(query);
+    let emitted = emitted_stereo_neighbors_from_parents(query, &parents);
+    tetrahedral_stereo_neighbors_from_emitted(query, &parents, &emitted)
+}
+
+fn tetrahedral_stereo_neighbors_from_emitted(
+    query: &QueryMol,
+    parents: &[Option<usize>],
+    emitted: &[Vec<AtomId>],
+) -> Vec<Option<[Option<AtomId>; 4]>> {
+    emitted
+        .iter()
+        .enumerate()
+        .map(|(atom_id, neighbors)| {
+            tetrahedral_neighbor_slots(
+                &query.atoms()[atom_id].expr,
+                neighbors,
+                parents[atom_id].is_some(),
+            )
+        })
+        .collect()
+}
+
+fn tetrahedral_neighbor_slots(
+    expr: &AtomExpr,
+    neighbors: &[AtomId],
+    incoming: bool,
+) -> Option<[Option<AtomId>; 4]> {
+    if !matches!(
+        atom_expr_chirality(expr),
+        Some(Chirality::At | Chirality::AtAt | Chirality::TH(1 | 2))
+    ) || !(3..=4).contains(&neighbors.len())
+    {
+        return None;
+    }
+    let mut slots = core::array::from_fn(|index| neighbors.get(index).copied());
+    if neighbors.len() == 3 && atom_expr_has_single_hydrogen(expr) {
+        slots[usize::from(incoming)..].rotate_right(1);
+    }
+    Some(slots)
+}
+
+/// Normalizes parsed tetrahedral tags to graph emission order.
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "shared internally, and unreachable_pub rejects plain pub"
+)]
+pub(crate) fn normalize_parsed_tetrahedral_chirality(
+    query: &mut QueryMol,
+    parsed: BTreeMap<AtomId, Vec<AtomId>>,
+) {
+    if parsed.is_empty() {
+        return;
+    }
+    let emitted = tetrahedral_stereo_neighbors(query);
+    for (atom_id, neighbors) in parsed {
+        let incoming = neighbors.first().is_some_and(|&id| id < atom_id);
+        let Some(slots) =
+            tetrahedral_neighbor_slots(&query.atoms()[atom_id].expr, &neighbors, incoming)
+        else {
+            continue;
+        };
+        if emitted[atom_id].is_some_and(|order| emitted_neighbor_permutation_is_odd(&slots, &order))
+        {
+            let expr = query.atom_expr_mut(atom_id).expect("parsed atom exists");
+            let original = core::mem::replace(expr, AtomExpr::Wildcard);
+            *expr = invert_atom_expr_chirality(original);
+        }
+    }
 }
 
 /// Orients every group of directional bonds that meet at stereo double bonds.
@@ -4413,18 +4594,6 @@ fn build_bond_multiset_labels(query: &QueryMol) -> Vec<((AtomId, AtomId), String
         grouped.push((edge, label));
     }
     grouped
-}
-
-fn bond_multiset_label_for_edge(
-    labels: &[((AtomId, AtomId), String)],
-    node_a: AtomId,
-    node_b: AtomId,
-) -> Option<&((AtomId, AtomId), String)> {
-    let edge = (node_a.min(node_b), node_a.max(node_b));
-    labels
-        .binary_search_by_key(&edge, |(candidate, _)| *candidate)
-        .ok()
-        .map(|index| &labels[index])
 }
 
 fn canonicalization_bond_expr_rank(expr: &BondExpr) -> (u8, String) {
