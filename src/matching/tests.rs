@@ -5,11 +5,10 @@ use smiles_rs::Smiles;
 
 use super::{
     component_constraints_match, component_embedding_assignment_exists, select_next_query_atom,
-    select_next_query_atom_for_target, should_use_disconnected_component_search, AtomStereoCache,
-    CompiledQuery, ComponentEmbedding, ComponentEmbeddingSet, ComponentMatcher, ComponentPlanEntry,
+    select_next_query_atom_for_target, should_use_disconnected_component_search, CompiledQuery,
+    ComponentEmbedding, ComponentEmbeddingSet, ComponentMatcher, ComponentPlanEntry,
     FreshSearchBuffers, MatchScratch, RecursiveMatchCache, NO_MATCH_LIMIT,
 };
-use super::{render_charge, render_target_stereo_atom};
 use super::{AtomFastPredicate, MatchLimitResult, MatchOutcomeLimitResult};
 use crate::error::SmartsMatchError;
 use crate::prepared::PreparedTarget;
@@ -411,14 +410,10 @@ fn bondless_boolean_fast_path_matches_counting_reference() {
 fn target_aware_root_selection_prefers_more_selective_unanchored_component() {
     let compiled = CompiledQuery::new(QueryMol::from_str("C.[Cl-].[Na+]").unwrap()).unwrap();
     let target = PreparedTarget::new(Smiles::from_str("CC.[Cl-].[Na+]").unwrap());
-    let mut atom_stereo_cache = AtomStereoCache::new();
     let mut recursive_cache =
         RecursiveMatchCache::new(compiled.recursive_cache_slots, target.atom_count());
     let mut scratch = FreshSearchBuffers::new(&compiled, &target, &mut recursive_cache);
-    let context =
-        scratch
-            .view()
-            .into_context(&compiled, &mut atom_stereo_cache, &mut recursive_cache);
+    let context = scratch.view().into_context(&compiled, &mut recursive_cache);
 
     assert_eq!(
         select_next_query_atom(
@@ -435,14 +430,10 @@ fn target_aware_root_selection_prefers_more_selective_unanchored_component() {
 fn target_aware_root_selection_scans_unanchored_recursive_misses() {
     let compiled = CompiledQuery::new(QueryMol::from_str("C.[!$([!#1])]").unwrap()).unwrap();
     let target = PreparedTarget::new(Smiles::from_str("CCCC").unwrap());
-    let mut atom_stereo_cache = AtomStereoCache::new();
     let mut recursive_cache =
         RecursiveMatchCache::new(compiled.recursive_cache_slots, target.atom_count());
     let mut scratch = FreshSearchBuffers::new(&compiled, &target, &mut recursive_cache);
-    let context =
-        scratch
-            .view()
-            .into_context(&compiled, &mut atom_stereo_cache, &mut recursive_cache);
+    let context = scratch.view().into_context(&compiled, &mut recursive_cache);
 
     assert_eq!(context.query_atom_anchor_widths[1], 0);
     assert_eq!(select_next_query_atom_for_target(&context), 1);
@@ -1204,53 +1195,6 @@ fn semantic_double_bond_stereo_is_respected() {
         .unwrap()
         .matches("CC=CC")
         .unwrap());
-}
-
-#[test]
-fn render_charge_formats_each_sign_and_magnitude() {
-    assert_eq!(render_charge(0), "");
-    assert_eq!(render_charge(1), "+");
-    assert_eq!(render_charge(-1), "-");
-    assert_eq!(render_charge(2), "+2");
-    assert_eq!(render_charge(-2), "-2");
-    assert_eq!(render_charge(3), "+3");
-    assert_eq!(render_charge(-4), "-4");
-}
-
-#[test]
-fn render_target_stereo_atom_handles_plain_charged_isotope_and_aromatic_atoms() {
-    let plain = PreparedTarget::new(Smiles::from_str("CO").unwrap());
-    assert_eq!(render_target_stereo_atom(&plain, 0).as_deref(), Some("C"));
-
-    let aromatic = PreparedTarget::new(Smiles::from_str("c1ccccc1").unwrap());
-    assert_eq!(
-        render_target_stereo_atom(&aromatic, 0).as_deref(),
-        Some("c")
-    );
-
-    let anion = PreparedTarget::new(Smiles::from_str("[O-]C").unwrap());
-    assert_eq!(
-        render_target_stereo_atom(&anion, 0).as_deref(),
-        Some("[O-]")
-    );
-
-    let cation = PreparedTarget::new(Smiles::from_str("[NH4+]").unwrap());
-    assert_eq!(
-        render_target_stereo_atom(&cation, 0).as_deref(),
-        Some("[N+]")
-    );
-
-    let isotope = PreparedTarget::new(Smiles::from_str("[13C]C").unwrap());
-    assert_eq!(
-        render_target_stereo_atom(&isotope, 0).as_deref(),
-        Some("[13C]")
-    );
-
-    let multi_charge = PreparedTarget::new(Smiles::from_str("[Mg+2]").unwrap());
-    assert_eq!(
-        render_target_stereo_atom(&multi_charge, 0).as_deref(),
-        Some("[Mg+2]")
-    );
 }
 
 #[test]

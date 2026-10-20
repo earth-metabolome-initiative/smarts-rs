@@ -1,8 +1,6 @@
 use alloc::{
     boxed::Box,
     collections::{BTreeMap, BTreeSet},
-    string::String,
-    string::ToString,
 };
 use core::cell::{Cell, RefCell};
 #[cfg(all(
@@ -39,7 +37,6 @@ type CompiledQueryParts = (
     QueryAtomScores,
     QueryStereoPlan,
 );
-type AtomStereoCache = BTreeMap<AtomStereoCacheKey, Option<Chirality>>;
 type UniqueMatches = BTreeMap<Box<[usize]>, Box<[usize]>>;
 type MatchKeys = alloc::vec::Vec<Box<[usize]>>;
 
@@ -56,7 +53,6 @@ struct SearchContext<'a, L: MatchLimiter> {
     bondless_candidates: &'a mut alloc::vec::Vec<usize>,
     bondless_target_assignments: &'a mut alloc::vec::Vec<Option<QueryAtomId>>,
     bondless_seen_targets: &'a mut alloc::vec::Vec<bool>,
-    atom_stereo_cache: &'a mut AtomStereoCache,
     recursive_cache: &'a mut RecursiveMatchCache,
     limit: &'a L,
 }
@@ -76,7 +72,6 @@ struct SearchScratchView<'a, L: MatchLimiter> {
 
 struct SearchScratchParts<'a, L: MatchLimiter> {
     view: SearchScratchView<'a, L>,
-    atom_stereo_cache: &'a mut AtomStereoCache,
     recursive_cache: &'a mut RecursiveMatchCache,
 }
 
@@ -179,7 +174,6 @@ impl<'a, L: MatchLimiter> SearchScratchView<'a, L> {
     fn into_context(
         self,
         query: &'a CompiledQuery,
-        atom_stereo_cache: &'a mut AtomStereoCache,
         recursive_cache: &'a mut RecursiveMatchCache,
     ) -> SearchContext<'a, L> {
         SearchContext {
@@ -195,7 +189,6 @@ impl<'a, L: MatchLimiter> SearchScratchView<'a, L> {
             bondless_candidates: self.bondless_candidates,
             bondless_target_assignments: self.bondless_target_assignments,
             bondless_seen_targets: self.bondless_seen_targets,
-            atom_stereo_cache,
             recursive_cache,
             limit: self.limit,
         }
@@ -228,6 +221,7 @@ impl<L: MatchLimiter> SearchContext<'_, L> {
 struct QueryStereoPlan {
     directional_bond_ids: alloc::vec::Vec<bool>,
     double_bond_constraints: alloc::vec::Vec<QueryDoubleBondStereoConstraint>,
+    tetrahedral_constraints: alloc::vec::Vec<QueryTetrahedralStereoConstraint>,
 }
 
 /// Two directional substituents across a query double bond, required on the
@@ -242,17 +236,20 @@ struct QueryDoubleBondStereoConstraint {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct QueryTetrahedralStereoConstraint {
+    center_atom: QueryAtomId,
+    anticlockwise: bool,
+    slots: [Option<QueryAtomId>; 4],
+    /// Whether the `None` slot is a bracket hydrogen rather than the unnamed fourth substituent.
+    none_slot_is_hydrogen: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct QueryDirectionalSubstituent {
     bond_id: usize,
     atom: QueryAtomId,
     /// Direction read from the double-bond atom towards the substituent.
     outward_direction: Bond,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct AtomStereoCacheKey {
-    query_atom_id: QueryAtomId,
-    neighbor_tokens: alloc::vec::Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -314,11 +311,16 @@ struct CompiledBondMatcher {
     ring_sensitive: bool,
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "cached predicate requirements are independent"
+)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CompiledAtomMatcher {
     predicates: Box<[AtomFastPredicate]>,
     needs_atom: bool,
     needs_aromatic: bool,
+    requires_tetrahedral: bool,
     complete: bool,
 }
 
@@ -854,7 +856,6 @@ pub struct MatchScratch {
     bondless_candidates: alloc::vec::Vec<usize>,
     bondless_target_assignments: alloc::vec::Vec<Option<QueryAtomId>>,
     bondless_seen_targets: alloc::vec::Vec<bool>,
-    atom_stereo_cache: AtomStereoCache,
     recursive_cache: RecursiveMatchCache,
 }
 
@@ -878,7 +879,6 @@ impl MatchScratch {
             bondless_candidates: alloc::vec::Vec::new(),
             bondless_target_assignments: alloc::vec::Vec::new(),
             bondless_seen_targets: alloc::vec::Vec::new(),
-            atom_stereo_cache: AtomStereoCache::new(),
             recursive_cache: RecursiveMatchCache::new(0, 0),
         }
     }
@@ -916,7 +916,6 @@ impl MatchScratch {
             bondless_candidates,
             bondless_target_assignments,
             bondless_seen_targets,
-            atom_stereo_cache,
             recursive_cache,
         } = self;
         SearchScratchParts {
@@ -932,7 +931,6 @@ impl MatchScratch {
                 bondless_seen_targets,
                 limit,
             },
-            atom_stereo_cache,
             recursive_cache,
         }
     }
@@ -974,7 +972,6 @@ impl MatchScratch {
 
     fn prepare_caches(&mut self, query: &CompiledQuery, target: &PreparedTarget) {
         let target_atom_count = target.atom_count();
-        self.atom_stereo_cache.clear();
         self.recursive_cache
             .reset(query.recursive_cache_slots, target_atom_count);
     }
@@ -1620,16 +1617,23 @@ fn compile_atom_matchers(query: &QueryMol) -> Box<[CompiledAtomMatcher]> {
 }
 
 fn compile_atom_matcher(expr: &AtomExpr) -> CompiledAtomMatcher {
+    let requires_tetrahedral =
+        extract_query_chirality(expr).is_some_and(query_chirality_requires_tetrahedral_match);
     if let Some(predicates) = compile_complete_atom_predicates(expr) {
-        return compile_predicate_atom_matcher(predicates, true);
+        return compile_predicate_atom_matcher(predicates, true, requires_tetrahedral);
     }
 
-    compile_predicate_atom_matcher(compile_required_atom_predicates(expr), false)
+    compile_predicate_atom_matcher(
+        compile_required_atom_predicates(expr),
+        false,
+        requires_tetrahedral,
+    )
 }
 
 fn compile_predicate_atom_matcher(
     predicates: alloc::vec::Vec<AtomFastPredicate>,
     complete: bool,
+    requires_tetrahedral: bool,
 ) -> CompiledAtomMatcher {
     let needs_atom = predicates.iter().any(|predicate| {
         matches!(
@@ -1647,6 +1651,7 @@ fn compile_predicate_atom_matcher(
         predicates: predicates.into_boxed_slice(),
         needs_atom,
         needs_aromatic,
+        requires_tetrahedral,
         complete,
     }
 }
@@ -1747,6 +1752,11 @@ fn compile_complete_primitive_predicates(
 
 fn single_atom_recursive_query_expr(query: &QueryMol) -> Option<&AtomExpr> {
     if query.atom_count() != 1 || query.bond_count() != 0 {
+        return None;
+    }
+    if extract_query_chirality(&query.atoms()[0].expr)
+        .is_some_and(query_chirality_requires_tetrahedral_match)
+    {
         return None;
     }
     match &query.atoms()[0].expr {
@@ -1851,9 +1861,9 @@ fn atom_expr_order_score(expr: &AtomExpr) -> usize {
 fn bracket_expr_order_score(tree: &BracketExprTree) -> usize {
     match tree {
         BracketExprTree::Primitive(primitive) => atom_primitive_order_score(primitive),
-        BracketExprTree::Not(_) => double_negated_bracket_tree(tree)
-            .map(bracket_expr_order_score)
-            .unwrap_or_default(),
+        BracketExprTree::Not(_) => {
+            double_negated_bracket_tree(tree).map_or(0, bracket_expr_order_score)
+        }
         BracketExprTree::Or(items) => items
             .iter()
             .map(bracket_expr_order_score)
@@ -2052,17 +2062,9 @@ fn bracket_tree_contains_recursive_predicate(tree: &BracketExprTree) -> bool {
 }
 
 fn query_matches(query: &CompiledQuery, target: &PreparedTarget) -> bool {
-    let mut atom_stereo_cache = AtomStereoCache::new();
     let mut recursive_cache =
         RecursiveMatchCache::new(query.recursive_cache_slots, target.atom_count());
-    query_matches_with_mapping(
-        query,
-        target,
-        &mut atom_stereo_cache,
-        &mut recursive_cache,
-        None,
-        None,
-    )
+    query_matches_with_mapping(query, target, &mut recursive_cache, None, None)
 }
 
 fn query_matches_with_scratch(
@@ -2089,7 +2091,6 @@ fn query_matches_with_scratch(
         return three_atom_query_matches(
             query,
             target,
-            &mut scratch.atom_stereo_cache,
             &mut scratch.recursive_cache,
             layout,
             initial_mapping,
@@ -2098,17 +2099,9 @@ fn query_matches_with_scratch(
     scratch.prepare(query, target);
     let SearchScratchParts {
         view,
-        atom_stereo_cache,
         recursive_cache,
     } = scratch.search_parts();
-    query_matches_with_mapping_state(
-        query,
-        target,
-        atom_stereo_cache,
-        recursive_cache,
-        view,
-        initial_mapping,
-    )
+    query_matches_with_mapping_state(query, target, recursive_cache, view, initial_mapping)
 }
 
 fn query_matches_with_scratch_and_interrupt<F>(
@@ -2157,13 +2150,11 @@ fn query_matches_with_scratch_limit<L: MatchLimiter>(
     scratch.prepare_with_limit(query, target, limit);
     let SearchScratchParts {
         view,
-        atom_stereo_cache,
         recursive_cache,
     } = scratch.search_parts_with_limit(limit);
     query_matches_with_mapping_state(
         query,
         target,
-        atom_stereo_cache,
         recursive_cache,
         view,
         InitialAtomMapping::default(),
@@ -2171,17 +2162,9 @@ fn query_matches_with_scratch_limit<L: MatchLimiter>(
 }
 
 fn query_match_outcome(query: &CompiledQuery, target: &PreparedTarget) -> MatchOutcome {
-    let mut atom_stereo_cache = AtomStereoCache::new();
     let mut recursive_cache =
         RecursiveMatchCache::new(query.recursive_cache_slots, target.atom_count());
-    query_match_outcome_with_mapping(
-        query,
-        target,
-        &mut atom_stereo_cache,
-        &mut recursive_cache,
-        None,
-        None,
-    )
+    query_match_outcome_with_mapping(query, target, &mut recursive_cache, None, None)
 }
 
 fn query_match_outcome_with_scratch(
@@ -2242,10 +2225,9 @@ fn query_match_outcome_with_scratch_limit<L: MatchLimiter>(
     scratch.prepare_with_limit(query, target, limit);
     let SearchScratchParts {
         view,
-        atom_stereo_cache,
         recursive_cache,
     } = scratch.search_parts_with_limit(limit);
-    let mut context = view.into_context(query, atom_stereo_cache, recursive_cache);
+    let mut context = view.into_context(query, recursive_cache);
     let mut coverage = MatchCoverageAccumulator::new(target);
     if let Some(mapped_count) =
         bind_initial_mapping(query, target, &mut context, InitialAtomMapping::default())
@@ -2283,10 +2265,9 @@ fn with_scratch_bound_search_context<R>(
     scratch.prepare(query, target);
     let SearchScratchParts {
         view,
-        atom_stereo_cache,
         recursive_cache,
     } = scratch.search_parts();
-    let mut context = view.into_context(query, atom_stereo_cache, recursive_cache);
+    let mut context = view.into_context(query, recursive_cache);
     let mapped_count =
         bind_initial_mapping(query, target, &mut context, InitialAtomMapping::default())?;
     Some(run(&mut context, mapped_count))
@@ -2296,37 +2277,20 @@ fn query_substructure_matches(
     query: &CompiledQuery,
     target: &PreparedTarget,
 ) -> Box<[Box<[usize]>]> {
-    let mut atom_stereo_cache = AtomStereoCache::new();
     let mut recursive_cache =
         RecursiveMatchCache::new(query.recursive_cache_slots, target.atom_count());
-    query_substructure_matches_with_mapping(
-        query,
-        target,
-        &mut atom_stereo_cache,
-        &mut recursive_cache,
-        None,
-        None,
-    )
+    query_substructure_matches_with_mapping(query, target, &mut recursive_cache, None, None)
 }
 
 fn query_match_count(query: &CompiledQuery, target: &PreparedTarget) -> usize {
-    let mut atom_stereo_cache = AtomStereoCache::new();
     let mut recursive_cache =
         RecursiveMatchCache::new(query.recursive_cache_slots, target.atom_count());
-    query_match_count_with_mapping(
-        query,
-        target,
-        &mut atom_stereo_cache,
-        &mut recursive_cache,
-        None,
-        None,
-    )
+    query_match_count_with_mapping(query, target, &mut recursive_cache, None, None)
 }
 
 fn query_matches_with_mapping(
     query: &CompiledQuery,
     target: &PreparedTarget,
-    atom_stereo_cache: &mut AtomStereoCache,
     recursive_cache: &mut RecursiveMatchCache,
     initial_query_atom: Option<QueryAtomId>,
     initial_target_atom: Option<usize>,
@@ -2344,21 +2308,13 @@ fn query_matches_with_mapping(
         return two_atom_query_matches(query, target, recursive_cache, initial_mapping);
     }
     if let Some(layout) = three_atom_tree_layout(query) {
-        return three_atom_query_matches(
-            query,
-            target,
-            atom_stereo_cache,
-            recursive_cache,
-            layout,
-            initial_mapping,
-        );
+        return three_atom_query_matches(query, target, recursive_cache, layout, initial_mapping);
     }
 
     let mut scratch = FreshSearchBuffers::new(query, target, recursive_cache);
     query_matches_with_mapping_state(
         query,
         target,
-        atom_stereo_cache,
         recursive_cache,
         scratch.view(),
         initial_mapping,
@@ -2368,12 +2324,11 @@ fn query_matches_with_mapping(
 fn query_matches_with_mapping_state<L: MatchLimiter>(
     query: &CompiledQuery,
     target: &PreparedTarget,
-    atom_stereo_cache: &mut AtomStereoCache,
     recursive_cache: &mut RecursiveMatchCache,
     scratch: SearchScratchView<'_, L>,
     initial_mapping: InitialAtomMapping,
 ) -> bool {
-    let mut context = scratch.into_context(query, atom_stereo_cache, recursive_cache);
+    let mut context = scratch.into_context(query, recursive_cache);
     let Some(mapped_count) = bind_initial_mapping(query, target, &mut context, initial_mapping)
     else {
         return false;
@@ -2401,7 +2356,6 @@ fn query_matches_with_mapping_state<L: MatchLimiter>(
 fn query_match_outcome_with_mapping(
     query: &CompiledQuery,
     target: &PreparedTarget,
-    atom_stereo_cache: &mut AtomStereoCache,
     recursive_cache: &mut RecursiveMatchCache,
     initial_query_atom: Option<QueryAtomId>,
     initial_target_atom: Option<usize>,
@@ -2411,7 +2365,6 @@ fn query_match_outcome_with_mapping(
     let _ = with_fresh_bound_search_context(
         query,
         target,
-        atom_stereo_cache,
         recursive_cache,
         initial_mapping,
         |context, mapped_count| {
@@ -2491,15 +2444,12 @@ fn has_small_ungrouped_component_tail(query: &CompiledQuery) -> bool {
 fn with_fresh_bound_search_context<R>(
     query: &CompiledQuery,
     target: &PreparedTarget,
-    atom_stereo_cache: &mut AtomStereoCache,
     recursive_cache: &mut RecursiveMatchCache,
     initial_mapping: InitialAtomMapping,
     run: impl FnOnce(&mut SearchContext<'_, NoMatchLimit>, usize) -> R,
 ) -> Option<R> {
     let mut scratch = FreshSearchBuffers::new(query, target, recursive_cache);
-    let mut context = scratch
-        .view()
-        .into_context(query, atom_stereo_cache, recursive_cache);
+    let mut context = scratch.view().into_context(query, recursive_cache);
     let mapped_count = bind_initial_mapping(query, target, &mut context, initial_mapping)?;
     Some(run(&mut context, mapped_count))
 }
@@ -2580,6 +2530,9 @@ fn compiled_query_atom_matches_with_limit<L: MatchLimiter>(
     if !atom_fast_predicates_match(atom_matcher, target, target_atom) {
         return false;
     }
+    if atom_matcher.requires_tetrahedral && target.tetrahedral_chirality(target_atom).is_none() {
+        return false;
+    }
     if atom_matcher.complete {
         return true;
     }
@@ -2596,7 +2549,6 @@ fn compiled_query_atom_matches_with_limit<L: MatchLimiter>(
 fn query_substructure_matches_with_mapping(
     query: &CompiledQuery,
     target: &PreparedTarget,
-    atom_stereo_cache: &mut AtomStereoCache,
     recursive_cache: &mut RecursiveMatchCache,
     initial_query_atom: Option<QueryAtomId>,
     initial_target_atom: Option<usize>,
@@ -2622,7 +2574,6 @@ fn query_substructure_matches_with_mapping(
         return three_atom_query_substructure_matches(
             query,
             target,
-            atom_stereo_cache,
             recursive_cache,
             layout,
             initial_mapping,
@@ -2632,7 +2583,6 @@ fn query_substructure_matches_with_mapping(
     with_fresh_bound_search_context(
         query,
         target,
-        atom_stereo_cache,
         recursive_cache,
         initial_mapping,
         |context, mapped_count| {
@@ -2660,7 +2610,6 @@ fn query_substructure_matches_with_mapping(
 fn query_match_count_with_mapping(
     query: &CompiledQuery,
     target: &PreparedTarget,
-    atom_stereo_cache: &mut AtomStereoCache,
     recursive_cache: &mut RecursiveMatchCache,
     initial_query_atom: Option<QueryAtomId>,
     initial_target_atom: Option<usize>,
@@ -2681,7 +2630,6 @@ fn query_match_count_with_mapping(
         return three_atom_query_match_count(
             query,
             target,
-            atom_stereo_cache,
             recursive_cache,
             layout,
             initial_mapping,
@@ -2691,7 +2639,6 @@ fn query_match_count_with_mapping(
     with_fresh_bound_search_context(
         query,
         target,
-        atom_stereo_cache,
         recursive_cache,
         initial_mapping,
         |context, mapped_count| {
@@ -2899,7 +2846,6 @@ fn for_each_two_atom_mapping(
 fn three_atom_query_matches(
     query: &CompiledQuery,
     target: &PreparedTarget,
-    atom_stereo_cache: &mut AtomStereoCache,
     recursive_cache: &mut RecursiveMatchCache,
     layout: ThreeAtomTreeLayout,
     initial_mapping: InitialAtomMapping,
@@ -2910,16 +2856,13 @@ fn three_atom_query_matches(
         recursive_cache,
         layout,
         initial_mapping,
-        |mapping| {
-            compiled_query_stereo_constraints_match(query, target, mapping, atom_stereo_cache)
-        },
+        |mapping| compiled_query_stereo_constraints_match(query, target, mapping),
     )
 }
 
 fn three_atom_query_substructure_matches(
     query: &CompiledQuery,
     target: &PreparedTarget,
-    atom_stereo_cache: &mut AtomStereoCache,
     recursive_cache: &mut RecursiveMatchCache,
     layout: ThreeAtomTreeLayout,
     initial_mapping: InitialAtomMapping,
@@ -2932,7 +2875,7 @@ fn three_atom_query_substructure_matches(
         layout,
         initial_mapping,
         |mapping| {
-            if !compiled_query_stereo_constraints_match(query, target, mapping, atom_stereo_cache) {
+            if !compiled_query_stereo_constraints_match(query, target, mapping) {
                 return false;
             }
 
@@ -2954,7 +2897,6 @@ fn three_atom_query_substructure_matches(
 fn three_atom_query_match_count(
     query: &CompiledQuery,
     target: &PreparedTarget,
-    atom_stereo_cache: &mut AtomStereoCache,
     recursive_cache: &mut RecursiveMatchCache,
     layout: ThreeAtomTreeLayout,
     initial_mapping: InitialAtomMapping,
@@ -2967,7 +2909,7 @@ fn three_atom_query_match_count(
         layout,
         initial_mapping,
         |mapping| {
-            if !compiled_query_stereo_constraints_match(query, target, mapping, atom_stereo_cache) {
+            if !compiled_query_stereo_constraints_match(query, target, mapping) {
                 return false;
             }
             matches.push(three_atom_canonical_mapping_key(mapping));
@@ -3379,23 +3321,36 @@ fn build_query_stereo_plan(
         }
     }
 
+    let tetrahedral_constraints = if query.atoms().iter().any(|atom| {
+        extract_query_chirality(&atom.expr).is_some_and(query_chirality_requires_tetrahedral_match)
+    }) {
+        let stereo_neighbors = crate::canonicalization::tetrahedral_stereo_neighbors(query);
+        query
+            .atoms()
+            .iter()
+            .zip(stereo_neighbors)
+            .filter_map(|(atom, slots)| {
+                let (slots, chirality) = (slots?, extract_query_chirality(&atom.expr)?);
+                Some(QueryTetrahedralStereoConstraint {
+                    center_atom: atom.id,
+                    anticlockwise: matches!(chirality, Chirality::At | Chirality::TH(1)),
+                    slots,
+                    none_slot_is_hydrogen: slots
+                        .iter()
+                        .position(Option::is_none)
+                        .is_some_and(|index| index != 3),
+                })
+            })
+            .collect()
+    } else {
+        alloc::vec::Vec::new()
+    };
+
     QueryStereoPlan {
         directional_bond_ids,
         double_bond_constraints,
+        tetrahedral_constraints,
     }
-}
-
-const fn is_supported_query_chirality(chirality: Chirality) -> bool {
-    matches!(
-        chirality,
-        Chirality::At
-            | Chirality::AtAt
-            | Chirality::TH(1 | 2)
-            | Chirality::AL(1 | 2)
-            | Chirality::SP(1..=3)
-            | Chirality::TB(1..=20)
-            | Chirality::OH(1..=30)
-    )
 }
 
 const fn query_chirality_requires_tetrahedral_match(chirality: Chirality) -> bool {
@@ -3425,222 +3380,6 @@ pub(crate) fn extract_chirality_from_bracket_tree(tree: &BracketExprTree) -> Opt
     }
 }
 
-fn build_local_stereo_fragment(
-    query: &QueryMol,
-    query_neighbors: &[alloc::vec::Vec<(QueryAtomId, usize)>],
-    atom_id: QueryAtomId,
-    neighbor_tokens: &[String],
-) -> Result<(String, usize), SmartsMatchError> {
-    let incident = &query_neighbors[atom_id];
-    let Some(query_chirality) = extract_query_chirality(&query.atoms()[atom_id].expr) else {
-        return Err(unsupported_atom_primitive("@"));
-    };
-    let preserve_incoming_neighbor = query_has_total_hydrogen(&query.atoms()[atom_id].expr);
-    let prefix_neighbor = preserve_incoming_neighbor
-        .then(|| {
-            incident
-                .iter()
-                .enumerate()
-                .find_map(|(index, (neighbor_atom, _))| (*neighbor_atom < atom_id).then_some(index))
-        })
-        .flatten();
-    let remaining_count = incident
-        .len()
-        .saturating_sub(usize::from(prefix_neighbor.is_some()));
-
-    let mut fragment = prefix_neighbor.map_or_else(
-        || render_local_stereo_center(query_chirality, preserve_incoming_neighbor),
-        |prefix_index| {
-            let (_, bond_id) = incident[prefix_index];
-            let mut fragment = neighbor_tokens[prefix_index].clone();
-            fragment.push_str(local_stereo_bond_text(&query.bonds()[bond_id].expr));
-            fragment.push_str(&render_local_stereo_center(
-                query_chirality,
-                preserve_incoming_neighbor,
-            ));
-            fragment
-        },
-    );
-
-    let mut rendered_remaining = 0usize;
-    for (index, (_, bond_id)) in incident.iter().enumerate() {
-        if Some(index) == prefix_neighbor {
-            continue;
-        }
-        rendered_remaining += 1;
-        let atom_text = &neighbor_tokens[index];
-        let bond_text = local_stereo_bond_text(&query.bonds()[*bond_id].expr);
-        if rendered_remaining == remaining_count {
-            fragment.push_str(bond_text);
-            fragment.push_str(atom_text);
-        } else {
-            fragment.push('(');
-            fragment.push_str(bond_text);
-            fragment.push_str(atom_text);
-            fragment.push(')');
-        }
-    }
-    Ok((fragment, usize::from(prefix_neighbor.is_some())))
-}
-
-fn local_neighbor_tokens_for_mapping(
-    incident: &[(QueryAtomId, usize)],
-    query_to_target: &[Option<usize>],
-    target: &PreparedTarget,
-) -> Result<alloc::vec::Vec<String>, SmartsMatchError> {
-    const PLACEHOLDER_ATOMS: [&str; 8] = ["F", "Cl", "Br", "I", "N", "O", "P", "S"];
-
-    let target_atoms_in_incident_order = incident
-        .iter()
-        .map(|(neighbor_atom, _)| {
-            query_to_target[*neighbor_atom].ok_or_else(|| unsupported_atom_primitive("@"))
-        })
-        .collect::<Result<alloc::vec::Vec<_>, _>>()?;
-    let mut target_atoms = target_atoms_in_incident_order.clone();
-    target_atoms.sort_unstable();
-    target_atoms.dedup();
-
-    if target_atoms.len() > PLACEHOLDER_ATOMS.len() {
-        return Err(unsupported_atom_primitive("@"));
-    }
-
-    let rendered_atoms = target_atoms
-        .iter()
-        .map(|target_atom_id| render_target_stereo_atom(target, *target_atom_id))
-        .collect::<alloc::vec::Vec<_>>();
-    let mut assigned_tokens = alloc::vec::Vec::with_capacity(target_atoms.len());
-    let mut placeholder_index = 0usize;
-
-    for (index, target_atom_id) in target_atoms.into_iter().enumerate() {
-        let rendered_atom = rendered_atoms[index].clone();
-        let rendered_atom_is_unique = rendered_atom.as_ref().is_some_and(|rendered_atom| {
-            rendered_atoms
-                .iter()
-                .filter(|other_rendered_atom| other_rendered_atom.as_ref() == Some(rendered_atom))
-                .count()
-                == 1
-        });
-
-        if rendered_atom_is_unique {
-            assigned_tokens.push((
-                target_atom_id,
-                rendered_atom.expect("checked that the rendered atom exists"),
-            ));
-            continue;
-        }
-
-        while PLACEHOLDER_ATOMS
-            .get(placeholder_index)
-            .is_some_and(|placeholder_atom| {
-                assigned_tokens
-                    .iter()
-                    .any(|(_, assigned_token)| assigned_token == placeholder_atom)
-            })
-        {
-            placeholder_index += 1;
-        }
-        let Some(placeholder_atom) = PLACEHOLDER_ATOMS.get(placeholder_index) else {
-            return Err(unsupported_atom_primitive("@"));
-        };
-        assigned_tokens.push((target_atom_id, String::from(*placeholder_atom)));
-        placeholder_index += 1;
-    }
-
-    target_atoms_in_incident_order
-        .into_iter()
-        .map(|target_atom_id| {
-            assigned_tokens
-                .iter()
-                .find_map(|(mapped_target_atom_id, placeholder_atom)| {
-                    (*mapped_target_atom_id == target_atom_id).then_some(placeholder_atom.clone())
-                })
-                .ok_or_else(|| unsupported_atom_primitive("@"))
-        })
-        .collect()
-}
-
-fn render_target_stereo_atom(target: &PreparedTarget, atom_id: usize) -> Option<String> {
-    let atom = target.atom(atom_id)?;
-    let mut symbol = atom.element()?.to_string();
-    if target.is_aromatic(atom_id) {
-        symbol.make_ascii_lowercase();
-    }
-
-    if atom.isotope_mass_number().is_none()
-        && atom.charge_value() == 0
-        && atom.element() != Some(Element::H)
-    {
-        return Some(symbol);
-    }
-
-    let mut rendered = String::from("[");
-    if let Some(isotope_mass_number) = atom.isotope_mass_number() {
-        rendered.push_str(&isotope_mass_number.to_string());
-    }
-    rendered.push_str(&symbol);
-    if atom.charge_value() != 0 {
-        rendered.push_str(&render_charge(atom.charge_value()));
-    }
-    rendered.push(']');
-    Some(rendered)
-}
-
-fn query_has_total_hydrogen(expr: &AtomExpr) -> bool {
-    match expr {
-        AtomExpr::Wildcard | AtomExpr::Bare { .. } => false,
-        AtomExpr::Bracket(expr) => bracket_tree_has_total_hydrogen(&expr.tree),
-    }
-}
-
-fn bracket_tree_has_total_hydrogen(tree: &BracketExprTree) -> bool {
-    match tree {
-        BracketExprTree::Primitive(AtomPrimitive::Hydrogen(HydrogenKind::Total, _)) => true,
-        BracketExprTree::Primitive(_) | BracketExprTree::Not(_) => false,
-        BracketExprTree::HighAnd(items)
-        | BracketExprTree::Or(items)
-        | BracketExprTree::LowAnd(items) => items.iter().any(bracket_tree_has_total_hydrogen),
-    }
-}
-
-fn render_local_stereo_center(chirality: Chirality, has_hydrogen: bool) -> String {
-    let mut rendered = String::from("[C");
-    rendered.push_str(&render_local_chirality(chirality, has_hydrogen));
-    if has_hydrogen {
-        rendered.push('H');
-    }
-    rendered.push(']');
-    rendered
-}
-
-fn render_charge(charge: i8) -> String {
-    match charge.cmp(&0) {
-        core::cmp::Ordering::Less => {
-            let magnitude = charge.unsigned_abs();
-            if magnitude == 1 {
-                String::from("-")
-            } else {
-                alloc::format!("-{magnitude}")
-            }
-        }
-        core::cmp::Ordering::Equal => String::new(),
-        core::cmp::Ordering::Greater => {
-            let magnitude = u8::try_from(charge).unwrap_or(u8::MAX);
-            if magnitude == 1 {
-                String::from("+")
-            } else {
-                alloc::format!("+{magnitude}")
-            }
-        }
-    }
-}
-
-const fn local_stereo_bond_text(expr: &BondExpr) -> &'static str {
-    match expr {
-        BondExpr::Elided => "",
-        BondExpr::Query(_) => "-",
-    }
-}
-
 fn numeric_query_matches_u16(query: NumericQuery, actual: u16) -> bool {
     match query {
         NumericQuery::Exact(expected) => actual == expected,
@@ -3660,16 +3399,6 @@ fn count_query_matches_u16(query: Option<NumericQuery>, actual: u16, omitted_def
 
 fn ring_query_matches_u16(query: Option<NumericQuery>, actual: u16) -> bool {
     query.map_or(actual > 0, |query| numeric_query_matches_u16(query, actual))
-}
-
-fn render_local_chirality(chirality: Chirality, has_hydrogen: bool) -> String {
-    match (chirality, has_hydrogen) {
-        (Chirality::At, true) => String::from("@"),
-        (Chirality::AtAt, true) => String::from("@@"),
-        (Chirality::At, false) => Chirality::TH(1).to_string(),
-        (Chirality::AtAt, false) => Chirality::TH(2).to_string(),
-        _ => chirality.to_string(),
-    }
 }
 
 fn directional_substituents(
@@ -3732,7 +3461,6 @@ fn search_mapping(
             context.compiled_query,
             target,
             context.query_to_target,
-            context.atom_stereo_cache,
         );
     }
 
@@ -3751,7 +3479,6 @@ fn search_bondless_mapping(
             context.compiled_query,
             target,
             context.query_to_target,
-            context.atom_stereo_cache,
         );
     }
 
@@ -3948,7 +3675,6 @@ fn for_each_component_mapping(
             component_id,
             target,
             context.query_to_target,
-            context.atom_stereo_cache,
         ) && visit(context.query_to_target);
     }
 
@@ -4034,7 +3760,6 @@ fn component_mapping_stereo_constraints_match(
     component_id: usize,
     target: &PreparedTarget,
     query_to_target: &[Option<usize>],
-    atom_stereo_cache: &mut AtomStereoCache,
 ) -> bool {
     if !query.has_stereo_constraints {
         return true;
@@ -4047,20 +3772,14 @@ fn component_mapping_stereo_constraints_match(
         .iter()
         .filter(|constraint| query_mol.atoms()[constraint.left_atom].component == component_id)
         .all(|constraint| double_bond_constraint_holds(constraint, target, query_to_target))
-        && query_mol
-            .component_atoms(component_id)
+        && query
+            .stereo_plan
+            .tetrahedral_constraints
             .iter()
-            .copied()
-            .all(|query_atom_id| {
-                atom_chirality_matches(
-                    query_mol,
-                    &query.query_neighbors,
-                    query_atom_id,
-                    target,
-                    query_to_target,
-                    atom_stereo_cache,
-                )
+            .filter(|constraint| {
+                query_mol.atoms()[constraint.center_atom].component == component_id
             })
+            .all(|constraint| tetrahedral_constraint_matches(constraint, target, query_to_target))
 }
 
 fn collect_compiled_component_embeddings(
@@ -4068,16 +3787,13 @@ fn collect_compiled_component_embeddings(
     target: &PreparedTarget,
     limit: &impl MatchLimiter,
 ) -> alloc::vec::Vec<ComponentEmbedding> {
-    let mut atom_stereo_cache = AtomStereoCache::new();
     let mut recursive_cache =
         RecursiveMatchCache::new(component.recursive_cache_slots, target.atom_count());
     let mut scratch =
         FreshSearchBuffers::new_with_limit(component, target, &mut recursive_cache, limit);
-    let mut context = scratch.view_with_limit(limit).into_context(
-        component,
-        &mut atom_stereo_cache,
-        &mut recursive_cache,
-    );
+    let mut context = scratch
+        .view_with_limit(limit)
+        .into_context(component, &mut recursive_cache);
     let mut seen = BTreeSet::new();
     let mut embeddings = alloc::vec::Vec::new();
     for_each_mapping(
@@ -4450,7 +4166,6 @@ fn search_bondless_mapping_candidates(
             context.compiled_query,
             target,
             context.query_to_target,
-            context.atom_stereo_cache,
         );
     }
 
@@ -4683,7 +4398,6 @@ fn for_each_mapping(
             context.compiled_query,
             target,
             context.query_to_target,
-            context.atom_stereo_cache,
         ) && visit(context.query_to_target);
     }
 
@@ -5506,105 +5220,76 @@ fn atom_primitive_matches<L: MatchLimiter>(
     }
 }
 
-fn atom_chirality_matches(
-    query: &QueryMol,
-    query_neighbors: &[alloc::vec::Vec<(QueryAtomId, usize)>],
-    query_atom_id: QueryAtomId,
-    target: &PreparedTarget,
-    query_to_target: &[Option<usize>],
-    atom_stereo_cache: &mut AtomStereoCache,
-) -> bool {
-    let Some(query_chirality) = extract_query_chirality(&query.atoms()[query_atom_id].expr) else {
-        return true;
-    };
-    if !is_supported_query_chirality(query_chirality) {
-        return false;
-    }
-    if !query_chirality_requires_tetrahedral_match(query_chirality) {
-        return true;
-    }
-
-    let incident = &query_neighbors[query_atom_id];
-    if incident.len() < 3 || incident.len() > 4 {
-        return true;
-    }
-
-    let Some(target_atom_id) = query_to_target[query_atom_id] else {
-        return false;
-    };
-    let Some(actual_target_chirality) = target.tetrahedral_chirality(target_atom_id) else {
-        return false;
-    };
-    let Ok(neighbor_tokens) = local_neighbor_tokens_for_mapping(incident, query_to_target, target)
-    else {
-        return false;
-    };
-    let cache_key = AtomStereoCacheKey {
-        query_atom_id,
-        neighbor_tokens,
-    };
-    let expected_chirality = atom_stereo_cache.get(&cache_key).copied();
-    let expected_chirality = expected_chirality.unwrap_or_else(|| {
-        let computed = build_local_stereo_fragment(
-            query,
-            query_neighbors,
-            query_atom_id,
-            &cache_key.neighbor_tokens,
-        )
-        .ok()
-        .and_then(|(local_fragment, local_center_atom_id)| {
-            local_fragment
-                .parse::<Smiles>()
-                .ok()
-                .and_then(|local_smiles| {
-                    local_smiles.smarts_tetrahedral_chirality(local_center_atom_id)
-                })
-        });
-        atom_stereo_cache.insert(cache_key.clone(), computed);
-        computed
-    });
-    expected_chirality == Some(actual_target_chirality)
-}
-
 fn compiled_query_stereo_constraints_match(
     query: &CompiledQuery,
     target: &PreparedTarget,
     query_to_target: &[Option<usize>],
-    atom_stereo_cache: &mut AtomStereoCache,
 ) -> bool {
     !query.has_stereo_constraints
-        || stereo_constraints_match(
-            &query.query,
-            &query.stereo_plan,
-            &query.query_neighbors,
-            target,
-            query_to_target,
-            atom_stereo_cache,
-        )
-}
-
-fn stereo_constraints_match(
-    query: &QueryMol,
-    stereo_plan: &QueryStereoPlan,
-    query_neighbors: &[alloc::vec::Vec<(QueryAtomId, usize)>],
-    target: &PreparedTarget,
-    query_to_target: &[Option<usize>],
-    atom_stereo_cache: &mut AtomStereoCache,
-) -> bool {
-    stereo_plan
-        .double_bond_constraints
-        .iter()
-        .all(|constraint| double_bond_constraint_holds(constraint, target, query_to_target))
-        && query.atoms().iter().all(|atom| {
-            atom_chirality_matches(
-                query,
-                query_neighbors,
-                atom.id,
+        || query
+            .stereo_plan
+            .double_bond_constraints
+            .iter()
+            .all(|constraint| double_bond_constraint_holds(constraint, target, query_to_target))
+            && tetrahedral_constraints_match(
+                &query.stereo_plan.tetrahedral_constraints,
                 target,
                 query_to_target,
-                atom_stereo_cache,
             )
-        })
+}
+
+fn tetrahedral_constraints_match(
+    constraints: &[QueryTetrahedralStereoConstraint],
+    target: &PreparedTarget,
+    query_to_target: &[Option<usize>],
+) -> bool {
+    constraints
+        .iter()
+        .all(|constraint| tetrahedral_constraint_matches(constraint, target, query_to_target))
+}
+
+fn tetrahedral_constraint_matches(
+    constraint: &QueryTetrahedralStereoConstraint,
+    target: &PreparedTarget,
+    query_to_target: &[Option<usize>],
+) -> bool {
+    let Some(target_center) = query_to_target[constraint.center_atom] else {
+        return false;
+    };
+
+    let mut caller_slots = [None; 4];
+    let mut pending_slot = None;
+    for (slot, query_atom) in constraint.slots.iter().enumerate() {
+        let Some(query_atom) = *query_atom else {
+            pending_slot = Some(slot);
+            continue;
+        };
+        let Some(target_atom) = query_to_target[query_atom] else {
+            return false;
+        };
+        caller_slots[slot] = Some(target_atom);
+    }
+
+    if let Some(pending_slot) = pending_slot {
+        let neighbor_slice = target.neighbor_slice(target_center);
+        let caller_slot = if constraint.none_slot_is_hydrogen {
+            neighbor_slice
+                .iter()
+                .find(|(neighbor, _)| target.is_hidden_attached_hydrogen(*neighbor))
+                .map(|(neighbor, _)| *neighbor)
+        } else {
+            neighbor_slice
+                .iter()
+                .find(|(neighbor, _)| !caller_slots.contains(&Some(*neighbor)))
+                .map(|(neighbor, _)| *neighbor)
+        };
+        caller_slots[pending_slot] = caller_slot;
+    }
+
+    target
+        .target()
+        .tetrahedral_neighbors_anticlockwise(target_center, caller_slots)
+        == Some(constraint.anticlockwise)
 }
 
 fn recursive_query_matches<L: MatchLimiter>(
@@ -5631,13 +5316,11 @@ fn recursive_query_matches<L: MatchLimiter>(
         return false;
     }
 
-    let mut atom_stereo_cache = AtomStereoCache::new();
     let mut scratch =
         FreshSearchBuffers::new_with_limit(entry.compiled.as_ref(), target, recursive_cache, limit);
     let anchored = query_matches_with_mapping_state(
         entry.compiled.as_ref(),
         target,
-        &mut atom_stereo_cache,
         recursive_cache,
         scratch.view_with_limit(limit),
         InitialAtomMapping::new(Some(0), Some(atom_id)),

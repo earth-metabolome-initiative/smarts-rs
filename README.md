@@ -8,9 +8,7 @@ SMARTS queries against SMILES targets.
 
 ## Basic SMARTS Utilities
 
-SMARTS strings parse through `FromStr` into `smarts_rs::QueryMol`. The
-parsed query can be inspected directly, used for one-off matching, or compiled
-once and reused against prepared targets.
+SMARTS strings parse through `FromStr` into `smarts_rs::QueryMol`. The parsed query can be inspected directly, used for one-off matching, or compiled once and reused against prepared targets. Tetrahedral `@`, `@@`, `@TH1`, and `@TH2` require specified target chirality and constrain mapped neighbor orientation, including ring closures and bracket hydrogens.
 
 ```rust
 use core::str::FromStr;
