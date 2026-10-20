@@ -1,7 +1,6 @@
 use alloc::{
     boxed::Box,
     collections::{BTreeMap, BTreeSet},
-    string::String,
 };
 use core::cell::{Cell, RefCell};
 #[cfg(all(
@@ -18,7 +17,7 @@ use elements_rs::{AtomicNumber, Element, ElementVariant, MassNumber};
 use smiles_rs::{
     atom::{bracketed::chirality::Chirality, Atom},
     bond::Bond,
-    DoubleBondStereoConfig, Smiles,
+    Smiles,
 };
 
 use crate::{
@@ -225,11 +224,15 @@ struct QueryStereoPlan {
     tetrahedral_constraints: alloc::vec::Vec<QueryTetrahedralStereoConstraint>,
 }
 
+/// Two directional substituents across a query double bond, required on the
+/// same side (`cis`) or on opposite sides.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct QueryDoubleBondStereoConstraint {
     left_atom: QueryAtomId,
     right_atom: QueryAtomId,
-    config: DoubleBondStereoConfig,
+    left_substituent: QueryAtomId,
+    right_substituent: QueryAtomId,
+    cis: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -242,10 +245,11 @@ struct QueryTetrahedralStereoConstraint {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct QueryLocalSubstituent {
+struct QueryDirectionalSubstituent {
     bond_id: usize,
+    atom: QueryAtomId,
     /// Direction read from the double-bond atom towards the substituent.
-    outward_direction: Option<Bond>,
+    outward_direction: Bond,
 }
 
 #[derive(Debug, Clone)]
@@ -1573,7 +1577,7 @@ fn ensure_supported_atom_primitive(
         ) => Ok(()),
         AtomPrimitive::RecursiveQuery(query) => {
             let query_neighbors = build_query_neighbors(query);
-            let recursive_stereo_plan = build_query_stereo_plan(query, &query_neighbors)?;
+            let recursive_stereo_plan = build_query_stereo_plan(query, &query_neighbors);
             ensure_supported_query(query, &recursive_stereo_plan)
         }
         AtomPrimitive::Chirality(_) => {
@@ -1589,7 +1593,7 @@ const fn unsupported_atom_primitive(primitive: &'static str) -> SmartsMatchError
 
 fn compile_query_parts(query: &QueryMol) -> Result<CompiledQueryParts, SmartsMatchError> {
     let query_neighbors = build_query_neighbors(query);
-    let stereo_plan = build_query_stereo_plan(query, &query_neighbors)?;
+    let stereo_plan = build_query_stereo_plan(query, &query_neighbors);
     ensure_supported_query(query, &stereo_plan)?;
     let query_degrees = query_neighbors
         .iter()
@@ -3291,7 +3295,7 @@ fn build_query_neighbors(
 fn build_query_stereo_plan(
     query: &QueryMol,
     query_neighbors: &[alloc::vec::Vec<(QueryAtomId, usize)>],
-) -> Result<QueryStereoPlan, SmartsMatchError> {
+) -> QueryStereoPlan {
     let mut directional_bond_ids = alloc::vec![false; query.bond_count()];
     let mut double_bond_constraints = alloc::vec::Vec::new();
 
@@ -3299,34 +3303,22 @@ fn build_query_stereo_plan(
         if !BondSemantics::of_expr(&bond.expr).matches_only_double_bonds() {
             continue;
         }
-
-        let left_local = local_substituents(query, query_neighbors, bond.src, bond.id, bond.dst);
-        let right_local = local_substituents(query, query_neighbors, bond.dst, bond.id, bond.src);
-        let is_directional =
-            |substituent: &QueryLocalSubstituent| substituent.outward_direction.is_some();
-        if !left_local.iter().any(is_directional) || !right_local.iter().any(is_directional) {
-            continue;
+        let left = directional_substituents(query, query_neighbors, bond.src, bond.id, bond.dst);
+        let right = directional_substituents(query, query_neighbors, bond.dst, bond.id, bond.src);
+        for (left_substituent, right_substituent) in left
+            .iter()
+            .flat_map(|left| right.iter().map(move |right| (left, right)))
+        {
+            directional_bond_ids[left_substituent.bond_id] = true;
+            directional_bond_ids[right_substituent.bond_id] = true;
+            double_bond_constraints.push(QueryDoubleBondStereoConstraint {
+                left_atom: bond.src,
+                right_atom: bond.dst,
+                left_substituent: left_substituent.atom,
+                right_substituent: right_substituent.atom,
+                cis: left_substituent.outward_direction == right_substituent.outward_direction,
+            });
         }
-
-        let (fragment, left_atom_id, right_atom_id) =
-            build_local_double_bond_fragment(&left_local, &right_local)?;
-        let local_smiles = fragment
-            .parse::<Smiles>()
-            .map_err(|_| unsupported_bond_primitive("/"))?;
-        let config = local_smiles
-            .double_bond_stereo_config(left_atom_id, right_atom_id)
-            .ok_or_else(|| unsupported_bond_primitive("/"))?;
-
-        for substituent in left_local.iter().chain(&right_local) {
-            if substituent.outward_direction.is_some() {
-                directional_bond_ids[substituent.bond_id] = true;
-            }
-        }
-        double_bond_constraints.push(QueryDoubleBondStereoConstraint {
-            left_atom: bond.src,
-            right_atom: bond.dst,
-            config,
-        });
     }
 
     let tetrahedral_constraints = if query.atoms().iter().any(|atom| {
@@ -3354,11 +3346,11 @@ fn build_query_stereo_plan(
         alloc::vec::Vec::new()
     };
 
-    Ok(QueryStereoPlan {
+    QueryStereoPlan {
         directional_bond_ids,
         double_bond_constraints,
         tetrahedral_constraints,
-    })
+    }
 }
 
 const fn query_chirality_requires_tetrahedral_match(chirality: Chirality) -> bool {
@@ -3409,126 +3401,50 @@ fn ring_query_matches_u16(query: Option<NumericQuery>, actual: u16) -> bool {
     query.map_or(actual > 0, |query| numeric_query_matches_u16(query, actual))
 }
 
-fn local_substituents(
+fn directional_substituents(
     query: &QueryMol,
     query_neighbors: &[alloc::vec::Vec<(QueryAtomId, usize)>],
     endpoint: QueryAtomId,
     double_bond_id: usize,
     opposite_endpoint: QueryAtomId,
-) -> alloc::vec::Vec<QueryLocalSubstituent> {
+) -> alloc::vec::Vec<QueryDirectionalSubstituent> {
     query_neighbors[endpoint]
         .iter()
         .filter(|&&(neighbor_atom, bond_id)| {
             bond_id != double_bond_id && neighbor_atom != opposite_endpoint
         })
-        .map(|&(_, bond_id)| {
+        .filter_map(|&(neighbor_atom, bond_id)| {
             let bond = &query.bonds()[bond_id];
-            let direction = BondSemantics::of_expr(&bond.expr).direction();
-            QueryLocalSubstituent {
+            let direction = BondSemantics::of_expr(&bond.expr).direction()?;
+            Some(QueryDirectionalSubstituent {
                 bond_id,
+                atom: neighbor_atom,
                 outward_direction: if bond.src == endpoint {
                     direction
                 } else {
-                    direction.map(reversed_direction)
+                    reversed_direction(direction)
                 },
-            }
+            })
         })
         .collect()
 }
 
-fn build_local_double_bond_fragment(
-    left_substituents: &[QueryLocalSubstituent],
-    right_substituents: &[QueryLocalSubstituent],
-) -> Result<(String, usize, usize), SmartsMatchError> {
-    const PLACEHOLDER_ATOMS: [&str; 8] = ["F", "Cl", "Br", "I", "N", "O", "P", "S"];
-
-    let total_substituents = left_substituents.len() + right_substituents.len();
-    if total_substituents > PLACEHOLDER_ATOMS.len() {
-        return Err(unsupported_bond_primitive("/"));
-    }
-
-    let mut next_placeholder = 0usize;
-    let mut next_atom_id = 0usize;
-    let mut fragment = String::new();
-
-    let left_prefix_index = left_substituents
-        .iter()
-        .position(|substituent| substituent.outward_direction.is_some())
-        .or_else(|| (!left_substituents.is_empty()).then_some(0));
-
-    if let Some(prefix_index) = left_prefix_index {
-        fragment.push_str(PLACEHOLDER_ATOMS[next_placeholder]);
-        fragment.push_str(local_double_bond_direction_text(
-            left_substituents[prefix_index]
-                .outward_direction
-                .map(reversed_direction),
-        ));
-        next_placeholder += 1;
-        next_atom_id += 1;
-    }
-
-    let left_center_atom_id = next_atom_id;
-    fragment.push('C');
-    next_atom_id += 1;
-
-    for (index, substituent) in left_substituents.iter().enumerate() {
-        if Some(index) == left_prefix_index {
-            continue;
-        }
-        fragment.push('(');
-        fragment.push_str(local_double_bond_direction_text(
-            substituent.outward_direction,
-        ));
-        fragment.push_str(PLACEHOLDER_ATOMS[next_placeholder]);
-        fragment.push(')');
-        next_placeholder += 1;
-        next_atom_id += 1;
-    }
-
-    fragment.push('=');
-    let right_center_atom_id = next_atom_id;
-    fragment.push('C');
-    next_atom_id += 1;
-
-    if let Some(continuation_index) = right_continuation_index(right_substituents) {
-        for (index, substituent) in right_substituents.iter().enumerate() {
-            if index == continuation_index {
-                continue;
-            }
-            fragment.push('(');
-            fragment.push_str(local_double_bond_direction_text(
-                substituent.outward_direction,
-            ));
-            fragment.push_str(PLACEHOLDER_ATOMS[next_placeholder]);
-            fragment.push(')');
-            next_placeholder += 1;
-            next_atom_id += 1;
-        }
-
-        let continuation = right_substituents[continuation_index];
-        fragment.push_str(local_double_bond_direction_text(
-            continuation.outward_direction,
-        ));
-        fragment.push_str(PLACEHOLDER_ATOMS[next_placeholder]);
-        let _ = next_atom_id;
-    }
-
-    Ok((fragment, left_center_atom_id, right_center_atom_id))
-}
-
-fn right_continuation_index(substituents: &[QueryLocalSubstituent]) -> Option<usize> {
-    substituents
-        .iter()
-        .position(|substituent| substituent.outward_direction.is_none())
-        .or_else(|| (!substituents.is_empty()).then(|| substituents.len() - 1))
-}
-
-const fn local_double_bond_direction_text(direction: Option<Bond>) -> &'static str {
-    match direction {
-        Some(Bond::Up) => "/",
-        Some(Bond::Down) => "\\",
-        _ => "",
-    }
+/// Whether the mapped target holds one double-bond constraint.
+fn double_bond_constraint_holds(
+    constraint: &QueryDoubleBondStereoConstraint,
+    target: &PreparedTarget,
+    query_to_target: &[Option<usize>],
+) -> bool {
+    let (Some(left), Some(right), Some(left_substituent), Some(right_substituent)) = (
+        query_to_target[constraint.left_atom],
+        query_to_target[constraint.right_atom],
+        query_to_target[constraint.left_substituent],
+        query_to_target[constraint.right_substituent],
+    ) else {
+        return false;
+    };
+    target.double_bond_substituents_are_cis(left, right, left_substituent, right_substituent)
+        == Some(constraint.cis)
 }
 
 fn search_mapping(
@@ -3855,15 +3771,7 @@ fn component_mapping_stereo_constraints_match(
         .double_bond_constraints
         .iter()
         .filter(|constraint| query_mol.atoms()[constraint.left_atom].component == component_id)
-        .all(|constraint| {
-            let Some(left_target) = query_to_target[constraint.left_atom] else {
-                return false;
-            };
-            let Some(right_target) = query_to_target[constraint.right_atom] else {
-                return false;
-            };
-            target.double_bond_stereo_config(left_target, right_target) == Some(constraint.config)
-        })
+        .all(|constraint| double_bond_constraint_holds(constraint, target, query_to_target))
         && query
             .stereo_plan
             .tetrahedral_constraints
@@ -5322,16 +5230,7 @@ fn compiled_query_stereo_constraints_match(
             .stereo_plan
             .double_bond_constraints
             .iter()
-            .all(|constraint| {
-                let Some(left_target) = query_to_target[constraint.left_atom] else {
-                    return false;
-                };
-                let Some(right_target) = query_to_target[constraint.right_atom] else {
-                    return false;
-                };
-                target.double_bond_stereo_config(left_target, right_target)
-                    == Some(constraint.config)
-            })
+            .all(|constraint| double_bond_constraint_holds(constraint, target, query_to_target))
             && tetrahedral_constraints_match(
                 &query.stereo_plan.tetrahedral_constraints,
                 target,

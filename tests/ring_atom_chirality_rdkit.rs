@@ -155,3 +155,102 @@ fn ring_atom_chirality_should_hold_through_compiled_query_and_shared_scratch() {
         );
     }
 }
+
+const RECURSIVE_CHIRAL_COMPONENT_CASES: &[(&str, &str, &str, bool, usize)] = &[
+    (
+        "at query matches @@ target",
+        "([C@H&$(CO)](F)(O)(Cl)).N",
+        "F[C@@H](O)Cl.N",
+        true,
+        1,
+    ),
+    (
+        "at query misses @ target",
+        "([C@H&$(CO)](F)(O)(Cl)).N",
+        "F[C@H](O)Cl.N",
+        false,
+        0,
+    ),
+    (
+        "at query misses plain target",
+        "([C@H&$(CO)](F)(O)(Cl)).N",
+        "FC(O)Cl.N",
+        false,
+        0,
+    ),
+    (
+        "atat query matches @ target",
+        "([C@@H&$(CO)](F)(O)(Cl)).N",
+        "F[C@H](O)Cl.N",
+        true,
+        1,
+    ),
+    (
+        "atat query misses @@ target",
+        "([C@@H&$(CO)](F)(O)(Cl)).N",
+        "F[C@@H](O)Cl.N",
+        false,
+        0,
+    ),
+    (
+        "at query counts two free carbons",
+        "([C@H&$(CO)](F)(O)(Cl)).N.C",
+        "F[C@@H](O)Cl.N.CC",
+        true,
+        2,
+    ),
+    (
+        "atat query counts two free carbons",
+        "([C@@H&$(CO)](F)(O)(Cl)).N.C",
+        "F[C@H](O)Cl.N.CC",
+        true,
+        2,
+    ),
+    (
+        "at query misses missing carbon",
+        "([C@H&$(CO)](F)(O)(Cl)).N.C",
+        "F[C@@H](O)Cl.N",
+        false,
+        0,
+    ),
+];
+
+#[test]
+fn recursive_chiral_component_should_keep_enantiomer_selectivity() {
+    let mut scratch = MatchScratch::new();
+    for (name, smarts, smiles, expected_match, expected_count) in RECURSIVE_CHIRAL_COMPONENT_CASES {
+        let query = QueryMol::from_str(smarts)
+            .unwrap_or_else(|error| panic!("{name}: failed to parse SMARTS {smarts:?}: {error}"));
+        let actual = query
+            .matches(smiles)
+            .unwrap_or_else(|error| panic!("{name}: matcher error: {error}"));
+        let actual_count = query
+            .match_count(smiles)
+            .unwrap_or_else(|error| panic!("{name}: match_count error: {error}"));
+        assert_eq!(
+            actual, *expected_match,
+            "{name}: SMARTS {smarts:?} against SMILES {smiles:?}"
+        );
+        assert_eq!(
+            actual_count, *expected_count,
+            "{name}: SMARTS {smarts:?} against SMILES {smiles:?}: match count"
+        );
+
+        let target =
+            PreparedTarget::new(Smiles::from_str(smiles).unwrap_or_else(|error| {
+                panic!("{name}: failed to parse SMILES {smiles:?}: {error}")
+            }));
+        let compiled = CompiledQuery::new(query)
+            .unwrap_or_else(|error| panic!("{name}: failed to compile SMARTS {smarts:?}: {error}"));
+        let compiled_actual = compiled.matches_with_scratch(&target, &mut scratch);
+        let compiled_count = compiled.match_count(&target);
+        assert_eq!(
+            compiled_actual, *expected_match,
+            "{name}: compiled SMARTS {smarts:?} against SMILES {smiles:?}"
+        );
+        assert_eq!(
+            compiled_count, *expected_count,
+            "{name}: compiled SMARTS {smarts:?} against SMILES {smiles:?}: match count"
+        );
+    }
+}

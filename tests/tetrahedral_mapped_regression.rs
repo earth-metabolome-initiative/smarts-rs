@@ -47,3 +47,16 @@ fn underconstrained_chirality_requires_a_stereo_target() {
         }
     }
 }
+
+#[test]
+fn allene_tags_keep_configuration_across_spelling() {
+    // Swapping the two written neighbors inverts the `@AL` tag.
+    let first = QueryMol::from_str("[C@AL1](F)Cl").unwrap();
+    let swapped = QueryMol::from_str("[C@AL2](Cl)F").unwrap();
+    let mirrored = QueryMol::from_str("[C@AL1](Cl)F").unwrap();
+    let first_canonical = first.to_canonical_smarts();
+
+    assert_eq!(first_canonical, swapped.to_canonical_smarts());
+    assert_ne!(first_canonical, mirrored.to_canonical_smarts());
+    assert!(swapped.canonicalize().is_canonical());
+}

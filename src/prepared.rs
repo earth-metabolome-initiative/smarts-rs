@@ -193,7 +193,7 @@ pub struct PreparedTarget {
     ring_membership: RingMembership,
     ring_bonds: BTreeSet<(AtomId, AtomId)>,
     tetrahedral_chiralities: NodeProps<Option<Chirality>>,
-    double_bond_stereo: BTreeMap<(AtomId, AtomId), DoubleBondStereoConfig>,
+    double_bond_stereo: BTreeMap<(AtomId, AtomId), DoubleBondStereo>,
     connected_components: NodeProps<usize>,
     degrees: NodeProps<usize>,
     atom_ids_by_isotope_mass_number: BTreeMap<u16, AtomIdList>,
@@ -461,7 +461,34 @@ impl PreparedTarget {
     ) -> Option<DoubleBondStereoConfig> {
         self.double_bond_stereo
             .get(&edge_key(left_atom, right_atom))
-            .copied()
+            .map(|stereo| stereo.config)
+    }
+
+    /// Whether `left_substituent`, a neighbour of `left_atom`, and
+    /// `right_substituent`, a neighbour of `right_atom`, sit on the same side
+    /// of the double bond between those atoms. `None` when that bond carries
+    /// no `E`/`Z` stereo.
+    pub(crate) fn double_bond_substituents_are_cis(
+        &self,
+        left_atom: AtomId,
+        right_atom: AtomId,
+        left_substituent: AtomId,
+        right_substituent: AtomId,
+    ) -> Option<bool> {
+        let stereo = self
+            .double_bond_stereo
+            .get(&edge_key(left_atom, right_atom))?;
+        let (left_reference, right_reference) = if left_atom <= right_atom {
+            stereo.reference_atoms
+        } else {
+            (stereo.reference_atoms.1, stereo.reference_atoms.0)
+        };
+        let references_cis = stereo.config == DoubleBondStereoConfig::Z;
+        Some(
+            references_cis
+                ^ (left_substituent != left_reference)
+                ^ (right_substituent != right_reference),
+        )
     }
 
     /// Returns the connected-component identifier for the provided atom.
@@ -1428,9 +1455,17 @@ fn effective_neighbor_cache(
     NodeProps::new(neighbors.into_iter().map(Vec::into_boxed_slice).collect())
 }
 
+/// `E`/`Z` of a double bond, relative to one reference neighbour per atom.
+#[derive(Debug, Clone, Copy)]
+struct DoubleBondStereo {
+    config: DoubleBondStereoConfig,
+    /// Reference neighbours of the lower and the higher double-bond atom.
+    reference_atoms: (AtomId, AtomId),
+}
+
 fn semantic_double_bond_stereo_configs(
     target: &Smiles,
-) -> BTreeMap<(AtomId, AtomId), DoubleBondStereoConfig> {
+) -> BTreeMap<(AtomId, AtomId), DoubleBondStereo> {
     let mut configs = BTreeMap::new();
     for atom_id in 0..target.nodes().len() {
         for edge in target.edges_for_node(atom_id) {
@@ -1440,8 +1475,17 @@ fn semantic_double_bond_stereo_configs(
             if atom_id >= other_atom {
                 continue;
             }
-            if let Some(config) = target.double_bond_stereo_config(atom_id, other_atom) {
-                configs.insert(edge_key(atom_id, other_atom), config);
+            if let (Some(config), Some(reference_atoms)) = (
+                target.double_bond_stereo_config(atom_id, other_atom),
+                target.double_bond_stereo_atoms(atom_id, other_atom),
+            ) {
+                configs.insert(
+                    edge_key(atom_id, other_atom),
+                    DoubleBondStereo {
+                        config,
+                        reference_atoms,
+                    },
+                );
             }
         }
     }
