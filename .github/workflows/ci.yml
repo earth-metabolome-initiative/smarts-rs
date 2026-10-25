@@ -16,7 +16,7 @@ concurrency:
 jobs:
   rust:
     name: Rust Checks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - name: Checkout
@@ -41,7 +41,7 @@ jobs:
 
   msrv:
     name: Minimum Supported Rust
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -63,7 +63,7 @@ jobs:
 
   links:
     name: Link Check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -86,7 +86,7 @@ jobs:
 
   coverage:
     name: Coverage
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 45
     permissions:
       contents: read
@@ -133,7 +133,7 @@ jobs:
 
   sanitizers:
     name: AddressSanitizer
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - name: Checkout
