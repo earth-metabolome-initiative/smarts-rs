@@ -246,6 +246,16 @@ pub struct QueryBond {
 
 /// Parsed SMARTS query graph.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    any(
+        feature = "diesel-sqlite",
+        feature = "diesel-postgres",
+        feature = "diesel-mariadb",
+        feature = "diesel-mysql"
+    ),
+    derive(diesel::expression::AsExpression, diesel::deserialize::FromSqlRow),
+    diesel(sql_type = diesel::sql_types::Text)
+)]
 pub struct QueryMol {
     atoms: Vec<QueryAtom>,
     bonds: Vec<QueryBond>,

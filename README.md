@@ -7,13 +7,7 @@ Rust support for parsing, canonicalizing, editing, screening, and matching SMART
 
 ## Basic SMARTS Utilities
 
-The examples require both crates as direct dependencies.
-
-```toml
-[dependencies]
-smarts-rs = "0.1.0"
-smiles-rs = "0.2.1"
-```
+The examples use `smarts-rs` and `smiles-rs` `0.3` as direct dependencies.
 
 SMARTS strings parse through `FromStr` into `smarts_rs::QueryMol`. The parsed query can be inspected directly, used for one-off matching, or compiled once and reused against prepared targets. Tetrahedral `@`, `@@`, `@TH1`, and `@TH2` require specified target chirality and constrain mapped neighbor orientation, including ring closures and bracket hydrogens.
 
@@ -38,6 +32,12 @@ let outcome = compiled.match_outcome(&ethanol);
 assert!(outcome.matched);
 assert_eq!(outcome.coverage, 3.0 / 5.0);
 ```
+
+## Diesel storage
+
+Enable `diesel-sqlite`, `diesel-postgres`, `diesel-mariadb`, or `diesel-mysql` to bind and load `QueryMol` in a `TEXT` column. Writes use `Display`, so `[$([OH])]C` is stored as `[$([O&H])]C`. Reads use `FromStr` and preserve `SmartsParseError` for malformed SMARTS. Storage does not canonicalize the query.
+
+The server features provide codecs only. Applications opening connections also enable `diesel/postgres`, `diesel/mariadb`, or `diesel/mysql` respectively.
 
 ## Matching Safety Fuse
 

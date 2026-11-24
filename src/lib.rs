@@ -12,6 +12,13 @@ use core::str::FromStr;
 mod bond_semantics;
 mod bracket;
 mod canonicalization;
+#[cfg(any(
+    feature = "diesel-sqlite",
+    feature = "diesel-postgres",
+    feature = "diesel-mariadb",
+    feature = "diesel-mysql"
+))]
+mod diesel_sql;
 mod edit;
 mod match_error;
 mod parse;
