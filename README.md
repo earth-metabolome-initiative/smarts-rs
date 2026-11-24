@@ -7,8 +7,6 @@ Rust support for parsing, canonicalizing, editing, screening, and matching SMART
 
 ## Basic SMARTS Utilities
 
-The examples use `smarts-rs` and `smiles-rs` `0.3` as direct dependencies.
-
 SMARTS strings parse through `FromStr` into `smarts_rs::QueryMol`. The parsed query can be inspected directly, used for one-off matching, or compiled once and reused against prepared targets. Tetrahedral `@`, `@@`, `@TH1`, and `@TH2` require specified target chirality and constrain mapped neighbor orientation, including ring closures and bracket hydrogens.
 
 ```rust
