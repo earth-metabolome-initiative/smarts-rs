@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   BatchFuzzing:
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-latest
     permissions:
       contents: write
     strategy:

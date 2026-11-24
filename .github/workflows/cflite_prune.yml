@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   Pruning:
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
