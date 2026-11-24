@@ -122,6 +122,9 @@ jobs:
       - name: Collect workspace coverage
         run: cargo llvm-cov --locked --workspace --all-features --doctests --no-report
 
+      - name: Cover serial screening
+        run: cargo llvm-cov --locked --no-report --no-default-features --lib -- screening::tests
+
       - name: Test SQLite in memory
         run: cargo llvm-cov --locked --no-report --no-default-features --features diesel-sqlite --test diesel_sqlite
 
