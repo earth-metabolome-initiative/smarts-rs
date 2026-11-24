@@ -68,6 +68,36 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: smarts
+          POSTGRES_USER: smarts
+          POSTGRES_PASSWORD: smarts-ci
+        ports:
+          - 127.0.0.1::5432
+        options: --health-cmd "pg_isready -h 127.0.0.1 -U smarts -d smarts" --health-interval 2s --health-timeout 3s --health-retries 30
+      mariadb:
+        image: mariadb:11.4
+        env:
+          MARIADB_ROOT_PASSWORD: smarts-ci-root
+          MARIADB_DATABASE: smarts
+          MARIADB_USER: smarts
+          MARIADB_PASSWORD: smarts-ci
+        ports:
+          - 127.0.0.1::3306
+        options: --health-cmd "healthcheck.sh --connect --innodb_initialized" --health-interval 2s --health-timeout 3s --health-retries 30
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: smarts-ci-root
+          MYSQL_DATABASE: smarts
+          MYSQL_USER: smarts
+          MYSQL_PASSWORD: smarts-ci
+        ports:
+          - 127.0.0.1::3306
+        options: --health-cmd "mysqladmin ping -h 127.0.0.1 -u smarts -psmarts-ci" --health-interval 2s --health-timeout 3s --health-retries 30
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -84,16 +114,34 @@ jobs:
         uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
         with:
           tool: cargo-llvm-cov
+      - name: Install database clients
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsqlite3-dev libpq-dev default-libmysqlclient-dev
 
-      - name: Run coverage
-        run: >
-          cargo llvm-cov
-          --workspace
-          --all-features
-          --doctests
-          --fail-under-lines 90
-          --lcov
-          --output-path target/coverage.lcov
+      - name: Collect workspace coverage
+        run: cargo llvm-cov --locked --workspace --all-features --doctests --no-report
+
+      - name: Test SQLite in memory
+        run: cargo llvm-cov --locked --no-report --no-default-features --features diesel-sqlite --test diesel_sqlite
+
+      - name: Test PostgreSQL
+        env:
+          POSTGRES_DATABASE_URL: postgresql://smarts:smarts-ci@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/smarts?connect_timeout=5
+        run: cargo llvm-cov --locked --no-report --no-default-features --features diesel-postgres,diesel/postgres --test diesel_postgres -- --ignored
+
+      - name: Test MariaDB
+        env:
+          MARIADB_DATABASE_URL: mariadb://smarts:smarts-ci@127.0.0.1:${{ job.services.mariadb.ports['3306'] }}/smarts
+        run: cargo llvm-cov --locked --no-report --no-default-features --features diesel-mariadb,diesel/mariadb --test diesel_mariadb -- --ignored
+
+      - name: Test MySQL
+        env:
+          MYSQL_DATABASE_URL: mysql://smarts:smarts-ci@127.0.0.1:${{ job.services.mysql.ports['3306'] }}/smarts
+        run: cargo llvm-cov --locked --no-report --no-default-features --features diesel-mysql,diesel/mysql --test diesel_mysql -- --ignored
+
+      - name: Generate combined coverage report
+        run: cargo llvm-cov report --doctests --fail-under-lines 90 --lcov --output-path target/coverage.lcov
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
