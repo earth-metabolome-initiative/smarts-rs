@@ -104,7 +104,7 @@ rust-version = "1.92"
 license = "MIT"
 repository = "https://github.com/earth-metabolome-initiative/smarts-rs"
 documentation = "https://docs.rs/smarts-rs"
-version = "0.1.0"
+version = "0.2.0"
 
 [workspace.lints.rust]
 missing_docs = "deny"
