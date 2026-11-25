@@ -1,7 +1,10 @@
 # smarts-rs
 
+[![crates.io](https://img.shields.io/crates/v/smarts-rs.svg)](https://crates.io/crates/smarts-rs)
+[![docs.rs](https://docs.rs/smarts-rs/badge.svg)](https://docs.rs/smarts-rs)
 [![CI](https://github.com/earth-metabolome-initiative/smarts-rs/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/earth-metabolome-initiative/smarts-rs/actions/workflows/ci.yml)
 [![Codecov](https://codecov.io/gh/earth-metabolome-initiative/smarts-rs/graph/badge.svg?branch=main)](https://codecov.io/gh/earth-metabolome-initiative/smarts-rs)
+[![MIT license](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/earth-metabolome-initiative/smarts-rs/blob/main/LICENSE)
 
 Rust support for parsing, canonicalizing, editing, screening, and matching SMARTS queries against SMILES targets. The library supports `no_std` with `alloc` on Rust `1.92` or newer.
 
