@@ -31,6 +31,12 @@ assert!(outcome.matched);
 assert_eq!(outcome.coverage, 3.0 / 5.0);
 ```
 
+## Diesel storage
+
+Enable `diesel-sqlite`, `diesel-postgres`, `diesel-mariadb`, or `diesel-mysql` to bind and load `QueryMol` in a `TEXT` column. Writes use `Display`, so `[$([OH])]C` is stored as `[$([O&H])]C`. Reads use `FromStr` and preserve `SmartsParseError` for malformed SMARTS. Storage does not canonicalize the query.
+
+The server features provide codecs only. Applications opening connections also enable `diesel/postgres`, `diesel/mariadb`, or `diesel/mysql` respectively.
+
 ## Matching Safety Fuse
 
 Use `CompiledQuery::matches_with_scratch_and_interrupt` when query evaluation
@@ -125,6 +131,4 @@ Published archives contain the library sources, README, license, and Cargo metad
 
 ## Fuzzing
 
-Committed starting inputs live in `fuzz/seeds/<target>/`. `scripts/run_fuzz_tmux.sh` reads these seeds and writes generated inputs to the ignored `fuzz/corpus/` directories. `ClusterFuzzLite` requires a nonempty seed corpus for every target.
-
-`ClusterFuzzLite` stores generated corpora on the dedicated `fuzz-corpus` branch.
+Committed starting inputs live in `fuzz/seeds/<target>/`. `scripts/run_fuzz_tmux.sh` reads these seeds and writes generated inputs to the ignored `fuzz/corpus/` directories.
